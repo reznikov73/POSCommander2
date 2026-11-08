@@ -180,6 +180,7 @@ private:
     void ToggleQuickView();
     void DrawFlatButton(DRAWITEMSTRUCT* dis);
     void DrawToolGlyph(HDC dc, const RECT& rc, int command);
+    const wchar_t* ToolGlyph(int command) const;
     void UpdateFKeyLabels(int kind);
     int FKeyCommand(int index, int kind) const;
     void RefreshQuickView();
@@ -192,6 +193,8 @@ private:
     HWND label_ = nullptr;
     HWND prompt_ = nullptr;
     HWND fkeys_[kFKeyCount]{};
+    HFONT iconFont_ = nullptr;          // шрифт значков (Segoe Fluent Icons / MDL2 Assets)
+    bool haveIconFont_ = false;
     HWND tip_ = nullptr;                // подсказки кнопок тулбара
     HWND quickView_ = nullptr;          // Ctrl+Q: просмотр на неактивной панели
     int quickViewSide_ = -1;
@@ -377,6 +380,34 @@ void App::CreateChildren() {
 
     ApplyFont();
 
+    // Значки тулбара берём из системного шрифта значков: ровные, «родные» для Windows.
+    {
+        auto tryFace = [&](const wchar_t* face) -> HFONT {
+            LOGFONTW lf{};
+            lf.lfHeight = -MulDiv(12, (int)dpi_, 72);
+            lf.lfWeight = FW_NORMAL;
+            lf.lfCharSet = DEFAULT_CHARSET;
+            lf.lfQuality = CLEARTYPE_QUALITY;
+            wcscpy_s(lf.lfFaceName, face);
+            HFONT font = CreateFontIndirectW(&lf);
+            if (!font) return nullptr;
+
+            HDC dc = CreateCompatibleDC(nullptr);
+            HGDIOBJ old = SelectObject(dc, font);
+            wchar_t actual[LF_FACESIZE]{};
+            GetTextFaceW(dc, LF_FACESIZE, actual);
+            SelectObject(dc, old);
+            DeleteDC(dc);
+            if (_wcsicmp(actual, face) == 0) return font;
+            DeleteObject(font);
+            return nullptr;
+        };
+        iconFont_ = tryFace(L"Segoe Fluent Icons");
+        if (!iconFont_) iconFont_ = tryFace(L"Segoe MDL2 Assets");
+        haveIconFont_ = iconFont_ != nullptr;
+        LogDebug(L"icon font: " + std::wstring(haveIconFont_ ? L"есть" : L"нет"));
+    }
+
     // Приём файлов, перетащенных из Проводника.
     DragAcceptFiles(hwnd_, TRUE);
 
@@ -468,7 +499,7 @@ void App::Layout() {
     HDWP dwp = BeginDeferWindowPos(10 + kToolbarCount);
     if (dwp) {
         int x = 0;
-        int bw = Scale(34, dpi_);
+        int bw = Scale(36, dpi_);
         for (int i = 0; i < kToolbarCount; i++) {
             dwp = DeferWindowPos(dwp, toolbar_[i], nullptr, x, 0, bw, tbH, SWP_NOZORDER);
             x += bw + Scale(2, dpi_);
@@ -805,7 +836,18 @@ void App::DrawFlatButton(DRAWITEMSTRUCT* dis) {
 
     const int id = (int)dis->CtlID;
     if (id >= ID_TB_FIRST && id < ID_TB_FIRST + kToolbarCount) {
-        DrawToolGlyph(dc, rc, kToolbar[id - ID_TB_FIRST].command);
+        const int command = kToolbar[id - ID_TB_FIRST].command;
+        const wchar_t* glyph = haveIconFont_ ? ToolGlyph(command) : nullptr;
+        if (glyph) {
+            SetBkMode(dc, TRANSPARENT);
+            SetTextColor(dc, pressed ? RGB(0, 0, 0) : RGB(45, 45, 45));
+            HGDIOBJ oldFont = SelectObject(dc, iconFont_);
+            RECT tr = rc;
+            DrawTextW(dc, glyph, 1, &tr, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            SelectObject(dc, oldFont);
+        } else {
+            DrawToolGlyph(dc, rc, command);
+        }
         return;
     }
 
@@ -819,6 +861,22 @@ void App::DrawFlatButton(DRAWITEMSTRUCT* dis) {
     InflateRect(&tr, -Scale(3, dpi_), 0);
     DrawTextW(dc, text, -1, &tr, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
     SelectObject(dc, oldFont);
+}
+
+// Код значка в системном шрифте (Segoe MDL2 Assets / Segoe Fluent Icons).
+const wchar_t* App::ToolGlyph(int command) const {
+    switch (command) {
+        case IDM_REFRESH: return L"\uE72C";       // обновить
+        case IDM_NAV_BACK: return L"\uE72B";      // назад
+        case IDM_NAV_FORWARD: return L"\uE72A";   // вперёд
+        case IDM_NAV_UP: return L"\uE74A";        // вверх
+        case IDM_VIEW: return L"\uE890";          // просмотр (глаз)
+        case IDM_SEARCH: return L"\uE721";        // поиск
+        case IDM_TREE: return L"\uEC50";          // дерево каталогов (папка)
+        case IDM_QUEUE: return L"\uE8FD";         // очередь (список)
+        case IDM_PROPERTIES: return L"\uE713";    // свойства (шестерёнка)
+        default: return nullptr;
+    }
 }
 
 // Значки кнопок тулбара — рисуем сами, без внешних картинок.
@@ -1764,11 +1822,11 @@ void App::Dispatch(int id) {
 // ---------- клавиатура ----------
 
 bool App::PreTranslate(const MSG& msg) {
-    // В поле пути Enter/Esc/F4/↓ обрабатывает само поле, а не глобальные команды.
+    // В режиме правки пути клавиши (в том числе Backspace и Delete) идут в поле, а не в панель.
     HWND focusNow = GetFocus();
-    if (focusNow && (focusNow == left_.PathEdit() || focusNow == right_.PathEdit()) &&
-        (msg.message == WM_KEYDOWN || msg.message == WM_SYSKEYDOWN)) {
-        if (msg.wParam == VK_RETURN || msg.wParam == VK_ESCAPE || msg.wParam == VK_F4 || msg.wParam == VK_DOWN) {
+    if (focusNow && (focusNow == left_.PathEdit() || focusNow == right_.PathEdit())) {
+        const bool editing = (focusNow == left_.PathEdit()) ? left_.PathEditing() : right_.PathEditing();
+        if (editing && (msg.message == WM_KEYDOWN || msg.message == WM_SYSKEYDOWN || msg.message == WM_CHAR)) {
             return false;
         }
     }

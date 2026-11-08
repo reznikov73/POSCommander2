@@ -27,6 +27,7 @@ public:
     HWND Hwnd() const { return hwnd_; }
     HWND List() const { return list_; }
     HWND PathEdit() const { return pathEdit_; }
+    bool PathEditing() const { return pathEditing_; }
     void FocusList();
 
     int CursorIndex() const;
@@ -130,9 +131,13 @@ private:
     static LRESULT CALLBACK PathEditProc(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
     static LRESULT CALLBACK ListProc(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
     void ApplyPathText();
+    void EnterPathEdit();
+    void LeavePathEdit(bool restore);
     void ShowPathHistory();
     void ShowPathFavorites();
     void DrawPathButton(DRAWITEMSTRUCT* dis);
+
+    bool pathEditing_ = false;      // поле пути в режиме правки (мигает курсор)
 
     int lastCursor_ = 0;           // прошлая позиция курсора (для Shift+клик)
     bool programmaticCursor_ = false;   // курсор двигаем сами, а не мышью

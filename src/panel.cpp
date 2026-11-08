@@ -90,7 +90,7 @@ bool Panel::Create(HWND parent, int id) {
     brInactive_ = CreateSolidBrush(kInactiveHeaderBg);
 
     pathEdit_ = CreateWindowExW(0, L"EDIT", L"",
-                                WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL,
+                                WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL | ES_READONLY,
                                 0, 0, 10, 10, hwnd_, (HMENU)(INT_PTR)kPathEditId, g_inst, nullptr);
     if (pathEdit_) SetWindowSubclass(pathEdit_, PathEditProc, 1, (DWORD_PTR)this);
 
@@ -726,11 +726,32 @@ void Panel::UpdateVolume() {
 
 void Panel::UpdateHeader() {
     if (!pathEdit_) return;
-    // Пока пользователь редактирует путь, не затираем введённое.
-    if (GetFocus() == pathEdit_) return;
+    // Пока поле в режиме правки, не затираем введённое.
+    if (pathEditing_) return;
     const std::wstring path = DisplayPath();
     if (path.empty()) return;
     SetWindowTextW(pathEdit_, path.c_str());
+}
+
+// Войти в режим правки пути: клик по полю, белый фон, мигающий курсор.
+void Panel::EnterPathEdit() {
+    if (!pathEdit_) return;
+    pathEditing_ = true;
+    SendMessageW(pathEdit_, EM_SETREADONLY, FALSE, 0);
+    SetFocus(pathEdit_);
+    SendMessageW(pathEdit_, EM_SETSEL, 0, -1);
+    InvalidateRect(pathEdit_, nullptr, TRUE);
+    LogDebug(L"path edit: вход в режим правки");
+}
+
+// Выйти из правки: поле снова только показывает путь.
+void Panel::LeavePathEdit(bool restore) {
+    if (!pathEdit_) return;
+    pathEditing_ = false;
+    SendMessageW(pathEdit_, EM_SETREADONLY, TRUE, 0);
+    SendMessageW(pathEdit_, EM_SETSEL, 0, 0);
+    if (restore) UpdateHeader();
+    InvalidateRect(pathEdit_, nullptr, TRUE);
 }
 
 // Перейти по тексту из поля пути (Enter или кнопка ✓).
@@ -747,8 +768,10 @@ void Panel::ApplyPathText() {
     }
     if (!Navigate(text)) {
         MessageBoxW(GetParent(hwnd_), NavigateError().c_str(), L"Переход", MB_ICONERROR);
-        UpdateHeader();
+        LeavePathEdit(true);
+        return;
     }
+    LeavePathEdit(false);
     FocusList();
 }
 
@@ -1672,9 +1695,20 @@ LRESULT CALLBACK Panel::PathEditProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
     auto* self = reinterpret_cast<Panel*>(ref);
     switch (msg) {
         case WM_SETFOCUS:
-            SendMessageW(hwnd, EM_SETSEL, 0, -1);
             if (self) self->SetActive(true);
             return 0;
+
+        case WM_LBUTTONDOWN:
+            // Одиночный клик по полю включает режим правки (как в TC).
+            if (self && !self->PathEditing()) {
+                self->EnterPathEdit();
+                return 0;
+            }
+            break;
+
+        case WM_KILLFOCUS:
+            if (self && self->PathEditing()) self->LeavePathEdit(true);
+            break;
 
         case WM_KEYDOWN:
             if (!self) break;
@@ -1683,7 +1717,7 @@ LRESULT CALLBACK Panel::PathEditProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
                     self->ApplyPathText();
                     return 0;
                 case VK_ESCAPE:
-                    self->UpdateHeader();
+                    self->LeavePathEdit(true);
                     self->FocusList();
                     return 0;
                 case VK_F4:
@@ -1812,16 +1846,22 @@ LRESULT Panel::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             break;
         }
 
-        case WM_CTLCOLOREDIT: {
-            HDC dc = (HDC)wParam;
-            SetBkMode(dc, OPAQUE);
-            SetTextColor(dc, RGB(0, 0, 0));
-            SetBkColor(dc, active_ ? kActiveHeaderBg : kInactiveHeaderBg);
-            return (LRESULT)(active_ ? brActive_ : brInactive_);
-        }
-
+        case WM_CTLCOLOREDIT:
         case WM_CTLCOLORSTATIC: {
             HDC dc = (HDC)wParam;
+            HWND child = (HWND)lParam;
+            if (child == pathEdit_) {
+                SetBkMode(dc, OPAQUE);
+                SetTextColor(dc, RGB(0, 0, 0));
+                if (pathEditing_) {
+                    SetBkColor(dc, RGB(255, 255, 255));
+                    return (LRESULT)GetStockObject(WHITE_BRUSH);
+                }
+                SetBkColor(dc, active_ ? kActiveHeaderBg : kInactiveHeaderBg);
+                return (LRESULT)(active_ ? brActive_ : brInactive_);
+            }
+            if (msg == WM_CTLCOLOREDIT) return (LRESULT)(HBRUSH)(COLOR_WINDOW + 1);
+
             SetBkMode(dc, TRANSPARENT);
             SetTextColor(dc, GetSysColor(COLOR_BTNTEXT));
             return (LRESULT)(HBRUSH)(COLOR_BTNFACE + 1);
