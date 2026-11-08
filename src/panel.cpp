@@ -399,7 +399,7 @@ bool Panel::LoadArchiveListing(const std::wstring& focus) {
     up.name = L"..";
     up.isDir = true;
     up.isUp = true;
-    up.icon = IconForEntry(up);
+    up.icon = IconForEntry(up, path_);
     loaded.push_back(std::move(up));
 
     const std::wstring prefix = archiveInner_.empty() ? L"" : archiveInner_ + L"\\";
@@ -422,7 +422,7 @@ bool Panel::LoadArchiveListing(const std::wstring& focus) {
             en.name = rest;
             en.isDir = e.isDir;
             en.size = e.size.empty() ? 0 : wcstoull(e.size.c_str(), nullptr, 10);
-            en.icon = IconForEntry(en);
+            en.icon = IconForEntry(en, path_);
             loaded.push_back(std::move(en));
         } else {
             const std::wstring dirName = rest.substr(0, slash);
@@ -439,7 +439,7 @@ bool Panel::LoadArchiveListing(const std::wstring& focus) {
             Entry en;
             en.name = dirName;
             en.isDir = true;
-            en.icon = IconForEntry(en);
+            en.icon = IconForEntry(en, path_);
             loaded.push_back(std::move(en));
         }
     }
@@ -517,7 +517,7 @@ bool Panel::Navigate(const std::wstring& dir, const std::wstring& focus, bool ke
         up.name = L"..";
         up.isDir = true;
         up.isUp = true;
-        up.icon = IconForEntry(up);
+        up.icon = IconForEntry(up, path_);
         entries_.insert(entries_.begin(), std::move(up));
     }
 
@@ -830,7 +830,7 @@ void Panel::FillDispInfo(NMLVDISPINFO* info) {
         wcsncpy_s(info->item.pszText, info->item.cchTextMax, text.c_str(), _TRUNCATE);
     }
     if (info->item.mask & LVIF_IMAGE) {
-        info->item.iImage = IconForEntry(e);
+        info->item.iImage = IconForEntry(e, path_);
     }
 }
 
@@ -1158,7 +1158,22 @@ LRESULT Panel::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     if (cd->nmcd.dwDrawStage == CDDS_PREPAINT) return CDRF_NOTIFYITEMDRAW;
                     if (cd->nmcd.dwDrawStage == CDDS_ITEMPREPAINT) {
                         DrawRow(cd);
-                        return CDRF_NEWFONT;
+                        return CDRF_NEWFONT | CDRF_NOTIFYPOSTPAINT;
+                    }
+                    if (cd->nmcd.dwDrawStage == CDDS_ITEMPOSTPAINT) {
+                        // Метка скрытых/системных поверх значка — как в Total Commander.
+                        const int index = (int)cd->nmcd.dwItemSpec;
+                        if (index >= 0 && index < (int)entries_.size() && entries_[index].hidden()) {
+                            RECT rc = cd->nmcd.rc;
+                            const int w = Scale(3, dpi_);
+                            RECT bar{rc.left + Scale(1, dpi_), rc.top + Scale(1, dpi_),
+                                     rc.left + Scale(1, dpi_) + w, rc.bottom - Scale(1, dpi_)};
+                            HDC dc = cd->nmcd.hdc;
+                            HBRUSH brush = CreateSolidBrush(RGB(200, 40, 40));
+                            FillRect(dc, &bar, brush);
+                            DeleteObject(brush);
+                        }
+                        return CDRF_DODEFAULT;
                     }
                     return CDRF_DODEFAULT;
                 }

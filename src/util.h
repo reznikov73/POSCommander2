@@ -71,7 +71,8 @@ bool MatchMask(const std::wstring& name, const std::wstring& mask);
 // Системные значки оболочки: один общий список на всё приложение.
 void InitShellIcons();
 HIMAGELIST ShellSmallImageList();
-int IconForEntry(const Entry& e);
+// dir — каталог панели, нужен для иконок конкретных папок и файлов.
+int IconForEntry(const Entry& e, const std::wstring& dir = L"");
 
 UINT WindowDpi(HWND hwnd);
 // Естественная сортировка: "файл2" раньше "файл10".

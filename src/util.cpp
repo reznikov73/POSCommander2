@@ -1,6 +1,8 @@
 // Реализация утилит: пути, форматирование, перечисление каталогов, иконки.
 #include "util.h"
 
+#include <cstring>
+
 #include <cstdio>
 #include <cwchar>
 
@@ -339,41 +341,152 @@ std::wstring VolumeSummary(const std::wstring& path) {
 
 // ---------- иконки оболочки ----------
 
-static HIMAGELIST g_smallIcons = nullptr;
-static int g_iconFolder = 0;
-static int g_iconFile = 0;
-static std::map<std::wstring, int> g_extIcons;
+static HIMAGELIST g_images = nullptr;          // наш список: сюда можно добавлять свои значки
+static int g_iconFolder = -1;
+static int g_iconFile = -1;
+static int g_iconUp = -1;
+static std::map<std::wstring, int> g_iconCache;
+static const size_t kIconCacheLimit = 3000;
 
-void InitShellIcons() {
-    SHFILEINFOW fi{};
-    g_smallIcons = (HIMAGELIST)SHGetFileInfoW(L"C:\\", FILE_ATTRIBUTE_DIRECTORY, &fi, sizeof(fi),
-                                              SHGFI_SYSICONINDEX | SHGFI_SMALLICON | SHGFI_USEFILEATTRIBUTES);
-    g_iconFolder = fi.iIcon;
+// Стрелка «вверх» для строки «..» — рисуем сами, как в Total Commander.
+HICON MakeUpArrowIcon(int size) {
+    BITMAPV5HEADER bi{};
+    bi.bV5Size = sizeof(bi);
+    bi.bV5Width = size;
+    bi.bV5Height = -size;                 // сверху вниз
+    bi.bV5Planes = 1;
+    bi.bV5BitCount = 32;
+    bi.bV5Compression = BI_BITFIELDS;
+    bi.bV5RedMask = 0x00FF0000;
+    bi.bV5GreenMask = 0x0000FF00;
+    bi.bV5BlueMask = 0x000000FF;
+    bi.bV5AlphaMask = 0xFF000000;
 
-    SHFILEINFOW ff{};
-    if (SHGetFileInfoW(L"file.txt", FILE_ATTRIBUTE_NORMAL, &ff, sizeof(ff),
-                       SHGFI_SYSICONINDEX | SHGFI_SMALLICON | SHGFI_USEFILEATTRIBUTES)) {
-        g_iconFile = ff.iIcon;
+    HDC screen = GetDC(nullptr);
+    void* bits = nullptr;
+    HBITMAP color = CreateDIBSection(screen, reinterpret_cast<BITMAPINFO*>(&bi), DIB_RGB_COLORS, &bits, nullptr, 0);
+    HBITMAP mask = CreateBitmap(size, size, 1, 1, nullptr);
+    HICON icon = nullptr;
+
+    if (color && bits && mask) {
+        DWORD* px = reinterpret_cast<DWORD*>(bits);
+        std::memset(px, 0, (size_t)size * size * 4);
+
+        // Простая стрелка: древко внизу по центру и треугольник сверху.
+        const int cx = size / 2;
+        const int headH = size / 2;
+        const DWORD solid = 0xFF000000;     // чёрная, непрозрачная
+
+        for (int y = 0; y < size; ++y) {
+            for (int x = 0; x < size; ++x) {
+                bool fill = false;
+
+                // треугольник-наконечник
+                if (y < headH) {
+                    const int spread = (y * cx) / (headH > 0 ? headH : 1);
+                    if (x >= cx - spread && x <= cx + spread) fill = true;
+                }
+                // древко
+                const int shaftW = size >= 16 ? 2 : 1;
+                if (y >= headH && x >= cx - shaftW && x <= cx + shaftW) fill = true;
+
+                if (fill) px[(size_t)y * size + x] = solid;
+            }
+        }
+
+        ICONINFO ii{};
+        ii.fIcon = TRUE;
+        ii.hbmMask = mask;
+        ii.hbmColor = color;
+        icon = CreateIconIndirect(&ii);
     }
+
+    if (color) DeleteObject(color);
+    if (mask) DeleteObject(mask);
+    ReleaseDC(nullptr, screen);
+    return icon;
 }
 
-HIMAGELIST ShellSmallImageList() { return g_smallIcons; }
+// Добавляет значок в наш список и возвращает его индекс.
+int AddIcon(HICON icon) {
+    if (!g_images || !icon) return 0;
+    const int index = ImageList_AddIcon(g_images, icon);
+    DestroyIcon(icon);
+    return index >= 0 ? index : 0;
+}
 
-int IconForEntry(const Entry& e) {
-    if (e.icon >= 0) return e.icon;
-    if (e.isDir) return g_iconFolder;
-    std::wstring ext = Lower(e.ext());
-    auto it = g_extIcons.find(ext);
-    if (it != g_extIcons.end()) return it->second;
-
-    std::wstring probe = L"file" + ext;
+// Значок по пути: SHGFI_ICON даёт «живую» иконку, включая спецпапки и exe.
+int IconFromPath(const std::wstring& path, DWORD attrs, bool useFileAttrs, UINT extraFlags = 0) {
     SHFILEINFOW fi{};
-    int index = g_iconFile;
-    if (SHGetFileInfoW(probe.c_str(), FILE_ATTRIBUTE_NORMAL, &fi, sizeof(fi),
-                       SHGFI_SYSICONINDEX | SHGFI_SMALLICON | SHGFI_USEFILEATTRIBUTES)) {
-        index = fi.iIcon;
+    UINT flags = SHGFI_ICON | SHGFI_SMALLICON | extraFlags;
+    if (useFileAttrs) flags |= SHGFI_USEFILEATTRIBUTES;
+    if (!SHGetFileInfoW(path.c_str(), attrs, &fi, sizeof(fi), flags)) return -1;
+    return AddIcon(fi.hIcon);
+}
+
+void InitShellIcons() {
+    if (g_images) return;
+
+    const int size = 16;
+    g_images = ImageList_Create(size, size, ILC_COLOR32 | ILC_MASK, 64, 256);
+
+    g_iconUp = AddIcon(MakeUpArrowIcon(size));
+    g_iconFolder = IconFromPath(L"C:\\", FILE_ATTRIBUTE_DIRECTORY, true);
+    g_iconFile = IconFromPath(L"file.txt", FILE_ATTRIBUTE_NORMAL, true);
+    if (g_iconFolder < 0) g_iconFolder = 0;
+    if (g_iconFile < 0) g_iconFile = 0;
+}
+
+HIMAGELIST ShellSmallImageList() {
+    InitShellIcons();
+    return g_images;
+}
+
+// Кэш с ограничением: на огромных каталогах не растём бесконечно.
+int CachedIcon(const std::wstring& key, const std::wstring& path, DWORD attrs, bool useFileAttrs, UINT extra = 0) {
+    auto it = g_iconCache.find(key);
+    if (it != g_iconCache.end()) return it->second;
+
+    int index = IconFromPath(path, attrs, useFileAttrs, extra);
+    if (index < 0) return -1;
+
+    if (g_iconCache.size() >= kIconCacheLimit) g_iconCache.clear();
+    g_iconCache[key] = index;
+    return index;
+}
+
+int IconForEntry(const Entry& e, const std::wstring& dir) {
+    InitShellIcons();
+
+    // «..» — отдельная стрелка, как в TC.
+    if (e.isUp) return g_iconUp >= 0 ? g_iconUp : g_iconFolder;
+
+    const std::wstring full = dir.empty() ? e.name : JoinPath(dir, e.name);
+
+    if (e.isDir) {
+        // Иконка конкретной папки: Корзина, Загрузки, Рабочий стол и прочие узнаваемые.
+        const int byPath = CachedIcon(L"p:" + full, full, FILE_ATTRIBUTE_DIRECTORY, false);
+        if (byPath >= 0) return byPath;
+        return g_iconFolder;
     }
-    g_extIcons[ext] = index;
+
+    const std::wstring ext = Lower(e.ext());
+
+    // Для exe/lnk/ico/msi значок берём из самого файла, а не по расширению.
+    if (ext == L".exe" || ext == L".lnk" || ext == L".ico" || ext == L".msi" || ext == L".com" ||
+        ext == L".bat" || ext == L".cmd") {
+        const UINT extra = (ext == L".lnk") ? SHGFI_LINKOVERLAY : 0;
+        const int byPath = CachedIcon(L"f:" + full, full, FILE_ATTRIBUTE_NORMAL, false, extra);
+        if (byPath >= 0) return byPath;
+    }
+
+    auto it = g_iconCache.find(L"e:" + ext);
+    if (it != g_iconCache.end()) return it->second;
+
+    const int byExt = IconFromPath(L"file" + ext, FILE_ATTRIBUTE_NORMAL, true);
+    const int index = byExt >= 0 ? byExt : g_iconFile;
+    if (g_iconCache.size() >= kIconCacheLimit) g_iconCache.clear();
+    g_iconCache[L"e:" + ext] = index;
     return index;
 }
 
