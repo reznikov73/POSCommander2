@@ -6,6 +6,7 @@
 #include "ops.h"
 #include "selftest.h"
 #include "settings.h"
+#include "search.h"
 
 #include <windowsx.h>
 
@@ -734,7 +735,8 @@ void App::Dispatch(int id) {
 // ---------- клавиатура ----------
 
 bool App::PreTranslate(const MSG& msg) {
-    if (msg.message != WM_KEYDOWN) return false;
+    // Alt+клавиша приходит как WM_SYSKEYDOWN, обычная — как WM_KEYDOWN.
+    if (msg.message != WM_KEYDOWN && msg.message != WM_SYSKEYDOWN) return false;
     LogDebug(L"vk=" + std::to_wstring(msg.wParam));
     HWND focus = GetFocus();
     bool inLeftList = focus && focus == left_.List();
@@ -775,6 +777,27 @@ bool App::PreTranslate(const MSG& msg) {
         ShowDrivesMenu(1);
         return true;
     }
+    if (alt && msg.wParam == VK_RETURN) {
+        Dispatch(IDM_PROPERTIES);
+        return true;
+    }
+    if (alt && msg.wParam == VK_F7) {
+        // Поиск файлов: Alt+F7 открывает окно, найденный файл показываем в активной панели.
+        std::wstring found = SearchDialog(hwnd_, ActivePanel()->Path());
+        LogDebug(L"search chosen='" + found + L"'");
+        if (!found.empty()) {
+            size_t slash = found.find_last_of(L'\\');
+            if (slash != std::wstring::npos) {
+                std::wstring dir = found.substr(0, slash);
+                std::wstring name = found.substr(slash + 1);
+                if (ActivePanel()->Navigate(dir, name)) ActivePanel()->FocusList();
+            }
+        }
+        return true;
+    }
+
+    // Прочие Alt+... отдаём системе (Alt+F4 закроет окно, Alt+Tab переключит задачу).
+    if (alt) return false;
 
     switch (msg.wParam) {
         case VK_F3:
