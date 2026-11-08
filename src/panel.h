@@ -26,6 +26,7 @@ public:
     std::wstring NavigateError() const { return lastError_; }
     HWND Hwnd() const { return hwnd_; }
     HWND List() const { return list_; }
+    HWND PathEdit() const { return pathEdit_; }
     void FocusList();
 
     int CursorIndex() const;
@@ -42,6 +43,8 @@ public:
     void InvertMarks();
     // Режим: 0 — отметить, 1 — снять, 2 — инвертировать (Num + / - / *).
     size_t MarkByMask(const std::wstring& maskText, int mode);
+    void MarkRange(int from, int to);
+    void ToggleMarkAt(int index);
     void ClearMarks();
 
     // Сохранение/восстановление состояния панели для настроек.
@@ -124,13 +127,22 @@ private:
     void UpdateColumns(int width);
     void UpdateSortArrows();
     void SaveColumnWidths();
-    static LRESULT CALLBACK HeaderProc(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
-    void OnHeaderClick(int x);
-    void OnHeaderDblClick();
+    static LRESULT CALLBACK PathEditProc(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
+    static LRESULT CALLBACK ListProc(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
+    void ApplyPathText();
+    void ShowPathHistory();
+    void ShowPathFavorites();
+    void DrawPathButton(DRAWITEMSTRUCT* dis);
 
-    std::wstring headerClickPath_;
-    DWORD headerClickTick_ = 0;
-    int headerClickX_ = -1;
+    int lastCursor_ = 0;           // прошлая позиция курсора (для Shift+клик)
+    bool programmaticCursor_ = false;   // курсор двигаем сами, а не мышью
+    bool clickShift_ = false;      // Shift был зажат в момент клика
+    bool clickCtrl_ = false;       // Ctrl был зажат в момент клика
+
+    HWND pathEdit_ = nullptr;      // редактируемое поле пути
+    HWND pathApply_ = nullptr;     // ✓ — перейти по введённому пути
+    HWND pathFav_ = nullptr;       // ★ — избранные каталоги
+    HWND pathHist_ = nullptr;      // ▼ — история каталогов
 
     void DrawRowName(NMLVCUSTOMDRAW* cd);
     void DrawRow(NMLVCUSTOMDRAW* cd);

@@ -14,6 +14,9 @@
 #include <windowsx.h>
 #include <winnetwk.h>
 
+#include <commctrl.h>
+
+#include <cmath>
 #include <cstdio>
 
 HINSTANCE g_inst = nullptr;
@@ -176,6 +179,7 @@ private:
     void RebuildDriveBars();
     void ToggleQuickView();
     void DrawFlatButton(DRAWITEMSTRUCT* dis);
+    void DrawToolGlyph(HDC dc, const RECT& rc, int command);
     void UpdateFKeyLabels(int kind);
     int FKeyCommand(int index, int kind) const;
     void RefreshQuickView();
@@ -188,6 +192,7 @@ private:
     HWND label_ = nullptr;
     HWND prompt_ = nullptr;
     HWND fkeys_[kFKeyCount]{};
+    HWND tip_ = nullptr;                // подсказки кнопок тулбара
     HWND quickView_ = nullptr;          // Ctrl+Q: просмотр на неактивной панели
     int quickViewSide_ = -1;
     HWND toolbar_[kToolbarCount]{};
@@ -343,7 +348,7 @@ void App::CreateChildren() {
                               0, 0, 10, 10, hwnd_, (HMENU)(INT_PTR)ID_PROMPT, g_inst, nullptr);
 
     for (int i = 0; i < kToolbarCount; i++) {
-        toolbar_[i] = CreateWindowExW(0, L"BUTTON", kToolbar[i].text,
+        toolbar_[i] = CreateWindowExW(0, L"BUTTON", L"",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, 0, 0, 10, 10,
                                       hwnd_, (HMENU)(INT_PTR)(ID_TB_FIRST + i), g_inst, nullptr);
     }
@@ -352,6 +357,22 @@ void App::CreateChildren() {
         fkeys_[i] = CreateWindowExW(0, L"BUTTON", kFKeys[i].text,
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, 0, 0, 10, 10,
                                     hwnd_, (HMENU)(INT_PTR)(ID_FKEY_FIRST + i), g_inst, nullptr);
+    }
+
+    // Подсказки к иконкам тулбара: сами кнопки без подписей.
+    tip_ = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, nullptr,
+                           WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX, CW_USEDEFAULT, CW_USEDEFAULT,
+                           CW_USEDEFAULT, CW_USEDEFAULT, hwnd_, nullptr, g_inst, nullptr);
+    if (tip_) {
+        for (int i = 0; i < kToolbarCount; i++) {
+            TOOLINFOW ti{};
+            ti.cbSize = sizeof(ti);
+            ti.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
+            ti.hwnd = hwnd_;
+            ti.uId = (UINT_PTR)toolbar_[i];
+            ti.lpszText = (LPWSTR)kToolbar[i].text;
+            SendMessageW(tip_, TTM_ADDTOOLW, 0, (LPARAM)&ti);
+        }
     }
 
     ApplyFont();
@@ -447,7 +468,7 @@ void App::Layout() {
     HDWP dwp = BeginDeferWindowPos(10 + kToolbarCount);
     if (dwp) {
         int x = 0;
-        int bw = Scale(96, dpi_);
+        int bw = Scale(34, dpi_);
         for (int i = 0; i < kToolbarCount; i++) {
             dwp = DeferWindowPos(dwp, toolbar_[i], nullptr, x, 0, bw, tbH, SWP_NOZORDER);
             x += bw + Scale(2, dpi_);
@@ -782,6 +803,12 @@ void App::DrawFlatButton(DRAWITEMSTRUCT* dis) {
 
     if (pressed) DrawEdge(dc, &rc, BDR_SUNKENOUTER, BF_RECT);
 
+    const int id = (int)dis->CtlID;
+    if (id >= ID_TB_FIRST && id < ID_TB_FIRST + kToolbarCount) {
+        DrawToolGlyph(dc, rc, kToolbar[id - ID_TB_FIRST].command);
+        return;
+    }
+
     wchar_t text[160]{};
     GetWindowTextW(dis->hwndItem, text, 160);
 
@@ -792,6 +819,116 @@ void App::DrawFlatButton(DRAWITEMSTRUCT* dis) {
     InflateRect(&tr, -Scale(3, dpi_), 0);
     DrawTextW(dc, text, -1, &tr, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
     SelectObject(dc, oldFont);
+}
+
+// Значки кнопок тулбара — рисуем сами, без внешних картинок.
+void App::DrawToolGlyph(HDC dc, const RECT& rc, int command) {
+    const int cx = (rc.left + rc.right) / 2;
+    const int cy = (rc.top + rc.bottom) / 2;
+    const int s = Scale(6, dpi_);
+    const int w = Scale(2, dpi_);
+    const COLORREF ink = RGB(45, 45, 45);
+
+    HPEN pen = CreatePen(PS_SOLID, w, ink);
+    HGDIOBJ oldPen = SelectObject(dc, pen);
+    HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
+
+    switch (command) {
+        case IDM_REFRESH: {                       // круговая стрелка
+            Arc(dc, cx - s, cy - s, cx + s, cy + s, cx + s, cy, cx, cy - s);
+            MoveToEx(dc, cx + s, cy, nullptr);
+            LineTo(dc, cx + s - Scale(4, dpi_), cy - Scale(2, dpi_));
+            MoveToEx(dc, cx + s, cy, nullptr);
+            LineTo(dc, cx + s - Scale(4, dpi_), cy + Scale(2, dpi_));
+            break;
+        }
+        case IDM_NAV_BACK:                        // стрелка влево
+            MoveToEx(dc, cx + s, cy, nullptr);
+            LineTo(dc, cx - s, cy);
+            MoveToEx(dc, cx - s, cy, nullptr);
+            LineTo(dc, cx - s + Scale(4, dpi_), cy - Scale(3, dpi_));
+            MoveToEx(dc, cx - s, cy, nullptr);
+            LineTo(dc, cx - s + Scale(4, dpi_), cy + Scale(3, dpi_));
+            break;
+        case IDM_NAV_FORWARD:                     // стрелка вправо
+            MoveToEx(dc, cx - s, cy, nullptr);
+            LineTo(dc, cx + s, cy);
+            MoveToEx(dc, cx + s, cy, nullptr);
+            LineTo(dc, cx + s - Scale(4, dpi_), cy - Scale(3, dpi_));
+            MoveToEx(dc, cx + s, cy, nullptr);
+            LineTo(dc, cx + s - Scale(4, dpi_), cy + Scale(3, dpi_));
+            break;
+        case IDM_NAV_UP:                          // стрелка вверх
+            MoveToEx(dc, cx, cy + s, nullptr);
+            LineTo(dc, cx, cy - s);
+            MoveToEx(dc, cx, cy - s, nullptr);
+            LineTo(dc, cx - Scale(3, dpi_), cy - s + Scale(4, dpi_));
+            MoveToEx(dc, cx, cy - s, nullptr);
+            LineTo(dc, cx + Scale(3, dpi_), cy - s + Scale(4, dpi_));
+            break;
+        case IDM_VIEW: {                          // «глаз»
+            Arc(dc, cx - s, cy - s + Scale(1, dpi_), cx + s, cy + s, cx + s, cy, cx - s, cy);
+            Arc(dc, cx - s, cy - s + Scale(1, dpi_), cx + s, cy + s, cx - s, cy, cx + s, cy);
+            HBRUSH pupil = CreateSolidBrush(ink);
+            HGDIOBJ ob = SelectObject(dc, pupil);
+            Ellipse(dc, cx - Scale(2, dpi_), cy - Scale(2, dpi_), cx + Scale(2, dpi_), cy + Scale(2, dpi_));
+            SelectObject(dc, ob);
+            DeleteObject(pupil);
+            break;
+        }
+        case IDM_SEARCH: {                        // лупа
+            const int r = Scale(4, dpi_);
+            Ellipse(dc, cx - r, cy - r, cx + r, cy + r);
+            MoveToEx(dc, cx + Scale(3, dpi_), cy + Scale(3, dpi_), nullptr);
+            LineTo(dc, cx + s, cy + s);
+            break;
+        }
+        case IDM_TREE: {                          // дерево каталогов
+            const int r = Scale(3, dpi_);
+            Rectangle(dc, cx - s, cy - s, cx - s + r * 2, cy - s + r);
+            MoveToEx(dc, cx - s + r, cy - s + r, nullptr);
+            LineTo(dc, cx - s + r, cy + s - Scale(2, dpi_));
+            MoveToEx(dc, cx - s + r, cy + s - Scale(2, dpi_), nullptr);
+            LineTo(dc, cx + s, cy + s - Scale(2, dpi_));
+            MoveToEx(dc, cx - s + r, cy + Scale(1, dpi_), nullptr);
+            LineTo(dc, cx + s - Scale(1, dpi_), cy + Scale(1, dpi_));
+            break;
+        }
+        case IDM_QUEUE: {                         // список с точками
+            for (int i = -1; i <= 1; ++i) {
+                const int y = cy + i * Scale(4, dpi_);
+                HBRUSH dot = CreateSolidBrush(ink);
+                HGDIOBJ ob = SelectObject(dc, dot);
+                Ellipse(dc, cx - s, y - Scale(1, dpi_), cx - s + Scale(2, dpi_), y + Scale(1, dpi_));
+                SelectObject(dc, ob);
+                DeleteObject(dot);
+                MoveToEx(dc, cx - s + Scale(4, dpi_), y, nullptr);
+                LineTo(dc, cx + s, y);
+            }
+            break;
+        }
+        case IDM_PROPERTIES: {                    // шестерёнка
+            const int r = Scale(4, dpi_);
+            Ellipse(dc, cx - r, cy - r, cx + r, cy + r);
+            for (int i = 0; i < 8; ++i) {
+                static const double kPi = 3.14159265358979;
+                const double a = i * kPi / 4.0;
+                const int x1 = cx + (int)(r * cos(a));
+                const int y1 = cy + (int)(r * sin(a));
+                const int x2 = cx + (int)((r + Scale(3, dpi_)) * cos(a));
+                const int y2 = cy + (int)((r + Scale(3, dpi_)) * sin(a));
+                MoveToEx(dc, x1, y1, nullptr);
+                LineTo(dc, x2, y2);
+            }
+            break;
+        }
+        default:
+            break;
+    }
+
+    SelectObject(dc, oldBrush);
+    SelectObject(dc, oldPen);
+    DeleteObject(pen);
 }
 
 // Подписи под ряд F-клавиш меняются при нажатом Shift/Ctrl/Alt.
@@ -1627,6 +1764,15 @@ void App::Dispatch(int id) {
 // ---------- клавиатура ----------
 
 bool App::PreTranslate(const MSG& msg) {
+    // В поле пути Enter/Esc/F4/↓ обрабатывает само поле, а не глобальные команды.
+    HWND focusNow = GetFocus();
+    if (focusNow && (focusNow == left_.PathEdit() || focusNow == right_.PathEdit()) &&
+        (msg.message == WM_KEYDOWN || msg.message == WM_SYSKEYDOWN)) {
+        if (msg.wParam == VK_RETURN || msg.wParam == VK_ESCAPE || msg.wParam == VK_F4 || msg.wParam == VK_DOWN) {
+            return false;
+        }
+    }
+
     // Подписи F-клавиш: Shift/Ctrl/Alt меняют надписи, как в TC.
     if (msg.message == WM_KEYDOWN || msg.message == WM_KEYUP || msg.message == WM_SYSKEYDOWN ||
         msg.message == WM_SYSKEYUP) {

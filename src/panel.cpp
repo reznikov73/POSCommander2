@@ -15,7 +15,10 @@
 
 namespace {
 const wchar_t* kPanelClass = L"POSPanel2";
-const int kHeaderId = 1;
+const int kPathEditId = 1;     // поле пути
+const int kPathApplyId = 3;    // ✓ перейти
+const int kPathFavId = 4;      // ★ избранное
+const int kPathHistId = 5;     // ▼ история
 const int kListId = 2;
 const int kStatusId = 3;
 const int kDriveBase = 100;   // 100..125 — кнопки дисков
@@ -86,14 +89,22 @@ bool Panel::Create(HWND parent, int id) {
     brActive_ = CreateSolidBrush(kActiveHeaderBg);
     brInactive_ = CreateSolidBrush(kInactiveHeaderBg);
 
-    header_ = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE | SS_LEFT | SS_NOTIFY,
-                              0, 0, 10, 10, hwnd_, (HMENU)(INT_PTR)kHeaderId, g_inst, nullptr);
-    if (header_) SetWindowSubclass(header_, HeaderProc, 1, (DWORD_PTR)this);
+    pathEdit_ = CreateWindowExW(0, L"EDIT", L"",
+                                WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL,
+                                0, 0, 10, 10, hwnd_, (HMENU)(INT_PTR)kPathEditId, g_inst, nullptr);
+    if (pathEdit_) SetWindowSubclass(pathEdit_, PathEditProc, 1, (DWORD_PTR)this);
+
+    const DWORD pathBtn = WS_CHILD | WS_VISIBLE | BS_OWNERDRAW;
+    pathApply_ = CreateWindowExW(0, L"BUTTON", L"✓", pathBtn, 0, 0, 10, 10, hwnd_, (HMENU)(INT_PTR)kPathApplyId, g_inst, nullptr);
+    pathFav_ = CreateWindowExW(0, L"BUTTON", L"★", pathBtn, 0, 0, 10, 10, hwnd_, (HMENU)(INT_PTR)kPathFavId, g_inst, nullptr);
+    pathHist_ = CreateWindowExW(0, L"BUTTON", L"▼", pathBtn, 0, 0, 10, 10, hwnd_, (HMENU)(INT_PTR)kPathHistId, g_inst, nullptr);
 
     list_ = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
                             WS_CHILD | WS_VISIBLE | WS_TABSTOP | LVS_REPORT | LVS_OWNERDATA |
                                 LVS_SINGLESEL | LVS_SHOWSELALWAYS,   // без LVS_NOSORTHEADER: клик по заголовку сортирует
                             0, 0, 10, 10, hwnd_, (HMENU)(INT_PTR)kListId, g_inst, nullptr);
+
+    SetWindowSubclass(list_, ListProc, 3, (DWORD_PTR)this);
 
     ListView_SetExtendedListViewStyle(list_, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_LABELTIP);
     ListView_SetImageList(list_, ShellSmallImageList(), LVSIL_SMALL);
@@ -550,7 +561,10 @@ void Panel::NextTab() {
 void Panel::SetFont(HFONT font, UINT dpi) {
     font_ = font;
     dpi_ = dpi;
-    if (header_) SendMessageW(header_, WM_SETFONT, (WPARAM)font, TRUE);
+    if (pathEdit_) SendMessageW(pathEdit_, WM_SETFONT, (WPARAM)font, TRUE);
+    if (pathApply_) SendMessageW(pathApply_, WM_SETFONT, (WPARAM)font, TRUE);
+    if (pathFav_) SendMessageW(pathFav_, WM_SETFONT, (WPARAM)font, TRUE);
+    if (pathHist_) SendMessageW(pathHist_, WM_SETFONT, (WPARAM)font, TRUE);
     if (list_) SendMessageW(list_, WM_SETFONT, (WPARAM)font, TRUE);
     if (status_) SendMessageW(status_, WM_SETFONT, (WPARAM)font, TRUE);
     if (volume_) SendMessageW(volume_, WM_SETFONT, (WPARAM)font, TRUE);
@@ -624,7 +638,12 @@ void Panel::Layout() {
         }
     }
 
-    if (dwp) dwp = DeferWindowPos(dwp, header_, nullptr, 0, y, width, headerH, SWP_NOZORDER);
+    const int pbtn = Scale(22, dpi_);
+    const int editW = width - pbtn * 3 - Scale(6, dpi_);
+    if (dwp) dwp = DeferWindowPos(dwp, pathEdit_, nullptr, 0, y + 1, editW, headerH - 2, SWP_NOZORDER);
+    if (dwp) dwp = DeferWindowPos(dwp, pathApply_, nullptr, editW + Scale(2, dpi_), y + 1, pbtn, headerH - 2, SWP_NOZORDER);
+    if (dwp) dwp = DeferWindowPos(dwp, pathFav_, nullptr, editW + pbtn + Scale(2, dpi_), y + 1, pbtn, headerH - 2, SWP_NOZORDER);
+    if (dwp) dwp = DeferWindowPos(dwp, pathHist_, nullptr, editW + pbtn * 2 + Scale(2, dpi_), y + 1, pbtn, headerH - 2, SWP_NOZORDER);
     if (dwp) dwp = DeferWindowPos(dwp, list_, nullptr, listX, y + headerH, listW, listH, SWP_NOZORDER);
     if (dwp) dwp = DeferWindowPos(dwp, status_, nullptr, 0, y + headerH + listH, width, statusH, SWP_NOZORDER);
     if (dwp) EndDeferWindowPos(dwp);
@@ -706,52 +725,158 @@ void Panel::UpdateVolume() {
 }
 
 void Panel::UpdateHeader() {
-    if (!header_) return;
+    if (!pathEdit_) return;
+    // Пока пользователь редактирует путь, не затираем введённое.
+    if (GetFocus() == pathEdit_) return;
+    const std::wstring path = DisplayPath();
+    if (path.empty()) return;
+    SetWindowTextW(pathEdit_, path.c_str());
+}
 
-    std::wstring full = DisplayPath();
-    if (!full.empty() && full.back() != L'\\') full.push_back(L'\\');
-    full += L"*.*";
+// Перейти по тексту из поля пути (Enter или кнопка ✓).
+void Panel::ApplyPathText() {
+    if (!pathEdit_) return;
+    const int len = GetWindowTextLengthW(pathEdit_);
+    std::wstring text;
+    text.resize(len);
+    if (len > 0) GetWindowTextW(pathEdit_, &text[0], len + 1);
+    text = Trim(text);
+    if (text.empty()) {
+        UpdateHeader();
+        return;
+    }
+    if (!Navigate(text)) {
+        MessageBoxW(GetParent(hwnd_), NavigateError().c_str(), L"Переход", MB_ICONERROR);
+        UpdateHeader();
+    }
+    FocusList();
+}
 
-    RECT rc{};
-    GetClientRect(header_, &rc);
-    int avail = (rc.right - rc.left) - Scale(8, dpi_);
+// ▼ — история посещённых каталогов.
+void Panel::ShowPathHistory() {
+    if (history_.empty()) return;
+    HMENU menu = CreatePopupMenu();
+    if (!menu) return;
 
-    std::wstring text = full;
-    if (avail > 0) {
-        HDC dc = GetDC(header_);
-        HGDIOBJ old = SelectObject(dc, font_ ? font_ : GetStockObject(DEFAULT_GUI_FONT));
-        auto widthOf = [&](const std::wstring& s) {
-            SIZE sz{};
-            GetTextExtentPoint32W(dc, s.c_str(), (int)s.size(), &sz);
-            return sz.cx;
-        };
-
-        if (widthOf(text) > avail) {
-            // Отбрасываем ведущие компоненты пути, пока не влезем: "…\VSC\POSCommander2\*.*"
-            std::wstring tail = full;
-            for (int guard = 0; guard < 64; ++guard) {
-                size_t pos = tail.find(L'\\');
-                if (pos == std::wstring::npos) break;
-                tail = tail.substr(pos + 1);
-                std::wstring candidate = L"…\\" + tail;
-                if (widthOf(candidate) <= avail) {
-                    text = candidate;
-                    break;
-                }
-                if (tail.find(L'\\') == std::wstring::npos) break;
-            }
-            if (widthOf(text) > avail) {
-                std::wstring clipped = text;
-                while (clipped.size() > 1 && widthOf(clipped + L"…") > avail) clipped.pop_back();
-                text = clipped + L"…";
-            }
-        }
-        SelectObject(dc, old);
-        ReleaseDC(header_, dc);
+    const int limit = 24;
+    int shown = 0;
+    for (int i = (int)history_.size() - 1; i >= 0 && shown < limit; --i, ++shown) {
+        AppendMenuW(menu, MF_STRING, 100 + shown, history_[i].c_str());
     }
 
-    SetWindowTextW(header_, text.c_str());
-    InvalidateRect(header_, nullptr, TRUE);
+    RECT rc{};
+    GetWindowRect(pathHist_, &rc);
+    const int cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, rc.left, rc.bottom, 0,
+                                   hwnd_, nullptr);
+    DestroyMenu(menu);
+    if (cmd < 100) return;
+
+    const int index = (int)history_.size() - 1 - (cmd - 100);
+    if (index < 0 || index >= (int)history_.size()) return;
+    if (!Navigate(history_[index])) MessageBoxW(GetParent(hwnd_), NavigateError().c_str(), L"Переход", MB_ICONERROR);
+    FocusList();
+}
+
+// ★ — избранные каталоги (закладки) плюс добавление текущего.
+void Panel::ShowPathFavorites() {
+    Settings& st = GetSettings();
+    HMENU menu = CreatePopupMenu();
+    if (!menu) return;
+
+    int shown = 0;
+    for (size_t i = 0; i < st.bookmarks.size(); ++i) {
+        AppendMenuW(menu, MF_STRING, 200 + (int)i, st.bookmarks[i].c_str());
+        ++shown;
+    }
+    if (shown) AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING, 1, L"Добавить текущий каталог");
+
+    RECT rc{};
+    GetWindowRect(pathFav_, &rc);
+    const int cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, rc.left, rc.bottom, 0,
+                                   hwnd_, nullptr);
+    DestroyMenu(menu);
+
+    if (cmd == 1) {
+        if (path_.empty() || inArchive_) return;
+        bool exists = false;
+        for (auto& b : st.bookmarks) {
+            if (SamePath(b, path_)) exists = true;
+        }
+        if (!exists) st.bookmarks.push_back(path_);
+        SaveSettings();
+        return;
+    }
+    if (cmd < 200) return;
+
+    const size_t index = (size_t)(cmd - 200);
+    if (index >= st.bookmarks.size()) return;
+    if (!Navigate(st.bookmarks[index])) MessageBoxW(GetParent(hwnd_), NavigateError().c_str(), L"Переход", MB_ICONERROR);
+    FocusList();
+}
+
+// Кнопки ✓ ★ ▼: плоские, знак рисуем сами.
+void Panel::DrawPathButton(DRAWITEMSTRUCT* dis) {
+    HDC dc = dis->hDC;
+    RECT rc = dis->rcItem;
+    const bool pressed = (dis->itemState & ODS_SELECTED) != 0;
+
+    HBRUSH fill = CreateSolidBrush(pressed ? RGB(200, 198, 192) : GetSysColor(COLOR_BTNFACE));
+    FillRect(dc, &rc, fill);
+    DeleteObject(fill);
+
+    HPEN pen = CreatePen(PS_SOLID, 1, RGB(120, 120, 120));
+    HGDIOBJ oldPen = SelectObject(dc, pen);
+    HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
+    Rectangle(dc, rc.left, rc.top, rc.right, rc.bottom);
+    SelectObject(dc, oldBrush);
+
+    const int cx = (rc.left + rc.right) / 2;
+    const int cy = (rc.top + rc.bottom) / 2;
+    const int s = Scale(4, dpi_);
+
+    switch ((int)dis->CtlID) {
+        case kPathApplyId: {                       // галочка
+            HPEN thick = CreatePen(PS_SOLID, Scale(2, dpi_), RGB(30, 110, 30));
+            HGDIOBJ op = SelectObject(dc, thick);
+            MoveToEx(dc, cx - s, cy, nullptr);
+            LineTo(dc, cx - Scale(1, dpi_), cy + s);
+            LineTo(dc, cx + s, cy - s);
+            SelectObject(dc, op);
+            DeleteObject(thick);
+            break;
+        }
+        case kPathFavId: {                         // звёздочка «*» с лучами
+            HGDIOBJ ob = SelectObject(dc, GetStockObject(NULL_BRUSH));
+            Ellipse(dc, cx - Scale(2, dpi_), cy - Scale(2, dpi_), cx + Scale(2, dpi_), cy + Scale(2, dpi_));
+            for (int i = 0; i < 3; ++i) {
+                const int dy = (i - 1) * Scale(3, dpi_);
+                MoveToEx(dc, cx, cy + dy, nullptr);
+                LineTo(dc, cx, cy + dy);
+            }
+            MoveToEx(dc, cx - s, cy, nullptr);
+            LineTo(dc, cx + s, cy);
+            MoveToEx(dc, cx - s + 1, cy - s + 1, nullptr);
+            LineTo(dc, cx + s - 1, cy + s - 1);
+            MoveToEx(dc, cx - s + 1, cy + s - 1, nullptr);
+            LineTo(dc, cx + s - 1, cy - s + 1);
+            SelectObject(dc, ob);
+            break;
+        }
+        case kPathHistId: {                        // треугольник вниз
+            POINT pts[3] = {{cx - s, cy - s / 2}, {cx + s, cy - s / 2}, {cx, cy + s}};
+            HBRUSH br = CreateSolidBrush(RGB(60, 60, 60));
+            HGDIOBJ ob = SelectObject(dc, br);
+            Polygon(dc, pts, 3);
+            SelectObject(dc, ob);
+            DeleteObject(br);
+            break;
+        }
+        default:
+            break;
+    }
+    SelectObject(dc, oldPen);
+    DeleteObject(pen);
 }
 
 void Panel::FocusList() {
@@ -1113,6 +1238,38 @@ std::vector<std::wstring> Panel::SelectedPaths() const {
 
 void Panel::ToggleMarkCursor() {
     int index = CursorIndex();
+    if (index < 0 || index >= (int)entries_.size()) return;
+    Entry& e = entries_[index];
+    if (e.isUp) return;
+    e.marked = !e.marked;
+    RECT rc{};
+    if (ListView_GetItemRect(list_, index, &rc, LVIR_BOUNDS)) InvalidateRect(list_, &rc, FALSE);
+    UpdateStatus();
+
+    // Как в TC: после отметки курсор переходит на следующую строку.
+    if (index + 1 < (int)entries_.size()) {
+        programmaticCursor_ = true;
+        SetCursorIndex(index + 1);
+        programmaticCursor_ = false;
+        lastCursor_ = index + 1;
+    }
+}
+
+// Отметить диапазон (Shift+клик).
+void Panel::MarkRange(int from, int to) {
+    if (from > to) std::swap(from, to);
+    if (from < 0) from = 0;
+    if (to >= (int)entries_.size()) to = (int)entries_.size() - 1;
+    for (int i = from; i <= to; ++i) {
+        if (entries_[i].isUp) continue;
+        entries_[i].marked = true;
+    }
+    InvalidateRect(list_, nullptr, FALSE);
+    UpdateStatus();
+}
+
+// Переключить отметку одной записи (Ctrl+клик).
+void Panel::ToggleMarkAt(int index) {
     if (index < 0 || index >= (int)entries_.size()) return;
     Entry& e = entries_[index];
     if (e.isUp) return;
@@ -1500,127 +1657,53 @@ void Panel::CalculateDirSize(int index) {
     }).detach();
 }
 
-// Заголовок пути: клик по компоненту — переход, двойной клик — ввод пути (как в TC).
-LRESULT CALLBACK Panel::HeaderProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, UINT_PTR id, DWORD_PTR ref) {
+// Клик по списку: запоминаем, был ли зажат Shift/Ctrl — по ним отмечаем диапазон или одну запись.
+LRESULT CALLBACK Panel::ListProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, UINT_PTR id, DWORD_PTR ref) {
+    auto* self = reinterpret_cast<Panel*>(ref);
+    if (self && msg == WM_LBUTTONDOWN) {
+        self->clickShift_ = (wParam & MK_SHIFT) != 0;
+        self->clickCtrl_ = (wParam & MK_CONTROL) != 0;
+    }
+    return DefSubclassProc(hwnd, msg, wParam, lParam);
+}
+
+// Поле пути: Enter — переход, Esc — отмена, F4/Alt+↓ — история, F-клавиши и стрелки отдаём панели.
+LRESULT CALLBACK Panel::PathEditProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, UINT_PTR id, DWORD_PTR ref) {
     auto* self = reinterpret_cast<Panel*>(ref);
     switch (msg) {
-        case WM_SETCURSOR:
-            SetCursor(LoadCursorW(nullptr, IDC_HAND));
-            return TRUE;
+        case WM_SETFOCUS:
+            SendMessageW(hwnd, EM_SETSEL, 0, -1);
+            if (self) self->SetActive(true);
+            return 0;
 
-        case WM_LBUTTONDOWN: {
+        case WM_KEYDOWN:
             if (!self) break;
-            const int x = GET_X_LPARAM(lParam);
-            const DWORD now = GetTickCount();
-            int dx = x - self->headerClickX_;
-            if (dx < 0) dx = -dx;
-            const bool dbl = self->headerClickX_ >= 0 &&
-                             (int)(now - self->headerClickTick_) <= (int)GetDoubleClickTime() &&
-                             dx <= GetSystemMetrics(SM_CXDOUBLECLK) / 2;
-            self->headerClickTick_ = now;
-            self->headerClickX_ = x;
-            if (dbl) {
-                self->headerClickX_ = -1;
-                self->OnHeaderDblClick();
+            switch (wParam) {
+                case VK_RETURN:
+                    self->ApplyPathText();
+                    return 0;
+                case VK_ESCAPE:
+                    self->UpdateHeader();
+                    self->FocusList();
+                    return 0;
+                case VK_F4:
+                    self->ShowPathHistory();
+                    return 0;
+                case VK_DOWN:
+                    if (GetKeyState(VK_MENU) & 0x8000) {
+                        self->ShowPathHistory();
+                        return 0;
+                    }
+                    break;
+                default:
+                    break;
             }
-            return 0;
-        }
-
-        case WM_LBUTTONUP:
-            if (self) self->OnHeaderClick(GET_X_LPARAM(lParam));
-            return 0;
+            break;
 
         default:
             break;
     }
     return DefSubclassProc(hwnd, msg, wParam, lParam);
-}
-
-void Panel::OnHeaderDblClick() {
-    if (inArchive_) return;
-    std::wstring value = DisplayPath();
-    if (!InputBox(GetParent(header_), L"Переход", L"Путь:", value, true)) return;
-    value = Trim(value);
-    if (value.empty()) return;
-    if (!Navigate(value)) {
-        MessageBoxW(GetParent(header_), NavigateError().c_str(), L"Переход", MB_ICONERROR);
-    }
-}
-
-// Разбивает путь на компоненты: «E:\Work\VSC» → [E:, Work, VSC].
-static std::vector<std::wstring> SplitPathParts(const std::wstring& path) {
-    std::vector<std::wstring> parts;
-    std::wstring acc;
-    for (size_t i = 0; i < path.size(); ++i) {
-        const wchar_t ch = path[i];
-        if (ch == L'\\') {
-            if (!acc.empty()) parts.push_back(acc);
-            acc.clear();
-        } else {
-            acc.push_back(ch);
-        }
-    }
-    if (!acc.empty()) parts.push_back(acc);
-    return parts;
-}
-
-void Panel::OnHeaderClick(int x) {
-    if (inArchive_ || !header_) return;
-
-    // Видимый текст без хвоста «\*.*»
-    std::wstring shownText;
-    {
-        const int len = GetWindowTextLengthW(header_);
-        shownText.resize(len);
-        if (len > 0) GetWindowTextW(header_, &shownText[0], len + 1);
-    }
-    if (const size_t maskPos = shownText.find(L"*.*"); maskPos != std::wstring::npos) {
-        shownText = shownText.substr(0, maskPos);
-    }
-    while (!shownText.empty() && shownText.back() == L'\\') shownText.pop_back();
-    if (shownText.empty()) return;
-
-    const std::vector<std::wstring> real = SplitPathParts(DisplayPath());
-    const std::vector<std::wstring> shown = SplitPathParts(shownText);
-    if (real.empty() || shown.empty()) return;
-
-    // Какая видимая часть под курсором
-    HDC dc = GetDC(header_);
-    HGDIOBJ oldFont = SelectObject(dc, font_ ? font_ : GetStockObject(DEFAULT_GUI_FONT));
-    int left = Scale(4, dpi_);
-    int clicked = -1;
-    for (size_t i = 0; i < shown.size(); ++i) {
-        SIZE partSize{};
-        GetTextExtentPoint32W(dc, shown[i].c_str(), (int)shown[i].size(), &partSize);
-        if (x >= left && x < left + partSize.cx) {
-            clicked = (int)i;
-            break;
-        }
-        left += partSize.cx;
-        SIZE sepSize{};
-        GetTextExtentPoint32W(dc, L"\\", 1, &sepSize);
-        left += sepSize.cx;
-    }
-    SelectObject(dc, oldFont);
-    ReleaseDC(header_, dc);
-    if (clicked < 0) return;
-
-    // Сопоставляем с конца: «…» съедает начало пути
-    int base = (int)real.size() - (int)shown.size();
-    if (base < 0) base = 0;
-    const int index = base + clicked;
-    if (index < 0 || index >= (int)real.size()) return;
-
-    std::wstring target;
-    for (int i = 0; i <= index; ++i) {
-        target += real[i];
-        if (i < index) target += L"\\";
-    }
-    if (index == 0 && real[0].size() == 2 && real[0][1] == L':') target += L"\\";
-
-    if (!Navigate(target)) {
-        MessageBoxW(GetParent(header_), NavigateError().c_str(), L"Переход", MB_ICONERROR);
-    }
 }
 
 LRESULT CALLBACK Panel::ProcStatic(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -1693,12 +1776,28 @@ LRESULT Panel::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     DrawDriveButton(dis);
                     return TRUE;
                 }
+                if (dis->CtlID == kPathApplyId || dis->CtlID == kPathFavId || dis->CtlID == kPathHistId) {
+                    DrawPathButton(dis);
+                    return TRUE;
+                }
             }
             return FALSE;
         }
 
         case WM_COMMAND: {
             int id = LOWORD(wParam);
+            if (id == kPathApplyId) {
+                ApplyPathText();
+                return 0;
+            }
+            if (id == kPathFavId) {
+                ShowPathFavorites();
+                return 0;
+            }
+            if (id == kPathHistId) {
+                ShowPathHistory();
+                return 0;
+            }
             if (id >= kTabBase && id < kTabBase + 32) {
                 ActivateTab(id - kTabBase);
                 FocusList();
@@ -1713,15 +1812,16 @@ LRESULT Panel::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             break;
         }
 
+        case WM_CTLCOLOREDIT: {
+            HDC dc = (HDC)wParam;
+            SetBkMode(dc, OPAQUE);
+            SetTextColor(dc, RGB(0, 0, 0));
+            SetBkColor(dc, active_ ? kActiveHeaderBg : kInactiveHeaderBg);
+            return (LRESULT)(active_ ? brActive_ : brInactive_);
+        }
+
         case WM_CTLCOLORSTATIC: {
             HDC dc = (HDC)wParam;
-            HWND child = (HWND)lParam;
-            if (child == header_) {
-                SetBkMode(dc, OPAQUE);
-                SetTextColor(dc, RGB(0, 0, 0));
-                SetBkColor(dc, active_ ? kActiveHeaderBg : kInactiveHeaderBg);
-                return (LRESULT)(active_ ? brActive_ : brInactive_);
-            }
             SetBkMode(dc, TRANSPARENT);
             SetTextColor(dc, GetSysColor(COLOR_BTNTEXT));
             return (LRESULT)(HBRUSH)(COLOR_BTNFACE + 1);
@@ -1776,7 +1876,18 @@ LRESULT Panel::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 }
 
                 case LVN_ITEMCHANGED: {
-                    // Курсор переехал — обновляем строку состояния и быстрый просмотр.
+                    // Клик с Shift отмечает диапазон, с Ctrl — переключает отметку одной записи (как в TC).
+                    auto info = reinterpret_cast<NMLISTVIEW*>(lParam);
+                    if ((info->uChanged & LVIF_STATE) && (info->uNewState & LVIS_SELECTED) &&
+                        !(info->uOldState & LVIS_SELECTED)) {
+                        if (!programmaticCursor_ && clickShift_ && lastCursor_ >= 0 && lastCursor_ != info->iItem) {
+                            MarkRange(lastCursor_, info->iItem);
+                        } else if (!programmaticCursor_ && clickCtrl_) {
+                            ToggleMarkAt(info->iItem);
+                        }
+                        clickShift_ = clickCtrl_ = false;
+                        lastCursor_ = info->iItem;
+                    }
                     UpdateStatus();
                     PostMessageW(GetParent(hwnd_), WM_APP + 301, (WPARAM)side_, 0);
                     return 0;
