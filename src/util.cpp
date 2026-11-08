@@ -548,26 +548,88 @@ int AddIcon(HICON icon) {
     return index >= 0 ? index : 0;
 }
 
-// Значок по пути: SHGFI_ICON даёт «живую» иконку, включая спецпапки и exe.
-int IconFromPath(const std::wstring& path, DWORD attrs, bool useFileAttrs, UINT extraFlags = 0) {
+// Системный значок (HICON) по пути; вызывающий отвечает за DestroyIcon.
+HICON ShellIcon(const std::wstring& path, DWORD attrs, bool useFileAttrs, UINT extraFlags = 0) {
     SHFILEINFOW fi{};
     UINT flags = SHGFI_ICON | SHGFI_SMALLICON | extraFlags;
     if (useFileAttrs) flags |= SHGFI_USEFILEATTRIBUTES;
-    if (!SHGetFileInfoW(path.c_str(), attrs, &fi, sizeof(fi), flags)) return -1;
-    return AddIcon(fi.hIcon);
+    if (!SHGetFileInfoW(path.c_str(), attrs, &fi, sizeof(fi), flags)) return nullptr;
+    return fi.hIcon;
+}
+
+// Значок по пути: SHGFI_ICON даёт «живую» иконку, включая спецпапки и exe.
+int IconFromPath(const std::wstring& path, DWORD attrs, bool useFileAttrs, UINT extraFlags = 0) {
+    HICON icon = ShellIcon(path, attrs, useFileAttrs, extraFlags);
+    if (!icon) return -1;
+    return AddIcon(icon);
+}
+
+// Копия системного значка с красной меткой «скрытый». nullptr, если формат не подходит.
+HICON MarkHiddenCopy(HICON src, int size) {
+    if (!src) return nullptr;
+    ICONINFO ii{};
+    if (!GetIconInfo(src, &ii)) return nullptr;
+
+    HICON result = nullptr;
+    BITMAP bm{};
+    if (ii.hbmColor && GetObjectW(ii.hbmColor, sizeof(bm), &bm) && bm.bmWidth == size &&
+        bm.bmHeight == size && bm.bmBitsPixel == 32) {
+        PixelCanvas c(size);
+        BITMAPINFO bi{};
+        bi.bmiHeader.biSize = sizeof(bi.bmiHeader);
+        bi.bmiHeader.biWidth = size;
+        bi.bmiHeader.biHeight = -size;
+        bi.bmiHeader.biPlanes = 1;
+        bi.bmiHeader.biBitCount = 32;
+        bi.bmiHeader.biCompression = BI_RGB;
+        HDC dc = GetDC(nullptr);
+        const int lines = GetDIBits(dc, ii.hbmColor, 0, size, c.px.data(), &bi, DIB_RGB_COLORS);
+        ReleaseDC(nullptr, dc);
+
+        bool hasAlpha = false;
+        for (DWORD p : c.px) {
+            if (p >> 24) {
+                hasAlpha = true;
+                break;
+            }
+        }
+        if (lines == size && hasAlpha) {
+            // Как в Проводнике: скрытый элемент — полупрозрачный «призрачный» значок.
+            // Цвета не трогаем (альфа непредумноженная), меняем только прозрачность.
+            for (DWORD& p : c.px) {
+                const DWORD a = (p >> 24) * 50 / 100;
+                p = (a << 24) | (p & 0x00FFFFFF);
+            }
+            result = c.ToIcon();
+        }
+    }
+    if (ii.hbmColor) DeleteObject(ii.hbmColor);
+    if (ii.hbmMask) DeleteObject(ii.hbmMask);
+    return result;
 }
 
 void InitShellIcons() {
     if (g_images) return;
 
-    const int size = 16;
+    // Размер малого значка берём из системы: он уже учитывает DPI.
+    int size = GetSystemMetrics(SM_CXSMICON);
+    if (size < 16) size = 16;
     g_images = ImageList_Create(size, size, ILC_COLOR32, 64, 256);
 
     g_iconUp = AddIcon(MakeUpArrowIcon(size));
-    g_iconFolder = AddIcon(MakeFolderIcon(size));
-    g_iconFile = AddIcon(MakeFileIcon(size));
-    g_iconFolderHidden = AddIcon(MakeFolderIcon(size, true));
-    g_iconFileHidden = AddIcon(MakeFileIcon(size, true));
+
+    // Папка и файл по умолчанию — системные значки, как в Проводнике.
+    // Нарисованные вручную остаются запасным вариантом.
+    HICON folder = ShellIcon(L"folder", FILE_ATTRIBUTE_DIRECTORY, true);
+    HICON file = ShellIcon(L"file", FILE_ATTRIBUTE_NORMAL, true);
+
+    HICON folderHidden = MarkHiddenCopy(folder, size);
+    HICON fileHidden = MarkHiddenCopy(file, size);
+
+    g_iconFolder = folder ? AddIcon(folder) : AddIcon(MakeFolderIcon(size));
+    g_iconFile = file ? AddIcon(file) : AddIcon(MakeFileIcon(size));
+    g_iconFolderHidden = folderHidden ? AddIcon(folderHidden) : AddIcon(MakeFolderIcon(size, true));
+    g_iconFileHidden = fileHidden ? AddIcon(fileHidden) : AddIcon(MakeFileIcon(size, true));
 }
 
 HIMAGELIST ShellSmallImageList() {
