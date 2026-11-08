@@ -40,6 +40,9 @@ enum : int {
     IDM_PLUGINS = 182,
     IDM_QUEUE = 184,
     IDM_DIRSIZE = 186,
+    IDM_NEWFILE = 190,
+    IDM_QUICKVIEW = 191,
+    IDM_SEARCH = 192,
 
     IDM_SEL_ALL = 120,
     IDM_SEL_NONE,
@@ -85,6 +88,25 @@ const FKeyDef kFKeys[] = {
 };
 const int kFKeyCount = (int)(sizeof(kFKeys) / sizeof(kFKeys[0]));
 
+// Подписи под ряд F-клавиш: обычные, с Shift, с Ctrl и с Alt (как в TC).
+struct FKeyLabel {
+    const wchar_t* normal;
+    const wchar_t* shift;
+    const wchar_t* ctrl;
+    const wchar_t* alt;
+};
+const FKeyLabel kFKeyLabels[] = {
+    {L"F3 Просмотр", L"Shift+F3", L"Ctrl+F3 Имя", L"Alt+F3"},
+    {L"F4 Правка", L"Shift+F4 Новый", L"Ctrl+F4 Тип", L"Alt+F4 Выход"},
+    {L"F5 Копия", L"Shift+F5 Копия сюда", L"Ctrl+F5 Размер", L"Alt+F5 Упаковать"},
+    {L"F6 Перенос", L"Shift+F6 Переимен.", L"Ctrl+F6 Дата", L"Alt+F6"},
+    {L"F7 Каталог", L"Shift+F7", L"Ctrl+F7", L"Alt+F7 Поиск"},
+    {L"F8 Удалить", L"Shift+F8", L"Ctrl+F8 Дерево", L"Alt+F8"},
+    {L"Alt+F4 Выход", L"Alt+Shift+Enter Размеры", L"Ctrl+W Закрыть вкладку", L"Alt+F4 Выход"},
+};
+static_assert(sizeof(kFKeyLabels) / sizeof(kFKeyLabels[0]) == sizeof(kFKeys) / sizeof(kFKeys[0]),
+              "подписи F-клавиш должны совпадать с кнопками");
+
 // Тулбар: кнопки и их команды.
 const int ID_TB_FIRST = 1100;
 struct TbDef { const wchar_t* text; int command; };
@@ -128,7 +150,8 @@ private:
     void AddBookmark();
     void PackSelection();
     void BatchRename();
-    void QueueCopyMove(const std::vector<std::wstring>& items, const std::wstring& target, bool move);
+    void QueueCopyMove(const std::vector<std::wstring>& items, const std::wstring& target, bool move,
+                       bool overwrite = false);
     void RunNextJob();
     void ShowQueueWindow();
     static LRESULT CALLBACK QueueProc(HWND, UINT, WPARAM, LPARAM);
@@ -139,6 +162,12 @@ private:
     void DropOnPanel(int fromSide, int toSide);
     void ShowBookmarksMenu();
     void RunCommandLine();
+    void SaveState();
+    void ToggleQuickView();
+    void DrawFlatButton(DRAWITEMSTRUCT* dis);
+    void UpdateFKeyLabels(int kind);
+    int FKeyCommand(int index, int kind) const;
+    void RefreshQuickView();
     void AppendToPrompt(const std::wstring& text, bool quoted);
     void ShowError(const std::wstring& text);
     int SplitX() const;
@@ -148,10 +177,13 @@ private:
     HWND label_ = nullptr;
     HWND prompt_ = nullptr;
     HWND fkeys_[kFKeyCount]{};
+    HWND quickView_ = nullptr;          // Ctrl+Q: просмотр на неактивной панели
+    int quickViewSide_ = -1;
     HWND toolbar_[kToolbarCount]{};
     Panel left_{0};
     Panel right_{1};
     int activeSide_ = 0;
+    int modKind_ = -1;                  // 0 — без модификаторов, 1 — Shift, 2 — Ctrl, 3 — Alt
     HFONT font_ = nullptr;
     UINT dpi_ = 96;
     bool showHidden_ = true;
@@ -165,6 +197,7 @@ private:
         std::vector<std::wstring> items;
         std::wstring target;
         bool move = false;
+        bool overwrite = false;         // перезаписывать без запроса
         std::wstring status;            // ожидает / выполняется / готово / ошибка
     };
     std::vector<CopyJob> jobs_;
@@ -292,13 +325,13 @@ void App::CreateChildren() {
 
     for (int i = 0; i < kToolbarCount; i++) {
         toolbar_[i] = CreateWindowExW(0, L"BUTTON", kToolbar[i].text,
-                                      WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON | BS_FLAT, 0, 0, 10, 10,
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, 0, 0, 10, 10,
                                       hwnd_, (HMENU)(INT_PTR)(ID_TB_FIRST + i), g_inst, nullptr);
     }
 
     for (int i = 0; i < kFKeyCount; i++) {
         fkeys_[i] = CreateWindowExW(0, L"BUTTON", kFKeys[i].text,
-                                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON | BS_FLAT, 0, 0, 10, 10,
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, 0, 0, 10, 10,
                                     hwnd_, (HMENU)(INT_PTR)(ID_FKEY_FIRST + i), g_inst, nullptr);
     }
 
@@ -337,6 +370,13 @@ void App::LoadPanels() {
     if (!st.rightTabs.empty()) right_.RestoreState(st.rightTabs, st.rightActive);
     else right_.Navigate(cwd);
 
+    left_.SetTabMeta(st.leftTabNames, st.leftTabLocks);
+    right_.SetTabMeta(st.rightTabNames, st.rightTabLocks);
+
+    // Возвращаем курсор и активную панель.
+    left_.SetCursorIndex(st.leftCursor);
+    right_.SetCursorIndex(st.rightCursor);
+    if (st.activeSide == 1) SetActivePanel(1);
     ActivePanel()->FocusList();
     UpdatePromptLabel();
 }
@@ -403,6 +443,16 @@ void App::Layout() {
     if (dwp) dwp = DeferWindowPos(dwp, label_, nullptr, 0, bottomY, labelW, promptH, SWP_NOZORDER);
     if (dwp)
         dwp = DeferWindowPos(dwp, prompt_, nullptr, labelW, bottomY, width - labelW, promptH, SWP_NOZORDER);
+
+    if (quickView_) {
+        Panel& other = (quickViewSide_ == 0) ? left_ : right_;
+        RECT lr{};
+        if (GetWindowRect(other.List(), &lr)) {
+            MapWindowPoints(HWND_DESKTOP, hwnd_, reinterpret_cast<POINT*>(&lr), 2);
+            SetWindowPos(quickView_, HWND_TOP, lr.left, lr.top, lr.right - lr.left, lr.bottom - lr.top,
+                         SWP_NOACTIVATE);
+        }
+    }
 
     int fkeyY = bottomY + promptH;
     int each = width / kFKeyCount;
@@ -532,9 +582,33 @@ void App::DoCopyMove(bool move) {
         prompt = buf;
     }
 
-    if (!InputBox(hwnd_, move ? L"Перемещение" : L"Копирование", prompt, target, true)) return;
-    target = Trim(target);
+    CopyMoveOptions opts;
+    opts.target = target;
+    if (!CopyMoveBox(hwnd_, move ? L"Перемещение" : L"Копирование", prompt, opts)) return;
+
+    target = Trim(opts.target);
     if (target.empty()) return;
+
+    // Маска из диалога ограничивает набор копируемых файлов.
+    if (!Trim(opts.mask).empty()) {
+        const auto masks = SplitMasks(opts.mask);
+        std::vector<std::wstring> filtered;
+        for (auto& s : sources) {
+            if (IsDirectory(s)) continue;                   // каталоги маской не отсекаем
+            const std::wstring name = Lower(s.substr(s.find_last_of(L'\\') + 1));
+            for (auto& mm : masks) {
+                if (MatchMask(name, mm)) {
+                    filtered.push_back(s);
+                    break;
+                }
+            }
+        }
+        if (filtered.empty()) {
+            ShowError(L"Под маску «" + opts.mask + L"» не попал ни один файл.");
+            return;
+        }
+        sources = filtered;
+    }
 
     if (!IsDirectory(target)) {
         if (sources.size() == 1 && !target.empty() && target.back() != L'\\') {
@@ -546,7 +620,15 @@ void App::DoCopyMove(bool move) {
         }
     }
 
-    QueueCopyMove(sources, target, move);
+    if (opts.background) {
+        QueueCopyMove(sources, target, move, opts.overwriteAll);
+    } else {
+        const bool ok = ShellCopyMove(hwnd_, sources, target, move, false, opts.overwriteAll);
+        LogDebug(L"copy/move immediately ok=" + std::to_wstring(ok ? 1 : 0));
+        left_.Reload();
+        right_.Reload();
+        UpdatePromptLabel();
+    }
     panel->ClearMarks();
 }
 
@@ -668,6 +750,146 @@ void App::ShowDrivesMenu(int side) {
     }
 }
 
+// Плоские кнопки в стиле TC: фон панели, рамка только у нажатой.
+void App::DrawFlatButton(DRAWITEMSTRUCT* dis) {
+    HDC dc = dis->hDC;
+    RECT rc = dis->rcItem;
+    const bool pressed = (dis->itemState & ODS_SELECTED) != 0;
+    const bool disabled = (dis->itemState & ODS_DISABLED) != 0;
+
+    HBRUSH fill = CreateSolidBrush(pressed ? RGB(198, 195, 189) : GetSysColor(COLOR_BTNFACE));
+    FillRect(dc, &rc, fill);
+    DeleteObject(fill);
+
+    if (pressed) DrawEdge(dc, &rc, BDR_SUNKENOUTER, BF_RECT);
+
+    wchar_t text[160]{};
+    GetWindowTextW(dis->hwndItem, text, 160);
+
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, disabled ? GetSysColor(COLOR_GRAYTEXT) : RGB(20, 20, 20));
+    HGDIOBJ oldFont = SelectObject(dc, font_ ? font_ : (HFONT)GetStockObject(DEFAULT_GUI_FONT));
+    RECT tr = rc;
+    InflateRect(&tr, -Scale(3, dpi_), 0);
+    DrawTextW(dc, text, -1, &tr, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+    SelectObject(dc, oldFont);
+}
+
+// Подписи под ряд F-клавиш меняются при нажатом Shift/Ctrl/Alt.
+void App::UpdateFKeyLabels(int kind) {
+    if (kind == modKind_) return;
+    modKind_ = kind;
+    for (int i = 0; i < kFKeyCount; ++i) {
+        const FKeyLabel& lab = kFKeyLabels[i];
+        const wchar_t* text = (kind == 3) ? lab.alt : (kind == 2 ? lab.ctrl : (kind == 1 ? lab.shift : lab.normal));
+        SetWindowTextW(fkeys_[i], text);
+        InvalidateRect(fkeys_[i], nullptr, TRUE);
+    }
+}
+
+// Какая команда соответствует кнопке F-клавиши при текущих модификаторах.
+int App::FKeyCommand(int index, int kind) const {
+    if (index < 0 || index >= kFKeyCount) return 0;
+    if (kind == 3) {
+        switch (index) {
+            case 1: return IDM_EXIT;
+            case 2: return IDM_PACK;
+            case 4: return IDM_SEARCH;
+            default: break;
+        }
+    } else if (kind == 2) {
+        switch (index) {
+            case 0: return IDM_SORT_NAME;
+            case 1: return IDM_SORT_EXT;
+            case 2: return IDM_SORT_SIZE;
+            case 3: return IDM_SORT_DATE;
+            case 5: return IDM_TREE;
+            default: break;
+        }
+    } else if (kind == 1) {
+        switch (index) {
+            case 1: return IDM_NEWFILE;
+            case 2: return IDM_COPY;
+            case 3: return IDM_RENAME;
+            case 6: return IDM_DIRSIZE;
+            default: break;
+        }
+    }
+    return kFKeys[index].command;
+}
+
+// Ctrl+Q — быстрый просмотр на неактивной панели, как в TC.
+void App::ToggleQuickView() {
+    if (quickView_) {
+        DestroyWindow(quickView_);
+        quickView_ = nullptr;
+        quickViewSide_ = -1;
+        ActivePanel()->FocusList();
+        return;
+    }
+    quickView_ = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+                                 WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_HSCROLL | ES_MULTILINE | ES_READONLY |
+                                     ES_AUTOVSCROLL | ES_AUTOHSCROLL,
+                                 0, 0, 10, 10, hwnd_, (HMENU)(INT_PTR)2001, g_inst, nullptr);
+    if (!quickView_) return;
+    SendMessageW(quickView_, WM_SETFONT, (WPARAM)font_, TRUE);
+    quickViewSide_ = (activeSide_ == 0) ? 1 : 0;
+    Layout();
+    RefreshQuickView();
+    ActivePanel()->FocusList();
+    LogDebug(L"quickview on side " + std::to_wstring(quickViewSide_));
+}
+
+void App::RefreshQuickView() {
+    if (!quickView_) return;
+    Panel* panel = ActivePanel();
+    Entry* e = panel->Cursor();
+    if (!e || e->isUp || e->isDir) {
+        SetWindowTextW(quickView_, L"");
+        return;
+    }
+    if (panel->InArchive()) {
+        SetWindowTextW(quickView_, L"<просмотр доступен только для файлов на диске>");
+        return;
+    }
+    bool binary = false;
+    const std::wstring text = LoadTextPreview(panel->FocusedPath(), 128 * 1024, binary);
+    SetWindowTextW(quickView_, text.c_str());
+    SendMessageW(quickView_, EM_SETSEL, 0, 0);
+    SendMessageW(quickView_, EM_SCROLLCARET, 0, 0);
+}
+
+// Состояние на диск: окно, панели, вкладки, курсоры. Вызывается до DestroyWindow.
+void App::SaveState() {
+    Settings& st = GetSettings();
+    WINDOWPLACEMENT wp{};
+    wp.length = sizeof(wp);
+    if (GetWindowPlacement(hwnd_, &wp)) {
+        st.x = wp.rcNormalPosition.left;
+        st.y = wp.rcNormalPosition.top;
+        st.w = wp.rcNormalPosition.right - wp.rcNormalPosition.left;
+        st.h = wp.rcNormalPosition.bottom - wp.rcNormalPosition.top;
+        st.hasPosition = true;
+        st.maximized = wp.showCmd == SW_SHOWMAXIMIZED;
+    }
+    st.splitPercent = splitPercent_;
+    st.showHidden = showHidden_;
+    st.sortColumn = left_.SortColumn();
+    st.sortReverse = left_.SortReverse();
+    left_.CaptureState(st.leftTabs, st.leftActive);
+    right_.CaptureState(st.rightTabs, st.rightActive);
+    st.leftTabNames.assign(left_.TabTitles().begin(), left_.TabTitles().end());
+    st.rightTabNames.assign(right_.TabTitles().begin(), right_.TabTitles().end());
+    st.leftTabLocks.clear();
+    for (bool locked : left_.TabLocks()) st.leftTabLocks.push_back(locked ? 1 : 0);
+    st.rightTabLocks.clear();
+    for (bool locked : right_.TabLocks()) st.rightTabLocks.push_back(locked ? 1 : 0);
+    st.activeSide = activeSide_;
+    st.leftCursor = left_.CursorIndex();
+    st.rightCursor = right_.CursorIndex();
+    SaveSettings();
+}
+
 void App::RunCommandLine() {
     wchar_t buf[4096]{};
     GetWindowTextW(prompt_, buf, 4096);
@@ -779,13 +1001,15 @@ void App::PackSelection() {
 
 // ---------- очередь операций ----------
 
-void App::QueueCopyMove(const std::vector<std::wstring>& items, const std::wstring& target, bool move) {
+void App::QueueCopyMove(const std::vector<std::wstring>& items, const std::wstring& target, bool move,
+                        bool overwrite) {
     if (items.empty() || target.empty()) return;
 
     CopyJob job;
     job.items = items;
     job.target = target;
     job.move = move;
+    job.overwrite = overwrite;
     job.status = L"ожидает";
     jobs_.push_back(std::move(job));
 
@@ -812,7 +1036,7 @@ void App::RunNextJob() {
     job.status = L"выполняется";
     RefreshQueueWindow();
 
-    const bool ok = ShellCopyMove(hwnd_, job.items, job.target, job.move);
+    const bool ok = ShellCopyMove(hwnd_, job.items, job.target, job.move, false, job.overwrite);
     job.status = ok ? L"готово" : L"ошибка";
 
     left_.Reload();
@@ -1073,6 +1297,44 @@ void App::Dispatch(int id) {
     LogDebug(L"Dispatch id=" + std::to_wstring(id));
     Panel* panel = ActivePanel();
     switch (id) {
+        case IDM_SEARCH: {
+            std::wstring found = SearchDialog(hwnd_, ActivePanel()->Path());
+            LogDebug(L"search chosen='" + found + L"'");
+            if (!found.empty()) {
+                const size_t slash = found.find_last_of(L'\\');
+                if (slash != std::wstring::npos) {
+                    const std::wstring dir = found.substr(0, slash);
+                    const std::wstring name = found.substr(slash + 1);
+                    if (ActivePanel()->Navigate(dir, name)) ActivePanel()->FocusList();
+                }
+            }
+            break;
+        }
+        case IDM_QUICKVIEW:
+            ToggleQuickView();
+            break;
+        case IDM_NEWFILE: {
+            if (panel->InArchive()) {
+                ShowError(L"В архиве новый файл не создать.");
+                break;
+            }
+            std::wstring name = L"новый файл.txt";
+            if (!InputBox(hwnd_, L"Новый файл", L"Имя файла:", name, false)) break;
+            name = Trim(name);
+            if (name.empty()) break;
+            const std::wstring path = JoinPath(panel->Path(), name);
+            HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+                                      FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (file == INVALID_HANDLE_VALUE) {
+                ShowError(L"Не удалось создать файл:\n" + path + L"\n\n" + ErrText(GetLastError()));
+                break;
+            }
+            CloseHandle(file);
+            LogDebug(L"new file: " + path);
+            panel->Navigate(panel->Path(), name);
+            ShellExecuteW(hwnd_, L"open", L"notepad.exe", (L"\"" + path + L"\"").c_str(), nullptr, SW_SHOWNORMAL);
+            break;
+        }
         case IDM_VIEW: {
             Entry* e = panel->Cursor();
             if (!e || e->isUp || e->isDir) {
@@ -1238,6 +1500,14 @@ void App::Dispatch(int id) {
 // ---------- клавиатура ----------
 
 bool App::PreTranslate(const MSG& msg) {
+    // Подписи F-клавиш: Shift/Ctrl/Alt меняют надписи, как в TC.
+    if (msg.message == WM_KEYDOWN || msg.message == WM_KEYUP || msg.message == WM_SYSKEYDOWN ||
+        msg.message == WM_SYSKEYUP) {
+        const bool sh = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+        const bool ct = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+        const bool al = (GetKeyState(VK_MENU) & 0x8000) != 0;
+        UpdateFKeyLabels(al ? 3 : (ct ? 2 : (sh ? 1 : 0)));
+    }
     // Быстрый поиск по буквам: WM_CHAR даёт символ с учётом раскладки.
     if (msg.message == WM_CHAR) {
         HWND focus = GetFocus();
@@ -1292,6 +1562,16 @@ bool App::PreTranslate(const MSG& msg) {
     bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
     Panel* panel = ActivePanel();
 
+    if (alt && msg.wParam == VK_LEFT) {
+        panel->GoBack();
+        panel->FocusList();
+        return true;
+    }
+    if (alt && msg.wParam == VK_RIGHT) {
+        panel->GoForward();
+        panel->FocusList();
+        return true;
+    }
     if (alt && msg.wParam == VK_F1) {
         ShowDrivesMenu(0);
         return true;
@@ -1313,17 +1593,7 @@ bool App::PreTranslate(const MSG& msg) {
         return true;
     }
     if (alt && msg.wParam == VK_F7) {
-        // Поиск файлов: Alt+F7 открывает окно, найденный файл показываем в активной панели.
-        std::wstring found = SearchDialog(hwnd_, ActivePanel()->Path());
-        LogDebug(L"search chosen='" + found + L"'");
-        if (!found.empty()) {
-            size_t slash = found.find_last_of(L'\\');
-            if (slash != std::wstring::npos) {
-                std::wstring dir = found.substr(0, slash);
-                std::wstring name = found.substr(slash + 1);
-                if (ActivePanel()->Navigate(dir, name)) ActivePanel()->FocusList();
-            }
-        }
+        Dispatch(IDM_SEARCH);
         return true;
     }
 
@@ -1371,6 +1641,21 @@ bool App::PreTranslate(const MSG& msg) {
                 return true;
             case VK_F6:
                 Dispatch(IDM_SORT_DATE);
+                return true;
+            case VK_OEM_5:              // Ctrl+\ — в корень диска
+                if (!panel->GoRoot()) ShowError(panel->NavigateError());
+                panel->FocusList();
+                return true;
+            case VK_PRIOR:              // Ctrl+PgUp — на уровень вверх
+                GoUpActive();
+                panel->FocusList();
+                return true;
+            case VK_NEXT:               // Ctrl+PgDn — войти в каталог или архив
+                OpenCursor();
+                panel->FocusList();
+                return true;
+            case 'Q':                   // Ctrl+Q — быстрый просмотр на другой панели
+                Dispatch(IDM_QUICKVIEW);
                 return true;
             default:
                 break;
@@ -1446,6 +1731,30 @@ bool App::PreTranslate(const MSG& msg) {
         Dispatch(IDM_RENAME);
         return true;
     }
+
+    if (!inPrompt && (msg.wParam == VK_ADD || msg.wParam == VK_SUBTRACT || msg.wParam == VK_MULTIPLY)) {
+        const int mode = (msg.wParam == VK_ADD) ? 0 : (msg.wParam == VK_SUBTRACT ? 1 : 2);
+        const wchar_t* title = (mode == 0) ? L"Отметить по маске"
+                                            : (mode == 1 ? L"Снять отметку по маске" : L"Инвертировать по маске");
+        std::wstring mask = L"*.*";
+        if (InputBox(hwnd_, title, L"Маска (несколько — через запятую):", mask, false)) {
+            const size_t hit = panel->MarkByMask(mask, mode);
+            LogDebug(L"mark by mask '" + mask + L"' mode=" + std::to_wstring(mode) + L" hit=" + std::to_wstring(hit));
+        }
+        panel->FocusList();
+        return true;
+    }
+
+    if (shift && msg.wParam == VK_F4) {          // Shift+F4 — новый текстовый файл
+        Dispatch(IDM_NEWFILE);
+        return true;
+    }
+
+    if (msg.wParam == VK_F9) {                   // F9 — меню, как в TC
+        PostMessageW(hwnd_, WM_SYSKEYDOWN, VK_F10, 1);
+        return true;
+    }
+
     return false;
 }
 
@@ -1476,6 +1785,23 @@ LRESULT App::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             LoadPanels();
             return 0;
 
+        case WM_APP + 302: {
+            // Вкладка скопирована на другую панель.
+            Panel* src = ((int)wParam == 0) ? &left_ : &right_;
+            Panel* dst = ((int)wParam == 0) ? &right_ : &left_;
+            const int index = (int)lParam;
+            std::vector<std::wstring> tabs;
+            int active = 0;
+            src->CaptureState(tabs, active);
+            if (index >= 0 && index < (int)tabs.size()) dst->AddTabFor(tabs[index], L"");
+            return 0;
+        }
+
+        case WM_APP + 301:
+            // Панель сменила курсор: обновить быстрый просмотр, если он на другой панели.
+            if (quickView_ && (int)wParam == activeSide_) RefreshQuickView();
+            return 0;
+
         case WM_APP + 401:
             RunNextJob();
             return 0;
@@ -1503,6 +1829,19 @@ LRESULT App::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             if (ActivePanel()) ActivePanel()->FocusList();
             return 0;
 
+        case WM_DRAWITEM: {
+            auto dis = reinterpret_cast<DRAWITEMSTRUCT*>(lParam);
+            if (dis && dis->CtlType == ODT_BUTTON) {
+                const int id = (int)dis->CtlID;
+                if ((id >= ID_TB_FIRST && id < ID_TB_FIRST + kToolbarCount) ||
+                    (id >= ID_FKEY_FIRST && id < ID_FKEY_FIRST + kFKeyCount)) {
+                    DrawFlatButton(dis);
+                    return TRUE;
+                }
+            }
+            return DefWindowProcW(hwnd, msg, wParam, lParam);
+        }
+
         case WM_COMMAND: {
             int id = LOWORD(wParam);
             if (id == ID_OPEN_ITEM) {
@@ -1517,7 +1856,7 @@ LRESULT App::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 return 0;
             }
             if (id >= ID_FKEY_FIRST && id < ID_FKEY_FIRST + kFKeyCount) {
-                Dispatch(kFKeys[id - ID_FKEY_FIRST].command);
+                Dispatch(FKeyCommand(id - ID_FKEY_FIRST, modKind_ < 0 ? 0 : modKind_));
                 return 0;
             }
             if (id == ID_PROMPT) {
@@ -1649,28 +1988,11 @@ LRESULT App::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             break;
 
         case WM_CLOSE:
+            SaveState();
             DestroyWindow(hwnd_);
             return 0;
 
         case WM_DESTROY: {
-            Settings& st = GetSettings();
-            WINDOWPLACEMENT wp{};
-            wp.length = sizeof(wp);
-            if (GetWindowPlacement(hwnd_, &wp)) {
-                st.x = wp.rcNormalPosition.left;
-                st.y = wp.rcNormalPosition.top;
-                st.w = wp.rcNormalPosition.right - wp.rcNormalPosition.left;
-                st.h = wp.rcNormalPosition.bottom - wp.rcNormalPosition.top;
-                st.hasPosition = true;
-                st.maximized = wp.showCmd == SW_SHOWMAXIMIZED;
-            }
-            st.splitPercent = splitPercent_;
-            st.showHidden = showHidden_;
-            st.sortColumn = left_.SortColumn();
-            st.sortReverse = left_.SortReverse();
-            left_.CaptureState(st.leftTabs, st.leftActive);
-            right_.CaptureState(st.rightTabs, st.rightActive);
-            SaveSettings();
             PostQuitMessage(0);
             return 0;
         }

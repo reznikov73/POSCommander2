@@ -124,6 +124,94 @@ INT_PTR CALLBACK InputProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM lParam) {
     return FALSE;
 }
 
+// ---------- копирование/перемещение (F5/F6) ----------
+
+const int kIdMask = 102;
+const int kIdOverwrite = 103;
+const int kIdBackground = 104;
+
+struct CopyCtx {
+    std::wstring title;
+    std::wstring prompt;
+    CopyMoveOptions* options = nullptr;
+};
+
+INT_PTR CALLBACK CopyProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM lParam) {
+    auto* ctx = reinterpret_cast<CopyCtx*>(GetWindowLongPtrW(dlg, GWLP_USERDATA));
+    switch (msg) {
+        case WM_INITDIALOG: {
+            ctx = reinterpret_cast<CopyCtx*>(lParam);
+            SetWindowLongPtrW(dlg, GWLP_USERDATA, (LONG_PTR)ctx);
+            SetWindowTextW(dlg, ctx->title.c_str());
+            SetDlgItemTextW(dlg, kIdPrompt, ctx->prompt.c_str());
+            SetDlgItemTextW(dlg, kIdEdit, ctx->options->target.c_str());
+            SetDlgItemTextW(dlg, kIdMask, ctx->options->mask.c_str());
+            CheckDlgButton(dlg, kIdOverwrite, ctx->options->overwriteAll ? BST_CHECKED : BST_UNCHECKED);
+            CheckDlgButton(dlg, kIdBackground, ctx->options->background ? BST_CHECKED : BST_UNCHECKED);
+            SHAutoComplete(GetDlgItem(dlg, kIdEdit), SHACF_FILESYSTEM);
+            SendDlgItemMessageW(dlg, kIdEdit, EM_SETSEL, 0, -1);
+            SetFocus(GetDlgItem(dlg, kIdEdit));
+            return FALSE;
+        }
+        case WM_COMMAND: {
+            const int id = LOWORD(wParam);
+            if (id == IDOK) {
+                wchar_t path[32768]{};
+                wchar_t mask[1024]{};
+                GetDlgItemTextW(dlg, kIdEdit, path, 32768);
+                GetDlgItemTextW(dlg, kIdMask, mask, 1024);
+                if (ctx) {
+                    ctx->options->target = path;
+                    ctx->options->mask = mask;
+                    ctx->options->overwriteAll = IsDlgButtonChecked(dlg, kIdOverwrite) == BST_CHECKED;
+                    ctx->options->background = IsDlgButtonChecked(dlg, kIdBackground) == BST_CHECKED;
+                }
+                EndDialog(dlg, 1);
+                return TRUE;
+            }
+            if (id == IDCANCEL) {
+                EndDialog(dlg, 0);
+                return TRUE;
+            }
+            break;
+        }
+        default:
+            break;
+    }
+    return FALSE;
+}
+
+}  // namespace
+
+bool CopyMoveBox(HWND owner, const std::wstring& title, const std::wstring& prompt, CopyMoveOptions& options) {
+    DlgBuilder builder(title.c_str(), 330, 128);
+    builder.Add(prompt.c_str(), kIdPrompt, kClsStatic, WS_CHILD | WS_VISIBLE | SS_LEFT, 10, 8, 310, 20);
+    builder.Add(L"", kIdEdit, kClsEdit,
+                WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL, 10, 28, 310, 14);
+    builder.Add(L"Маска файлов:", 0, kClsStatic, WS_CHILD | WS_VISIBLE | SS_LEFT, 10, 50, 70, 12);
+    builder.Add(L"", kIdMask, kClsEdit,
+                WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL, 84, 48, 100, 14);
+    builder.Add(L"Перезаписывать без запроса", kIdOverwrite, kClsButton,
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX, 10, 68, 200, 12);
+    builder.Add(L"В фоне (в очередь операций)", kIdBackground, kClsButton,
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX, 10, 84, 220, 12);
+    builder.Add(L"OK", IDOK, kClsButton, WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON, 198, 106, 58, 16);
+    builder.Add(L"Отмена", IDCANCEL, kClsButton, WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 262, 106, 58, 16);
+
+    CopyCtx ctx;
+    ctx.title = title;
+    ctx.prompt = prompt;
+    ctx.options = &options;
+
+    const INT_PTR result = DialogBoxIndirectParamW(g_inst, builder.Get(), owner, CopyProc, (LPARAM)&ctx);
+    LogDebug(L"CopyMoveBox result=" + std::to_wstring((long long)result) + L" target='" + options.target +
+             L"' mask='" + options.mask + L"' overwrite=" + std::to_wstring(options.overwriteAll ? 1 : 0) +
+             L" background=" + std::to_wstring(options.background ? 1 : 0));
+    return result == 1;
+}
+
+namespace {
+
 // ---------- просмотрщик ----------
 
 struct ListerState {

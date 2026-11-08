@@ -8,6 +8,8 @@
 #include <shlwapi.h>
 
 #include "archive.h"
+#include "settings.h"
+#include "dialogs.h"
 
 #include <thread>
 
@@ -84,28 +86,33 @@ bool Panel::Create(HWND parent, int id) {
     brActive_ = CreateSolidBrush(kActiveHeaderBg);
     brInactive_ = CreateSolidBrush(kInactiveHeaderBg);
 
-    header_ = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE | SS_LEFT,
+    header_ = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE | SS_LEFT | SS_NOTIFY,
                               0, 0, 10, 10, hwnd_, (HMENU)(INT_PTR)kHeaderId, g_inst, nullptr);
+    if (header_) SetWindowSubclass(header_, HeaderProc, 1, (DWORD_PTR)this);
 
     list_ = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
                             WS_CHILD | WS_VISIBLE | WS_TABSTOP | LVS_REPORT | LVS_OWNERDATA |
-                                LVS_SINGLESEL | LVS_SHOWSELALWAYS | LVS_NOSORTHEADER,
+                                LVS_SINGLESEL | LVS_SHOWSELALWAYS,   // без LVS_NOSORTHEADER: клик по заголовку сортирует
                             0, 0, 10, 10, hwnd_, (HMENU)(INT_PTR)kListId, g_inst, nullptr);
 
     ListView_SetExtendedListViewStyle(list_, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_LABELTIP);
     ListView_SetImageList(list_, ShellSmallImageList(), LVSIL_SMALL);
 
+    const Settings& st = GetSettings();
     LVCOLUMNW col{};
-    col.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
-    col.cx = 240;
+    col.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM | LVCF_FMT;
+    col.fmt = LVCFMT_LEFT;
+    col.cx = st.colWidth[0];
     col.iSubItem = 0;
     col.pszText = (LPWSTR)L"Имя";
     ListView_InsertColumn(list_, 0, &col);
-    col.cx = 70; col.iSubItem = 1; col.pszText = (LPWSTR)L"Тип";
+    col.cx = st.colWidth[1]; col.iSubItem = 1; col.pszText = (LPWSTR)L"Тип";
     ListView_InsertColumn(list_, 1, &col);
-    col.cx = 100; col.iSubItem = 2; col.pszText = (LPWSTR)L"Размер";
+    col.cx = st.colWidth[2]; col.iSubItem = 2; col.pszText = (LPWSTR)L"Размер";
+    col.fmt = LVCFMT_RIGHT;                       // размер по правому краю, как в TC
     ListView_InsertColumn(list_, 2, &col);
-    col.cx = 120; col.iSubItem = 3; col.pszText = (LPWSTR)L"Дата";
+    col.cx = st.colWidth[3]; col.iSubItem = 3; col.pszText = (LPWSTR)L"Дата";
+    col.fmt = LVCFMT_LEFT;
     ListView_InsertColumn(list_, 3, &col);
 
     status_ = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE | SS_LEFT,
@@ -154,24 +161,267 @@ void Panel::UpdateDriveBar() {
 // ---------- вкладки ----------
 
 void Panel::RebuildTabBar() {
-    for (auto h : tabButtons_) DestroyWindow(h);
+    for (auto h : tabButtons_) DestroyWindow(h);   // старые кнопки вкладок убираем
     tabButtons_.clear();
+    tabNames_.resize(tabs_.size());
+    tabLocked_.resize(tabs_.size(), false);
+
     for (size_t i = 0; i < tabs_.size(); ++i) {
-        std::wstring title = LeafOf(tabs_[i]);
-        HWND btn = CreateWindowExW(0, L"BUTTON", title.c_str(),
-                                   WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+        HWND btn = CreateWindowExW(0, L"BUTTON", L"",
+                                   WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
                                    0, 0, 10, 10, hwnd_, (HMENU)(INT_PTR)(kTabBase + (int)i), g_inst, nullptr);
         if (btn) {
             if (font_) SendMessageW(btn, WM_SETFONT, (WPARAM)font_, TRUE);
+            SetWindowSubclass(btn, TabProc, 2, (DWORD_PTR)this);
             tabButtons_.push_back(btn);
         }
     }
     Layout();
 }
 
+std::wstring Panel::TabTitle(int index) const {
+    if (index < 0 || index >= (int)tabs_.size()) return L"";
+    if (index < (int)tabNames_.size() && !tabNames_[index].empty()) return tabNames_[index];
+    return LeafOf(tabs_[index]);
+}
+
+void Panel::SetTabMeta(const std::vector<std::wstring>& names, const std::vector<int>& locks) {
+    tabNames_.assign(tabs_.size(), L"");
+    tabLocked_.assign(tabs_.size(), false);
+    for (size_t i = 0; i < names.size() && i < tabNames_.size(); ++i) tabNames_[i] = names[i];
+    for (size_t i = 0; i < locks.size() && i < tabLocked_.size(); ++i) tabLocked_[i] = locks[i] != 0;
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
 void Panel::UpdateTabText() {
     if (tab_ < 0 || tab_ >= (int)tabButtons_.size() || tab_ >= (int)tabs_.size()) return;
-    SetWindowTextW(tabButtons_[tab_], LeafOf(tabs_[tab_]).c_str());
+    InvalidateRect(tabButtons_[tab_], nullptr, TRUE);
+}
+
+int Panel::TabIndexFromHwnd(HWND wnd) const {
+    for (size_t i = 0; i < tabButtons_.size(); ++i) {
+        if (tabButtons_[i] == wnd) return (int)i;
+    }
+    return -1;
+}
+
+// Область крестика «×» в правой части вкладки.
+RECT Panel::TabCloseRect(int index) const {
+    RECT rc{};
+    if (index < 0 || index >= (int)tabButtons_.size()) return rc;
+    GetClientRect(tabButtons_[index], &rc);
+    const int w = Scale(16, dpi_);
+    rc.left = rc.right - w;
+    return rc;
+}
+
+void Panel::CloseTabAt(int index) {
+    if (index < 0 || index >= (int)tabs_.size() || tabs_.size() <= 1) return;
+    tabs_.erase(tabs_.begin() + index);
+    if (index < (int)tabNames_.size()) tabNames_.erase(tabNames_.begin() + index);
+    if (index < (int)tabLocked_.size()) tabLocked_.erase(tabLocked_.begin() + index);
+    if (tab_ > index) --tab_;
+    if (tab_ >= (int)tabs_.size()) tab_ = (int)tabs_.size() - 1;
+    if (index == tab_ || tabs_.size() == 1) Navigate(tabs_[tab_]);
+    RebuildTabBar();
+}
+
+void Panel::CloseAllTabs() {
+    if (tabs_.empty()) return;
+    const std::wstring keep = tabs_[tab_];
+    tabs_.assign(1, keep);
+    tabNames_.assign(1, L"");
+    tabLocked_.assign(1, false);
+    tab_ = 0;
+    RebuildTabBar();
+}
+
+void Panel::AddTabFor(const std::wstring& dir, const std::wstring& name) {
+    tabs_.push_back(dir);
+    tabNames_.push_back(name);
+    tabLocked_.push_back(false);
+    tab_ = (int)tabs_.size() - 1;
+    RebuildTabBar();
+    Navigate(dir);
+}
+
+void Panel::DuplicateTab(int index) {
+    if (index < 0 || index >= (int)tabs_.size()) return;
+    const std::wstring dir = tabs_[index];
+    const std::wstring name = index < (int)tabNames_.size() ? tabNames_[index] : L"";
+    tabs_.push_back(dir);
+    tabNames_.push_back(name);
+    tabLocked_.push_back(false);
+    tab_ = (int)tabs_.size() - 1;
+    RebuildTabBar();
+    Navigate(dir);
+}
+
+void Panel::ToggleTabLock(int index) {
+    if (index < 0 || index >= (int)tabs_.size()) return;
+    if (index >= (int)tabLocked_.size()) tabLocked_.resize(tabs_.size(), false);
+    tabLocked_[index] = !tabLocked_[index];
+    if (tabLocked_[index]) tabs_[index] = path_;   // запоминаем каталог на момент блокировки
+    RebuildTabBar();
+    LogDebug(L"tab " + std::to_wstring(index) + L" lock=" + (tabLocked_[index] ? L"1" : L"0"));
+}
+
+// Меню вкладки: как в TC (копия, блокировка, переименование, закрытие).
+void Panel::ShowTabMenu(int index, POINT pt) {
+    HMENU menu = CreatePopupMenu();
+    if (!menu) return;
+    AppendMenuW(menu, MF_STRING, 1, L"Открыть копию этой вкладки");
+    AppendMenuW(menu, MF_STRING, 5, L"Открыть копию на другой панели");
+    AppendMenuW(menu, MF_STRING, 3, L"Переименовать вкладку…");
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING | (TabLocked(index) ? MF_CHECKED : 0), 2,
+                TabLocked(index) ? L"Разблокировать вкладку" : L"Заблокировать вкладку");
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING | (tabs_.size() <= 1 ? MF_GRAYED : 0), 6, L"Закрыть вкладку");
+    AppendMenuW(menu, MF_STRING | (tabs_.size() <= 1 ? MF_GRAYED : 0), 7, L"Закрыть все вкладки");
+
+    const int cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd_, nullptr);
+    DestroyMenu(menu);
+
+    switch (cmd) {
+        case 1:
+            DuplicateTab(index);
+            break;
+        case 2:
+            ToggleTabLock(index);
+            break;
+        case 3: {
+            std::wstring name = TabTitle(index);
+            if (InputBox(GetParent(hwnd_), L"Вкладка", L"Название вкладки:", name, false)) {
+                if (index >= (int)tabNames_.size()) tabNames_.resize(tabs_.size());
+                tabNames_[index] = Trim(name);
+                RebuildTabBar();
+            }
+            break;
+        }
+        case 5:
+            PostMessageW(GetParent(hwnd_), WM_APP + 302, (WPARAM)side_, (LPARAM)index);
+            break;
+        case 6:
+            CloseTabAt(index);
+            break;
+        case 7:
+            CloseAllTabs();
+            break;
+        default:
+            break;
+    }
+}
+
+LRESULT CALLBACK Panel::TabProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, UINT_PTR id, DWORD_PTR ref) {
+    auto* self = reinterpret_cast<Panel*>(ref);
+    if (!self) return DefSubclassProc(hwnd, msg, wParam, lParam);
+    const int index = self->TabIndexFromHwnd(hwnd);
+
+    switch (msg) {
+        case WM_MBUTTONUP:                       // средняя кнопка закрывает вкладку
+            if (index >= 0) self->CloseTabAt(index);
+            return 0;
+
+        case WM_RBUTTONUP: {
+            POINT pt{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+            ClientToScreen(hwnd, &pt);
+            if (index >= 0) self->ShowTabMenu(index, pt);
+            return 0;
+        }
+
+        case WM_LBUTTONUP: {
+            const int x = GET_X_LPARAM(lParam);
+            RECT close = self->TabCloseRect(index);
+            if (self->tabs_.size() > 1 && x >= close.left) {   // клик по «×»
+                self->CloseTabAt(index);
+                return 0;
+            }
+            break;
+        }
+
+        default:
+            break;
+    }
+    return DefSubclassProc(hwnd, msg, wParam, lParam);
+}
+
+// Рисование вкладки: активная — светлая с рамкой, неактивная — серая.
+void Panel::DrawTabButton(DRAWITEMSTRUCT* dis) {
+    const int index = (int)dis->CtlID - kTabBase;
+    if (index < 0 || index >= (int)tabs_.size()) return;
+
+    HDC dc = dis->hDC;
+    RECT rc = dis->rcItem;
+    const bool activeTab = (index == tab_);
+    const bool locked = TabLocked(index);
+
+    HBRUSH fill = CreateSolidBrush(activeTab ? RGB(255, 255, 255) : RGB(226, 223, 218));
+    FillRect(dc, &rc, fill);
+    DeleteObject(fill);
+
+    HPEN pen = CreatePen(PS_SOLID, 1, activeTab ? RGB(90, 90, 90) : RGB(166, 162, 156));
+    HGDIOBJ oldPen = SelectObject(dc, pen);
+    HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
+    MoveToEx(dc, rc.left, rc.bottom - 1, nullptr);
+    LineTo(dc, rc.left, rc.top + 1);
+    LineTo(dc, rc.right - 1, rc.top + 1);
+    LineTo(dc, rc.right - 1, rc.bottom - 1);
+    if (activeTab) {
+        MoveToEx(dc, rc.left, rc.bottom - 1, nullptr);
+        LineTo(dc, rc.right - 1, rc.bottom - 1);
+    }
+    SelectObject(dc, oldBrush);
+    SelectObject(dc, oldPen);
+    DeleteObject(pen);
+
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, activeTab ? RGB(0, 0, 0) : RGB(70, 70, 70));
+    HGDIOBJ oldFont = SelectObject(dc, font_ ? font_ : (HFONT)GetStockObject(DEFAULT_GUI_FONT));
+
+    int textLeft = rc.left + Scale(6, dpi_);
+
+    // Замок у заблокированной вкладки.
+    if (locked) {
+        const int lockW = Scale(9, dpi_);
+        const int top = rc.top + Scale(8, dpi_);
+        HBRUSH body = CreateSolidBrush(RGB(120, 90, 20));
+        RECT bodyRc{textLeft, top + Scale(4, dpi_), textLeft + lockW, top + Scale(9, dpi_)};
+        FillRect(dc, &bodyRc, body);
+        DeleteObject(body);
+        HPEN arcPen = CreatePen(PS_SOLID, 1, RGB(120, 90, 20));
+        HGDIOBJ op = SelectObject(dc, arcPen);
+        HGDIOBJ ob = SelectObject(dc, GetStockObject(NULL_BRUSH));
+        Arc(dc, textLeft + Scale(1, dpi_), top, textLeft + lockW - Scale(1, dpi_), top + Scale(7, dpi_),
+            textLeft + lockW - Scale(1, dpi_), top + Scale(3, dpi_), textLeft + Scale(1, dpi_), top + Scale(3, dpi_));
+        SelectObject(dc, ob);
+        SelectObject(dc, op);
+        DeleteObject(arcPen);
+        textLeft += lockW + Scale(4, dpi_);
+    }
+
+    RECT textRc = rc;
+    textRc.left = textLeft;
+    textRc.right = rc.right - Scale(18, dpi_);
+    DrawTextW(dc, TabTitle(index).c_str(), -1, &textRc,
+              DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+
+    // Крестик закрытия.
+    if (tabs_.size() > 1) {
+        const int pad = Scale(5, dpi_);
+        const int cx = rc.right - Scale(11, dpi_);
+        const int cy = (rc.top + rc.bottom) / 2;
+        HPEN xPen = CreatePen(PS_SOLID, 1, RGB(90, 90, 90));
+        HGDIOBJ op = SelectObject(dc, xPen);
+        MoveToEx(dc, cx - pad, cy - pad, nullptr);
+        LineTo(dc, cx + pad, cy + pad);
+        MoveToEx(dc, cx + pad, cy - pad, nullptr);
+        LineTo(dc, cx - pad, cy + pad);
+        SelectObject(dc, op);
+        DeleteObject(xPen);
+    }
+
+    SelectObject(dc, oldFont);
 }
 
 void Panel::RestoreState(const std::vector<std::wstring>& tabs, int active) {
@@ -196,7 +446,7 @@ void Panel::CaptureState(std::vector<std::wstring>& tabs, int& active) const {
     if (tabs.empty()) {
         tabs.push_back(path_);
         active = 0;
-    } else if (active >= 0 && active < (int)tabs.size()) {
+    } else if (active >= 0 && active < (int)tabs.size() && !TabLocked(active)) {
         tabs[active] = path_;
     }
 }
@@ -270,12 +520,28 @@ void Panel::Layout() {
     }
     if (dwp) dwp = DeferWindowPos(dwp, volume_, nullptr, 0, driveH, width, volH, SWP_NOZORDER);
     if (dwp) {
+        HDC dc = GetDC(hwnd_);
+        HGDIOBJ oldFont = SelectObject(dc, font_ ? font_ : GetStockObject(DEFAULT_GUI_FONT));
         int x = 0;
-        int tw = Scale(120, dpi_);
-        for (auto h : tabButtons_) {
-            dwp = DeferWindowPos(dwp, h, nullptr, x, driveH + volH + 1, tw, tabH - 3, SWP_NOZORDER);
-            x += tw + Scale(1, dpi_);
+        for (size_t i = 0; i < tabButtons_.size(); ++i) {
+            int tw = Scale(90, dpi_);
+            if (i < tabs_.size()) {
+                const std::wstring title = TabTitle((int)i);
+                HFONT btnFont = (HFONT)SendMessageW(tabButtons_[i], WM_GETFONT, 0, 0);
+                if (btnFont) SelectObject(dc, btnFont);
+                SIZE sz{};
+                GetTextExtentPoint32W(dc, title.c_str(), (int)title.size(), &sz);
+                if (btnFont) SelectObject(dc, font_ ? font_ : (HFONT)GetStockObject(DEFAULT_GUI_FONT));
+                tw = sz.cx + Scale(40, dpi_);                  // поля и крестик
+                if (TabLocked((int)i)) tw += Scale(13, dpi_);
+                if (tw < Scale(70, dpi_)) tw = Scale(70, dpi_);
+                if (tw > Scale(230, dpi_)) tw = Scale(230, dpi_);
+            }
+            dwp = DeferWindowPos(dwp, tabButtons_[i], nullptr, x, driveH + volH + 1, tw, tabH - 2, SWP_NOZORDER);
+            x += tw + Scale(2, dpi_);
         }
+        SelectObject(dc, oldFont);
+        ReleaseDC(hwnd_, dc);
     }
     int y = driveH + volH + tabH;
     int listX = 0;
@@ -301,15 +567,44 @@ void Panel::Layout() {
 
 void Panel::UpdateColumns(int width) {
     if (!list_) return;
-    int extW = Scale(70, dpi_);
-    int sizeW = Scale(110, dpi_);
-    int dateW = Scale(130, dpi_);
-    int nameW = width - extW - sizeW - dateW - Scale(24, dpi_);
+    const Settings& st = GetSettings();
+    int extW = Scale(st.colWidth[1], dpi_);
+    int sizeW = Scale(st.colWidth[2], dpi_);
+    int dateW = Scale(st.colWidth[3], dpi_);
+    int nameW = Scale(st.colWidth[0], dpi_);
+
+    // Если суммарно уже́ ширины панели — имя добирает остаток.
+    const int rest = width - extW - sizeW - dateW - Scale(24, dpi_);
+    if (nameW < rest) nameW = rest;
     if (nameW < Scale(90, dpi_)) nameW = Scale(90, dpi_);
+
     ListView_SetColumnWidth(list_, 0, nameW);
     ListView_SetColumnWidth(list_, 1, extW);
     ListView_SetColumnWidth(list_, 2, sizeW);
     ListView_SetColumnWidth(list_, 3, dateW);
+    UpdateSortArrows();
+}
+
+// Стрелки сортировки в заголовке колонки: «Имя ▲» / «Тип ▼», как в TC.
+void Panel::UpdateSortArrows() {
+    if (!list_) return;
+    static const wchar_t* kBase[4] = {L"Имя", L"Тип", L"Размер", L"Дата"};
+    for (int i = 0; i < 4; ++i) {
+        std::wstring text = kBase[i];
+        if (i == sortColumn_) text += sortReverse_ ? L" \u25BC" : L" \u25B2";
+        LVCOLUMNW col{};
+        col.mask = LVCF_TEXT;
+        col.pszText = (LPWSTR)text.c_str();
+        ListView_SetColumn(list_, i, &col);
+    }
+}
+
+// Пользователь потянул границу колонки — запоминаем ширины.
+void Panel::SaveColumnWidths() {
+    if (!list_) return;
+    Settings& st = GetSettings();
+    for (int i = 0; i < 4; ++i) st.colWidth[i] = ListView_GetColumnWidth(list_, i);
+    SaveSettings();
 }
 
 void Panel::SetActive(bool active) {
@@ -484,6 +779,12 @@ bool Panel::Navigate(const std::wstring& dir, const std::wstring& focus, bool ke
         return false;
     }
 
+    // Заблокированная вкладка держит свой каталог.
+    if (!navigatingHistory_ && TabLocked(tab_) && tab_ < (int)tabs_.size() && !SamePath(target, tabs_[tab_])) {
+        lastError_ = L"Вкладка заблокирована: " + tabs_[tab_];
+        return false;
+    }
+
     // Файл-архив открываем как папку.
     if (IsArchivePath(target) && GetFileAttributesW(target.c_str()) != INVALID_FILE_ATTRIBUTES && !IsDirectory(target)) {
         inArchive_ = true;
@@ -526,6 +827,15 @@ bool Panel::Navigate(const std::wstring& dir, const std::wstring& focus, bool ke
 
     ULONGLONG t2 = GetTickCount64();
     ApplyEntries(focus, fallback);
+
+    // Вкладка показывает текущий каталог (если не заблокирована).
+    if (tab_ >= 0 && tab_ < (int)tabs_.size() && !TabLocked(tab_)) {
+        if (tabs_[tab_] != path_) {
+            tabs_[tab_] = path_;
+            Layout();
+        }
+    }
+
     UpdateHeader();
     UpdateStatus();
     ULONGLONG t3 = GetTickCount64();
@@ -586,9 +896,11 @@ void Panel::ApplyEntries(const std::wstring& focus, int fallbackIndex) {
     SyncTreeToPath();
     UpdateVolume();
     if (tabs_.empty()) {
-        tabs_.push_back(path_);
-        tab_ = 0;
-        RebuildTabBar();
+        if (!path_.empty()) {          // до первой навигации вкладку не создаём
+            tabs_.push_back(path_);
+            tab_ = 0;
+            RebuildTabBar();
+        }
     } else {
         if (tab_ < 0) tab_ = 0;
         if (tab_ < (int)tabs_.size()) tabs_[tab_] = path_;
@@ -750,6 +1062,29 @@ void Panel::InvertMarks() {
     UpdateStatus();
 }
 
+// Отметка по маске: «*.txt» или несколько через пробел/запятую.
+size_t Panel::MarkByMask(const std::wstring& maskText, int mode) {
+    auto masks = SplitMasks(maskText);
+    size_t hit = 0;
+    for (auto& e : entries_) {
+        if (e.isUp) continue;
+        bool match = masks.empty();
+        const std::wstring lower = Lower(e.name);
+        for (auto& m : masks) {
+            if (MatchMask(lower, m)) {
+                match = true;
+                break;
+            }
+        }
+        if (!match) continue;
+        e.marked = (mode == 0) ? true : (mode == 1 ? false : !e.marked);
+        ++hit;
+    }
+    InvalidateRect(list_, nullptr, FALSE);
+    UpdateStatus();
+    return hit;
+}
+
 void Panel::ClearMarks() {
     for (auto& e : entries_) e.marked = false;
     InvalidateRect(list_, nullptr, FALSE);
@@ -766,6 +1101,7 @@ void Panel::Sort(int column, bool reverse) {
     std::stable_sort(entries_.begin(), entries_.end(),
                      [this](const Entry& a, const Entry& b) { return CmpEntry(a, b, sortColumn_, sortReverse_); });
     ApplyEntries(focus, 0);
+    UpdateSortArrows();
     InvalidateRect(list_, nullptr, FALSE);
 }
 
@@ -794,8 +1130,23 @@ void Panel::UpdateStatus() {
     } else {
         swprintf(buf, 512, L"Файлов: %zu · %ls   |   Папок: %zu", files, FmtSize(total).c_str(), dirs);
     }
-    // Свободное место показывается отдельной строкой под дисками (см. UpdateVolume).
-    SetWindowTextW(status_, buf);
+    // Слева — сведения о записи под курсором, как в TC, затем сводка.
+    std::wstring head;
+    if (Entry* cur = Cursor(); cur && !cur->isUp) {
+        head = cur->name;
+        head += L"   ·   ";
+        head += cur->isDir ? L"<DIR>" : FmtSize(cur->size);
+        const std::wstring date = FmtDate(cur->ft);
+        if (!date.empty()) {
+            head += L"   ·   ";
+            head += date;
+        }
+        head += L"   ·   ";
+        head += AttrMask(cur->attr);
+    }
+
+    const std::wstring text = head.empty() ? std::wstring(buf) : head + L"   |   " + buf;
+    SetWindowTextW(status_, text.c_str());
 }
 
 void Panel::FillDispInfo(NMLVDISPINFO* info) {
@@ -816,7 +1167,7 @@ void Panel::FillDispInfo(NMLVDISPINFO* info) {
                 if (e.isUp) {
                     text = L"<Папка>";
                 } else if (e.isDir) {
-                    text = e.dirSizeBusy ? L"…" : (e.dirSizeKnown ? FmtSize(e.dirSize) : L"<Папка>");
+                    text = e.dirSizeBusy ? L"…" : (e.dirSizeKnown ? FmtSize(e.dirSize) : L"<DIR>");
                 } else {
                     text = FmtSize(e.size);
                 }
@@ -1039,6 +1390,129 @@ void Panel::CalculateDirSize(int index) {
     }).detach();
 }
 
+// Заголовок пути: клик по компоненту — переход, двойной клик — ввод пути (как в TC).
+LRESULT CALLBACK Panel::HeaderProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, UINT_PTR id, DWORD_PTR ref) {
+    auto* self = reinterpret_cast<Panel*>(ref);
+    switch (msg) {
+        case WM_SETCURSOR:
+            SetCursor(LoadCursorW(nullptr, IDC_HAND));
+            return TRUE;
+
+        case WM_LBUTTONDOWN: {
+            if (!self) break;
+            const int x = GET_X_LPARAM(lParam);
+            const DWORD now = GetTickCount();
+            int dx = x - self->headerClickX_;
+            if (dx < 0) dx = -dx;
+            const bool dbl = self->headerClickX_ >= 0 &&
+                             (int)(now - self->headerClickTick_) <= (int)GetDoubleClickTime() &&
+                             dx <= GetSystemMetrics(SM_CXDOUBLECLK) / 2;
+            self->headerClickTick_ = now;
+            self->headerClickX_ = x;
+            if (dbl) {
+                self->headerClickX_ = -1;
+                self->OnHeaderDblClick();
+            }
+            return 0;
+        }
+
+        case WM_LBUTTONUP:
+            if (self) self->OnHeaderClick(GET_X_LPARAM(lParam));
+            return 0;
+
+        default:
+            break;
+    }
+    return DefSubclassProc(hwnd, msg, wParam, lParam);
+}
+
+void Panel::OnHeaderDblClick() {
+    if (inArchive_) return;
+    std::wstring value = DisplayPath();
+    if (!InputBox(GetParent(header_), L"Переход", L"Путь:", value, true)) return;
+    value = Trim(value);
+    if (value.empty()) return;
+    if (!Navigate(value)) {
+        MessageBoxW(GetParent(header_), NavigateError().c_str(), L"Переход", MB_ICONERROR);
+    }
+}
+
+// Разбивает путь на компоненты: «E:\Work\VSC» → [E:, Work, VSC].
+static std::vector<std::wstring> SplitPathParts(const std::wstring& path) {
+    std::vector<std::wstring> parts;
+    std::wstring acc;
+    for (size_t i = 0; i < path.size(); ++i) {
+        const wchar_t ch = path[i];
+        if (ch == L'\\') {
+            if (!acc.empty()) parts.push_back(acc);
+            acc.clear();
+        } else {
+            acc.push_back(ch);
+        }
+    }
+    if (!acc.empty()) parts.push_back(acc);
+    return parts;
+}
+
+void Panel::OnHeaderClick(int x) {
+    if (inArchive_ || !header_) return;
+
+    // Видимый текст без хвоста «\*.*»
+    std::wstring shownText;
+    {
+        const int len = GetWindowTextLengthW(header_);
+        shownText.resize(len);
+        if (len > 0) GetWindowTextW(header_, &shownText[0], len + 1);
+    }
+    if (const size_t maskPos = shownText.find(L"*.*"); maskPos != std::wstring::npos) {
+        shownText = shownText.substr(0, maskPos);
+    }
+    while (!shownText.empty() && shownText.back() == L'\\') shownText.pop_back();
+    if (shownText.empty()) return;
+
+    const std::vector<std::wstring> real = SplitPathParts(DisplayPath());
+    const std::vector<std::wstring> shown = SplitPathParts(shownText);
+    if (real.empty() || shown.empty()) return;
+
+    // Какая видимая часть под курсором
+    HDC dc = GetDC(header_);
+    HGDIOBJ oldFont = SelectObject(dc, font_ ? font_ : GetStockObject(DEFAULT_GUI_FONT));
+    int left = Scale(4, dpi_);
+    int clicked = -1;
+    for (size_t i = 0; i < shown.size(); ++i) {
+        SIZE partSize{};
+        GetTextExtentPoint32W(dc, shown[i].c_str(), (int)shown[i].size(), &partSize);
+        if (x >= left && x < left + partSize.cx) {
+            clicked = (int)i;
+            break;
+        }
+        left += partSize.cx;
+        SIZE sepSize{};
+        GetTextExtentPoint32W(dc, L"\\", 1, &sepSize);
+        left += sepSize.cx;
+    }
+    SelectObject(dc, oldFont);
+    ReleaseDC(header_, dc);
+    if (clicked < 0) return;
+
+    // Сопоставляем с конца: «…» съедает начало пути
+    int base = (int)real.size() - (int)shown.size();
+    if (base < 0) base = 0;
+    const int index = base + clicked;
+    if (index < 0 || index >= (int)real.size()) return;
+
+    std::wstring target;
+    for (int i = 0; i <= index; ++i) {
+        target += real[i];
+        if (i < index) target += L"\\";
+    }
+    if (index == 0 && real[0].size() == 2 && real[0][1] == L':') target += L"\\";
+
+    if (!Navigate(target)) {
+        MessageBoxW(GetParent(header_), NavigateError().c_str(), L"Переход", MB_ICONERROR);
+    }
+}
+
 LRESULT CALLBACK Panel::ProcStatic(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     Panel* self = nullptr;
     if (msg == WM_NCCREATE) {
@@ -1098,6 +1572,15 @@ LRESULT Panel::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             return 0;
         }
 
+        case WM_DRAWITEM: {
+            auto dis = reinterpret_cast<DRAWITEMSTRUCT*>(lParam);
+            if (dis && dis->CtlType == ODT_BUTTON && dis->CtlID >= kTabBase && dis->CtlID < kTabBase + 32) {
+                DrawTabButton(dis);
+                return TRUE;
+            }
+            return FALSE;
+        }
+
         case WM_COMMAND: {
             int id = LOWORD(wParam);
             if (id >= kTabBase && id < kTabBase + 32) {
@@ -1130,6 +1613,10 @@ LRESULT Panel::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
         case WM_NOTIFY: {
             auto hdr = reinterpret_cast<NMHDR*>(lParam);
+            if (hdr && hdr->code == HDN_ENDTRACKW) {
+                SaveColumnWidths();
+                return 0;
+            }
             if (hdr && tree_ && hdr->hwndFrom == tree_) {
                 if (hdr->code == TVN_SELCHANGEDW) {
                     auto* tv = reinterpret_cast<NMTREEVIEWW*>(lParam);
@@ -1163,6 +1650,13 @@ LRESULT Panel::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     return CDRF_DODEFAULT;
                 }
 
+                case LVN_ITEMCHANGED: {
+                    // Курсор переехал — обновляем строку состояния и быстрый просмотр.
+                    UpdateStatus();
+                    PostMessageW(GetParent(hwnd_), WM_APP + 301, (WPARAM)side_, 0);
+                    return 0;
+                }
+
                 case LVN_COLUMNCLICK: {
                     auto info = reinterpret_cast<NMLISTVIEW*>(lParam);
                     if (sortColumn_ == info->iSubItem) {
@@ -1172,6 +1666,7 @@ LRESULT Panel::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                         sortReverse_ = (sortColumn_ == 2 || sortColumn_ == 3);
                     }
                     Sort(sortColumn_, sortReverse_);
+                    UpdateSortArrows();
                     return 0;
                 }
 

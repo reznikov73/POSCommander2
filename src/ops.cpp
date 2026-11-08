@@ -22,7 +22,7 @@ std::wstring BuildPathList(const std::vector<std::wstring>& paths) {
 // ---------- SHFileOperation: резервный путь ----------
 
 bool CopyMoveLegacy(HWND owner, const std::vector<std::wstring>& sources, const std::wstring& target,
-                    bool move, bool silent) {
+                    bool move, bool silent, bool overwriteAll) {
     std::wstring from = BuildPathList(sources);
     std::wstring to;
     if (!target.empty()) {
@@ -37,6 +37,7 @@ bool CopyMoveLegacy(HWND owner, const std::vector<std::wstring>& sources, const 
     op.pFrom = from.c_str();
     op.pTo = target.empty() ? nullptr : to.c_str();
     op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMMKDIR;
+    if (overwriteAll) op.fFlags |= FOF_NOCONFIRMATION;
     if (silent) op.fFlags |= FOF_SILENT | FOF_NOCONFIRMATION | FOF_NOERRORUI;
 
     int result = SHFileOperationW(&op);
@@ -61,7 +62,7 @@ bool DeleteLegacy(HWND owner, const std::vector<std::wstring>& items, bool silen
 
 // Возвращает false, только если COM-операция недоступна (тогда есть смысл в резервном пути).
 bool CopyMoveModern(HWND owner, const std::vector<std::wstring>& sources, const std::wstring& target,
-                    bool move, bool* performed) {
+                    bool move, bool* performed, bool overwriteAll) {
     *performed = false;
 
     IFileOperation* op = nullptr;
@@ -70,6 +71,7 @@ bool CopyMoveModern(HWND owner, const std::vector<std::wstring>& sources, const 
     }
 
     DWORD flags = FOF_NOCONFIRMMKDIR;
+    if (overwriteAll) flags |= FOF_NOCONFIRMATION;
     if (owner) op->SetOwnerWindow(owner);
     op->SetOperationFlags(flags);
 
@@ -146,16 +148,16 @@ bool DeleteModern(HWND owner, const std::vector<std::wstring>& items, bool* perf
 }  // namespace
 
 bool ShellCopyMove(HWND owner, const std::vector<std::wstring>& sources, const std::wstring& target,
-                   bool move, bool silent) {
+                   bool move, bool silent, bool overwriteAll) {
     if (sources.empty()) return false;
 
     if (!silent) {
         bool performed = false;
-        if (CopyMoveModern(owner, sources, target, move, &performed)) return performed;
+        if (CopyMoveModern(owner, sources, target, move, &performed, overwriteAll)) return performed;
         // COM недоступен — работаем старым путём.
-        return CopyMoveLegacy(owner, sources, target, move, false);
+        return CopyMoveLegacy(owner, sources, target, move, false, overwriteAll);
     }
-    return CopyMoveLegacy(owner, sources, target, move, true);
+    return CopyMoveLegacy(owner, sources, target, move, true, overwriteAll);
 }
 
 bool RenamePath(const std::wstring& from, const std::wstring& to, DWORD& err) {

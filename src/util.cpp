@@ -161,6 +161,93 @@ std::wstring FmtNum(ULONGLONG value) {
     return out;
 }
 
+// Первые maxBytes файла как текст: UTF-16 по BOM, иначе UTF-8, иначе ANSI.
+// Признак бинарного файла — нулевой байт в начале.
+std::wstring LoadTextPreview(const std::wstring& path, size_t maxBytes, bool& binary) {
+    binary = false;
+    HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                              nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return L"<не удалось открыть файл: " + ErrText(GetLastError()) + L">";
+
+    std::vector<char> buf(maxBytes + 4);
+    DWORD read = 0;
+    const BOOL ok = ReadFile(file, buf.data(), (DWORD)maxBytes, &read, nullptr);
+    CloseHandle(file);
+    if (!ok) return L"<не удалось прочитать файл>";
+
+    buf.resize(read);
+    if (read == 0) return L"<пустой файл>";
+
+    // UTF-16 с BOM
+    if (read >= 2 && (BYTE)buf[0] == 0xFF && (BYTE)buf[1] == 0xFE) {
+        return std::wstring(reinterpret_cast<const wchar_t*>(buf.data() + 2), (read - 2) / 2);
+    }
+
+    bool hasNul = false;
+    for (size_t i = 0; i < read && i < 4096; ++i) {
+        if (buf[i] == 0) {
+            hasNul = true;
+            break;
+        }
+    }
+    if (hasNul) {
+        static const wchar_t* hex = L"0123456789ABCDEF";
+        std::wstring out;
+        out.reserve(80 * (read / 16 + 1));
+        wchar_t line[8];
+        for (size_t off = 0; off < read; off += 16) {
+            swprintf(line, 8, L"%06zX  ", off);
+            out += line;
+            for (size_t i = 0; i < 16; ++i) {
+                if (off + i < read) {
+                    const BYTE b = (BYTE)buf[off + i];
+                    out += hex[b >> 4];
+                    out += hex[b & 0x0F];
+                } else {
+                    out += L"  ";
+                }
+                out += L' ';
+                if (i == 7) out += L' ';
+            }
+            out += L' ';
+            for (size_t i = 0; i < 16 && off + i < read; ++i) {
+                const BYTE b = (BYTE)buf[off + i];
+                out += (b >= 32 && b < 127) ? (wchar_t)b : L'.';
+            }
+            out += L"\r\n";
+        }
+        binary = true;
+        return out;
+    }
+
+    size_t start = 0;
+    if (read >= 3 && (BYTE)buf[0] == 0xEF && (BYTE)buf[1] == 0xBB && (BYTE)buf[2] == 0xBF) start = 3;
+    UINT cp = CP_ACP;
+    if (start == 3) {
+        cp = CP_UTF8;
+    } else {
+        int wide = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, buf.data(), (int)read, nullptr, 0);
+        if (wide > 0) cp = CP_UTF8;
+    }
+    const char* src = buf.data() + start;
+    const int srcLen = (int)(read - start);
+    int need = MultiByteToWideChar(cp, 0, src, srcLen, nullptr, 0);
+    if (need <= 0) return L"<не удалось декодировать текст>";
+    std::wstring out((size_t)need, L'\0');
+    MultiByteToWideChar(cp, 0, src, srcLen, &out[0], need);
+    return out;
+}
+
+std::wstring AttrMask(DWORD attr) {
+    std::wstring out;
+    out += (attr & FILE_ATTRIBUTE_READONLY) ? L'r' : L'-';
+    out += (attr & FILE_ATTRIBUTE_HIDDEN) ? L'h' : L'-';
+    out += (attr & FILE_ATTRIBUTE_SYSTEM) ? L's' : L'-';
+    out += (attr & FILE_ATTRIBUTE_ARCHIVE) ? L'a' : L'-';
+    out += (attr & FILE_ATTRIBUTE_DIRECTORY) ? L'd' : L'-';
+    return out;
+}
+
 std::wstring FmtSize(ULONGLONG bytes) {
     if (bytes < 1024) {
         wchar_t b[64];

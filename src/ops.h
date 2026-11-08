@@ -10,7 +10,7 @@
 // пауза, отмена, конфликты), при недоступности COM — SHFileOperation.
 // silent = true — без диалогов и прогресса (для автотестов).
 bool ShellCopyMove(HWND owner, const std::vector<std::wstring>& sources, const std::wstring& target,
-                   bool move, bool silent = false);
+                   bool move, bool silent = false, bool overwriteAll = false);
 
 // Переименование одного пути. При неудаче err = код GetLastError, иначе 0.
 bool RenamePath(const std::wstring& from, const std::wstring& to, DWORD& err);

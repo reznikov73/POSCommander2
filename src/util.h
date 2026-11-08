@@ -42,6 +42,13 @@ void LogDebug(const std::wstring& text);
 // Суммарный размер содержимого каталога (рекурсивно, без переходов по ссылкам).
 ULONGLONG DirectorySize(const std::wstring& dir, const std::atomic<bool>* cancel = nullptr);
 
+// Строка атрибутов в стиле TC: «-a--» (r/h/s/a/d, прочерк — нет атрибута).
+std::wstring AttrMask(DWORD attr);
+
+// Текст для быстрого просмотра (Ctrl+Q). Бинарный файл отдаётся hex-дампом,
+// binary = true. Читается не больше maxBytes.
+std::wstring LoadTextPreview(const std::wstring& path, size_t maxBytes, bool& binary);
+
 std::vector<DriveItem> GetDrives();
 std::wstring DriveRootOf(const std::wstring& path);
 // "1 253,6 Гб свободно из 3 726,0 Гб" для строки состояния.

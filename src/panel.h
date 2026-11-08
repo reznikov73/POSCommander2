@@ -39,6 +39,8 @@ public:
     void ToggleMarkCursor();
     void MarkAll(bool mark, bool includingDirs = true);
     void InvertMarks();
+    // Режим: 0 — отметить, 1 — снять, 2 — инвертировать (Num + / - / *).
+    size_t MarkByMask(const std::wstring& maskText, int mode);
     void ClearMarks();
 
     // Сохранение/восстановление состояния панели для настроек.
@@ -71,6 +73,23 @@ public:
     void CloseTab();
     void ActivateTab(int index);
     void NextTab();
+    void CloseTabAt(int index);
+    void CloseAllTabs();
+    void AddTabFor(const std::wstring& dir, const std::wstring& name);
+    void DuplicateTab(int index);
+    void ToggleTabLock(int index);
+    void ShowTabMenu(int index, POINT pt);
+    void DrawTabButton(DRAWITEMSTRUCT* dis);
+    std::wstring TabTitle(int index) const;
+    int TabIndexFromHwnd(HWND wnd) const;
+    RECT TabCloseRect(int index) const;
+    static LRESULT CALLBACK TabProc(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
+    const std::vector<std::wstring>& TabTitles() const { return tabNames_; }
+    const std::vector<bool>& TabLocks() const { return tabLocked_; }
+    void SetTabMeta(const std::vector<std::wstring>& names, const std::vector<int>& locks);
+    bool TabLocked(int index) const {
+        return index >= 0 && index < (int)tabLocked_.size() && tabLocked_[index];
+    }
     int TabCount() const { return (int)tabs_.size(); }
 
     void Sort(int column, bool reverse);
@@ -102,6 +121,16 @@ private:
     void UpdateHeader();
     void UpdateStatus();
     void UpdateColumns(int width);
+    void UpdateSortArrows();
+    void SaveColumnWidths();
+    static LRESULT CALLBACK HeaderProc(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
+    void OnHeaderClick(int x);
+    void OnHeaderDblClick();
+
+    std::wstring headerClickPath_;
+    DWORD headerClickTick_ = 0;
+    int headerClickX_ = -1;
+
     void DrawRow(NMLVCUSTOMDRAW* cd);
     void FillDispInfo(NMLVDISPINFO* info);
 
@@ -120,6 +149,8 @@ private:
     std::vector<HWND> driveButtons_;
     std::vector<wchar_t> driveLetters_;
     std::vector<HWND> tabButtons_;
+    std::vector<std::wstring> tabNames_;    // пользовательские подписи вкладок (пусто — имя каталога)
+    std::vector<bool> tabLocked_;           // заблокированные вкладки
     std::vector<std::wstring> tabs_;
     int tab_ = 0;
     bool inArchive_ = false;

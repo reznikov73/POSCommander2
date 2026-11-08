@@ -45,6 +45,38 @@ void WriteTabs(const wchar_t* section, const wchar_t* prefix, const std::vector<
     }
 }
 
+std::vector<std::wstring> ReadNames(const wchar_t* section, const wchar_t* prefix, size_t count) {
+    std::vector<std::wstring> out;
+    for (size_t i = 0; i < count; ++i) {
+        const std::wstring key = std::wstring(prefix) + std::to_wstring(i);
+        out.push_back(ReadStr(section, key.c_str()));
+    }
+    return out;
+}
+
+void WriteNames(const wchar_t* section, const wchar_t* prefix, const std::vector<std::wstring>& values) {
+    for (size_t i = 0; i < values.size(); ++i) {
+        const std::wstring key = std::wstring(prefix) + std::to_wstring(i);
+        WriteStr(section, key.c_str(), values[i]);
+    }
+}
+
+std::vector<int> ReadFlags(const wchar_t* section, const wchar_t* prefix, size_t count) {
+    std::vector<int> out;
+    for (size_t i = 0; i < count; ++i) {
+        const std::wstring key = std::wstring(prefix) + std::to_wstring(i);
+        out.push_back(ReadInt(section, key.c_str(), 0));
+    }
+    return out;
+}
+
+void WriteFlags(const wchar_t* section, const wchar_t* prefix, const std::vector<int>& values) {
+    for (size_t i = 0; i < values.size(); ++i) {
+        const std::wstring key = std::wstring(prefix) + std::to_wstring(i);
+        WriteInt(section, key.c_str(), values[i]);
+    }
+}
+
 }  // namespace
 
 std::wstring SettingsFilePath() {
@@ -84,10 +116,28 @@ void LoadSettings() {
     s.sortColumn = ReadInt(L"View", L"SortColumn", 0);
     s.sortReverse = ReadInt(L"View", L"SortReverse", 0) != 0;
 
+    s.colWidth[0] = ReadInt(L"View", L"ColName", 240);
+    s.colWidth[1] = ReadInt(L"View", L"ColType", 70);
+    s.colWidth[2] = ReadInt(L"View", L"ColSize", 100);
+    s.colWidth[3] = ReadInt(L"View", L"ColDate", 120);
+    for (int i = 0; i < 4; ++i) {
+        if (s.colWidth[i] < 40) s.colWidth[i] = 40;
+        if (s.colWidth[i] > 2000) s.colWidth[i] = 2000;
+    }
+
     s.leftTabs = ReadTabs(L"Left", L"Tab");
     s.rightTabs = ReadTabs(L"Right", L"Tab");
     s.leftActive = ReadInt(L"Left", L"Active", 0);
     s.rightActive = ReadInt(L"Right", L"Active", 0);
+    s.leftCursor = ReadInt(L"Left", L"Cursor", 0);
+    s.rightCursor = ReadInt(L"Right", L"Cursor", 0);
+    s.leftTabNames = ReadNames(L"Left", L"TabName", s.leftTabs.size());
+    s.rightTabNames = ReadNames(L"Right", L"TabName", s.rightTabs.size());
+    s.leftTabLocks = ReadFlags(L"Left", L"TabLock", s.leftTabs.size());
+    s.rightTabLocks = ReadFlags(L"Right", L"TabLock", s.rightTabs.size());
+
+    s.activeSide = ReadInt(L"Layout", L"ActiveSide", 0);
+    if (s.activeSide != 1) s.activeSide = 0;
 
     s.bookmarks = ReadTabs(L"Bookmarks", L"Path");
 }
@@ -106,11 +156,23 @@ void SaveSettings() {
     WriteInt(L"View", L"ShowHidden", s.showHidden ? 1 : 0);
     WriteInt(L"View", L"SortColumn", s.sortColumn);
     WriteInt(L"View", L"SortReverse", s.sortReverse ? 1 : 0);
+    WriteInt(L"View", L"ColName", s.colWidth[0]);
+    WriteInt(L"View", L"ColType", s.colWidth[1]);
+    WriteInt(L"View", L"ColSize", s.colWidth[2]);
+    WriteInt(L"View", L"ColDate", s.colWidth[3]);
 
     WriteTabs(L"Left", L"Tab", s.leftTabs);
     WriteInt(L"Left", L"Active", s.leftActive);
     WriteTabs(L"Right", L"Tab", s.rightTabs);
     WriteInt(L"Right", L"Active", s.rightActive);
+
+    WriteInt(L"Left", L"Cursor", s.leftCursor);
+    WriteInt(L"Right", L"Cursor", s.rightCursor);
+    WriteNames(L"Left", L"TabName", s.leftTabNames);
+    WriteNames(L"Right", L"TabName", s.rightTabNames);
+    WriteFlags(L"Left", L"TabLock", s.leftTabLocks);
+    WriteFlags(L"Right", L"TabLock", s.rightTabLocks);
+    WriteInt(L"Layout", L"ActiveSide", s.activeSide);
 
     WriteInt(L"Bookmarks", L"PathCount", (int)s.bookmarks.size());
     for (size_t i = 0; i < s.bookmarks.size(); ++i) {
