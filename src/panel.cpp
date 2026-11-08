@@ -821,6 +821,10 @@ LRESULT Panel::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             if (!hdr || hdr->hwndFrom != list_) break;
 
             switch (hdr->code) {
+                case LVN_BEGINDRAG:
+                    // Список начал перетаскивание: решение принимает главное окно.
+                    PostMessageW(GetParent(hwnd_), WM_APP + 300, (WPARAM)side_, 0);
+                    return 0;
                 case LVN_GETDISPINFOW:
                     FillDispInfo(reinterpret_cast<NMLVDISPINFO*>(lParam));
                     return 0;

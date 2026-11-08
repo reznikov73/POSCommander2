@@ -117,6 +117,8 @@ private:
     void DoSort(int column);
     void ShowDrivesMenu(int side);
     void AddBookmark();
+    int PanelAtScreen(POINT screen) const;
+    void DropOnPanel(int fromSide, int toSide);
     void ShowBookmarksMenu();
     void RunCommandLine();
     void AppendToPrompt(const std::wstring& text, bool quoted);
@@ -137,6 +139,8 @@ private:
     bool showHidden_ = true;
     int splitPercent_ = 50;
     std::wstring quickFilter_;          // буфер быстрого поиска по буквам
+    bool dragging_ = false;             // внутреннее перетаскивание файлов
+    int dragFromSide_ = 0;              // из какой панели тянут
     ULONGLONG quickFilterAt_ = 0;       // время последнего символа
     bool draggingSplit_ = false;
     std::vector<std::wstring> history_;
@@ -608,6 +612,42 @@ void App::RunCommandLine() {
 }
 
 // Закладки каталогов: список хранится в настройках.
+// Какая панель под точкой экрана: 0 — левая, 1 — правая, -1 — мимо.
+int App::PanelAtScreen(POINT screen) const {
+    for (int side = 0; side < 2; ++side) {
+        HWND h = (side == 0) ? left_.Hwnd() : right_.Hwnd();
+        RECT rc{};
+        if (!h || !GetWindowRect(h, &rc)) continue;
+        if (screen.x >= rc.left && screen.x < rc.right && screen.y >= rc.top && screen.y < rc.bottom) return side;
+    }
+    return -1;
+}
+
+// Перетаскивание между панелями: по умолчанию копирование, с Shift — перемещение.
+void App::DropOnPanel(int fromSide, int toSide) {
+    if (fromSide == toSide) return;
+
+    Panel* src = (fromSide == 0) ? &left_ : &right_;
+    Panel* dst = (fromSide == 0) ? &right_ : &left_;
+
+    std::vector<std::wstring> items = src->SelectedPaths();
+    LogDebug(L"drop items=" + std::to_wstring(items.size()) + L" target='" + dst->Path() + L"'");
+    if (items.empty()) return;
+
+    const bool move = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+    const std::wstring target = dst->Path();
+    if (target.empty()) return;
+
+    if (ShellCopyMove(hwnd_, items, target, move)) {
+        src->ClearMarks();
+    } else {
+        ShowError(move ? L"Перемещение не выполнено или отменено." : L"Копирование не выполнено или отменено.");
+    }
+    src->Reload();
+    dst->Reload();
+    UpdatePromptLabel();
+}
+
 void App::AddBookmark() {
     const std::wstring path = ActivePanel()->Path();
     if (path.empty()) return;
@@ -1013,6 +1053,14 @@ LRESULT App::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             LoadPanels();
             return 0;
 
+        case WM_APP + 300:
+            // Панель сообщила LVN_BEGINDRAG — ведём перетаскивание сами.
+            dragging_ = true;
+            dragFromSide_ = (int)wParam;
+            LogDebug(L"drag begin side=" + std::to_wstring(dragFromSide_));
+            SetCapture(hwnd_);
+            return 0;
+
         case WM_SIZE:
             Layout();
             return 0;
@@ -1084,6 +1132,13 @@ LRESULT App::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_MOUSEMOVE: {
+            if (dragging_) {
+                POINT pt{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+                ClientToScreen(hwnd_, &pt);
+                const int target = PanelAtScreen(pt);
+                SetCursor(LoadCursorW(nullptr, (target >= 0 && target != dragFromSide_) ? IDC_HAND : IDC_NO));
+                return 0;
+            }
             if (draggingSplit_) {
                 int x = GET_X_LPARAM(lParam);
                 RECT rc{};
@@ -1102,6 +1157,17 @@ LRESULT App::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_LBUTTONUP:
+            if (dragging_) {
+                dragging_ = false;
+                ReleaseCapture();
+                POINT pt{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+                ClientToScreen(hwnd_, &pt);
+                const int target = PanelAtScreen(pt);
+                LogDebug(L"drag end target=" + std::to_wstring(target) + L" at " + std::to_wstring(pt.x) + L"," + std::to_wstring(pt.y));
+                SetCursor(LoadCursorW(nullptr, IDC_ARROW));
+                if (target >= 0) DropOnPanel(dragFromSide_, target);
+                return 0;
+            }
             if (draggingSplit_) {
                 draggingSplit_ = false;
                 ReleaseCapture();
