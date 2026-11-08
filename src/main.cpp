@@ -37,6 +37,7 @@ enum : int {
     IDM_PACK = 178,
     IDM_BATCH_RENAME = 179,
     IDM_PLUGINS = 182,
+    IDM_QUEUE = 184,
 
     IDM_SEL_ALL = 120,
     IDM_SEL_NONE,
@@ -125,6 +126,11 @@ private:
     void AddBookmark();
     void PackSelection();
     void BatchRename();
+    void QueueCopyMove(const std::vector<std::wstring>& items, const std::wstring& target, bool move);
+    void RunNextJob();
+    void ShowQueueWindow();
+    static LRESULT CALLBACK QueueProc(HWND, UINT, WPARAM, LPARAM);
+    void RefreshQueueWindow();
     int PanelAtScreen(POINT screen) const;
     // Распаковать один файл из архива во временный каталог; вернуть путь или пусто.
     std::wstring ExtractOneFromArchive(Panel* panel, const std::wstring& innerName);
@@ -151,6 +157,19 @@ private:
     std::wstring quickFilter_;          // буфер быстрого поиска по буквам
     bool dragging_ = false;             // внутреннее перетаскивание файлов
     int dragFromSide_ = 0;              // из какой панели тянут
+
+    // Очередь операций копирования/перемещения.
+    struct CopyJob {
+        std::vector<std::wstring> items;
+        std::wstring target;
+        bool move = false;
+        std::wstring status;            // ожидает / выполняется / готово / ошибка
+    };
+    std::vector<CopyJob> jobs_;
+    int activeJob_ = -1;
+    HWND queueWnd_ = nullptr;
+    HWND queueList_ = nullptr;
+    HWND queueStatus_ = nullptr;
     ULONGLONG quickFilterAt_ = 0;       // время последнего символа
     bool draggingSplit_ = false;
     std::vector<std::wstring> history_;
@@ -201,6 +220,8 @@ void App::BuildMenu() {
     AppendMenuW(file, MF_STRING, IDM_BATCH_RENAME, L"Пакетное &переименование…\tCtrl+M");
     AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(file, MF_STRING, IDM_PLUGINS, L"&Плагины Total Commander…");
+    AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(file, MF_STRING, IDM_QUEUE, L"Очередь &операций…");
     AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(file, MF_STRING, IDM_EXIT, L"В&ыход\tAlt+F4");
     AppendMenuW(menu_, MF_POPUP, (UINT_PTR)file, L"&Файл");
@@ -522,13 +543,8 @@ void App::DoCopyMove(bool move) {
         }
     }
 
-    if (!ShellCopyMove(hwnd_, sources, target, move)) {
-        ShowError(L"Операция не выполнена или отменена.");
-    }
+    QueueCopyMove(sources, target, move);
     panel->ClearMarks();
-    panel->Reload();
-    other->Reload();
-    UpdatePromptLabel();
 }
 
 void App::DoRename() {
@@ -758,6 +774,53 @@ void App::PackSelection() {
     UpdatePromptLabel();
 }
 
+// ---------- очередь операций ----------
+
+void App::QueueCopyMove(const std::vector<std::wstring>& items, const std::wstring& target, bool move) {
+    if (items.empty() || target.empty()) return;
+
+    CopyJob job;
+    job.items = items;
+    job.target = target;
+    job.move = move;
+    job.status = L"ожидает";
+    jobs_.push_back(std::move(job));
+
+    LogDebug(L"queue: добавлено задание, всего=" + std::to_wstring(jobs_.size()));
+    RefreshQueueWindow();
+
+    if (activeJob_ < 0) RunNextJob();
+}
+
+void App::RunNextJob() {
+    activeJob_ = -1;
+    for (size_t i = 0; i < jobs_.size(); ++i) {
+        if (jobs_[i].status == L"ожидает") {
+            activeJob_ = (int)i;
+            break;
+        }
+    }
+    if (activeJob_ < 0) {
+        RefreshQueueWindow();
+        return;
+    }
+
+    CopyJob& job = jobs_[activeJob_];
+    job.status = L"выполняется";
+    RefreshQueueWindow();
+
+    const bool ok = ShellCopyMove(hwnd_, job.items, job.target, job.move);
+    job.status = ok ? L"готово" : L"ошибка";
+
+    left_.Reload();
+    right_.Reload();
+    UpdatePromptLabel();
+    RefreshQueueWindow();
+
+    // Следующее задание запускаем из цикла сообщений, а не рекурсией.
+    PostMessageW(hwnd_, WM_APP + 401, 0, 0);
+}
+
 // Пакетное переименование: {name} — исходное имя без расширения, {n} — номер по порядку.
 void App::BatchRename() {
     Panel* panel = ActivePanel();
@@ -873,6 +936,136 @@ void App::ShowBookmarksMenu() {
     }
 }
 
+LRESULT CALLBACK App::QueueProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
+
+            auto* app = reinterpret_cast<App*>(GetWindowLongPtrW(h, GWLP_USERDATA));
+            switch (msg) {
+                case WM_CREATE: {
+                    auto cs = reinterpret_cast<CREATESTRUCTW*>(lp);
+                    app = reinterpret_cast<App*>(cs->lpCreateParams);
+                    SetWindowLongPtrW(h, GWLP_USERDATA, (LONG_PTR)app);
+                    app->queueWnd_ = h;
+
+                    app->queueList_ = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
+                                                      WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SHOWSELALWAYS,
+                                                      0, 0, 10, 10, h, (HMENU)(INT_PTR)1, g_inst, nullptr);
+                    ListView_SetExtendedListViewStyle(app->queueList_,
+                                                      LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
+                    LVCOLUMNW col{};
+                    col.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
+                    col.cx = 70; col.iSubItem = 0; col.pszText = (LPWSTR)L"Операция";
+                    ListView_InsertColumn(app->queueList_, 0, &col);
+                    col.cx = 120; col.iSubItem = 1; col.pszText = (LPWSTR)L"Что";
+                    ListView_InsertColumn(app->queueList_, 1, &col);
+                    col.cx = 300; col.iSubItem = 2; col.pszText = (LPWSTR)L"Куда";
+                    ListView_InsertColumn(app->queueList_, 2, &col);
+                    col.cx = 110; col.iSubItem = 3; col.pszText = (LPWSTR)L"Состояние";
+                    ListView_InsertColumn(app->queueList_, 3, &col);
+
+                    app->queueStatus_ = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_LEFT,
+                                                        0, 0, 10, 10, h, (HMENU)(INT_PTR)2, g_inst, nullptr);
+                    if (app->font_) {
+                        SendMessageW(app->queueList_, WM_SETFONT, (WPARAM)app->font_, TRUE);
+                        SendMessageW(app->queueStatus_, WM_SETFONT, (WPARAM)app->font_, TRUE);
+                    }
+
+                    SetTimer(h, 1, 400, nullptr);
+                    app->RefreshQueueWindow();
+                    return 0;
+                }
+                case WM_SIZE: {
+                    if (!app) break;
+                    const int w = LOWORD(lp), hgt = HIWORD(lp), pad = 8, statusH = 22;
+                    MoveWindow(app->queueList_, pad, pad, w - 2 * pad, hgt - 2 * pad - statusH, TRUE);
+                    MoveWindow(app->queueStatus_, pad, hgt - statusH - pad, w - 2 * pad, statusH, TRUE);
+                    return 0;
+                }
+                case WM_TIMER:
+                    if (app) app->RefreshQueueWindow();
+                    return 0;
+                case WM_CLOSE:
+                    DestroyWindow(h);
+                    return 0;
+                case WM_DESTROY:
+                    if (app) {
+                        app->queueWnd_ = nullptr;
+                        app->queueList_ = nullptr;
+                        app->queueStatus_ = nullptr;
+                    }
+                    SetWindowLongPtrW(h, GWLP_USERDATA, 0);
+                    return 0;
+                default:
+                    break;
+            }
+            return DefWindowProcW(h, msg, wp, lp);
+}
+
+void App::ShowQueueWindow() {
+    if (queueWnd_ && IsWindow(queueWnd_)) {
+        SetForegroundWindow(queueWnd_);
+        RefreshQueueWindow();
+        return;
+    }
+
+    static bool registered = false;
+    if (!registered) {
+        WNDCLASSEXW wc{};
+        wc.cbSize = sizeof(wc);
+        wc.lpfnWndProc = QueueProc;
+        wc.hInstance = g_inst;
+        wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+        wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+        wc.lpszClassName = L"POSQueue2";
+        wc.hIcon = LoadIconW(g_inst, MAKEINTRESOURCEW(101));
+        registered = RegisterClassExW(&wc) != 0;
+    }
+
+    RECT rc{};
+    GetWindowRect(hwnd_, &rc);
+    CreateWindowExW(WS_EX_TOOLWINDOW, L"POSQueue2", L"Очередь операций",
+                    WS_OVERLAPPEDWINDOW | WS_VISIBLE, rc.left + 120, rc.top + 120, 700, 340,
+                    nullptr, nullptr, g_inst, this);
+}
+
+void App::RefreshQueueWindow() {
+    if (!queueWnd_ || !IsWindow(queueWnd_)) return;
+
+    if (queueList_) {
+        ListView_DeleteAllItems(queueList_);
+        int row = 0;
+        for (auto& job : jobs_) {
+            std::wstring what = job.items.size() == 1
+                                    ? job.items[0].substr(job.items[0].find_last_of(L'\\') + 1)
+                                    : std::to_wstring(job.items.size()) + L" объектов";
+
+            LVITEMW item{};
+            item.mask = LVIF_TEXT;
+            item.iItem = row;
+            item.pszText = (LPWSTR)(job.move ? L"перемещение" : L"копирование");
+            int index = ListView_InsertItem(queueList_, &item);
+            if (index >= 0) {
+                ListView_SetItemText(queueList_, index, 1, (LPWSTR)what.c_str());
+                ListView_SetItemText(queueList_, index, 2, (LPWSTR)job.target.c_str());
+                ListView_SetItemText(queueList_, index, 3, (LPWSTR)job.status.c_str());
+            }
+            ++row;
+        }
+    }
+
+    if (queueStatus_) {
+        size_t waiting = 0, done = 0, failed = 0;
+        for (auto& job : jobs_) {
+            if (job.status == L"ожидает") ++waiting;
+            else if (job.status == L"готово") ++done;
+            else if (job.status == L"ошибка") ++failed;
+        }
+        wchar_t buf[256]{};
+        swprintf(buf, 256, L"Всего: %zu   ·   ожидает: %zu   ·   готово: %zu   ·   ошибок: %zu",
+                 jobs_.size(), waiting, done, failed);
+        SetWindowTextW(queueStatus_, buf);
+    }
+}
+
 void App::Dispatch(int id) {
     LogDebug(L"Dispatch id=" + std::to_wstring(id));
     Panel* panel = ActivePanel();
@@ -967,6 +1160,9 @@ void App::Dispatch(int id) {
             right_.SetShowHidden(showHidden_);
             left_.Reload();
             right_.Reload();
+            break;
+        case IDM_QUEUE:
+            ShowQueueWindow();
             break;
         case IDM_PLUGINS:
             PluginsDialog(hwnd_);
@@ -1265,6 +1461,10 @@ LRESULT App::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
         case WM_APP + 101:
             LoadPanels();
+            return 0;
+
+        case WM_APP + 401:
+            RunNextJob();
             return 0;
 
         case WM_APP + 300:
