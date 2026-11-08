@@ -33,6 +33,7 @@ enum : int {
     IDM_NAV_BACK, IDM_NAV_FORWARD, IDM_NAV_UP,
     IDM_BOOKMARK_ADD = 170, IDM_BOOKMARK_SHOW,
     IDM_TREE = 175,
+    IDM_PACK = 178,
 
     IDM_SEL_ALL = 120,
     IDM_SEL_NONE,
@@ -119,6 +120,7 @@ private:
     void DoSort(int column);
     void ShowDrivesMenu(int side);
     void AddBookmark();
+    void PackSelection();
     int PanelAtScreen(POINT screen) const;
     // Распаковать один файл из архива во временный каталог; вернуть путь или пусто.
     std::wstring ExtractOneFromArchive(Panel* panel, const std::wstring& innerName);
@@ -190,6 +192,8 @@ void App::BuildMenu() {
     AppendMenuW(file, MF_STRING, IDM_DELETE, L"&Удалить\tF8");
     AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(file, MF_STRING, IDM_PROPERTIES, L"С&войства\tAlt+Enter");
+    AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(file, MF_STRING, IDM_PACK, L"У&паковать…\tAlt+F5");
     AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(file, MF_STRING, IDM_EXIT, L"В&ыход\tAlt+F4");
     AppendMenuW(menu_, MF_POPUP, (UINT_PTR)file, L"&Файл");
@@ -714,6 +718,36 @@ void App::DropOnPanel(int fromSide, int toSide) {
     UpdatePromptLabel();
 }
 
+// Упаковка выделенного в архив: имя и формат задаются в диалоге.
+void App::PackSelection() {
+    Panel* panel = ActivePanel();
+    if (!panel) return;
+
+    if (panel->InArchive()) {
+        MessageBoxW(hwnd_, L"Упаковка из архива не поддерживается.", kTitle, MB_ICONINFORMATION);
+        return;
+    }
+
+    std::vector<std::wstring> items = panel->SelectedPaths();
+    LogDebug(L"pack items=" + std::to_wstring(items.size()) + L" panel='" + panel->Path() + L"'");
+    for (auto& it : items) LogDebug(L"  item: " + it);
+    if (items.empty()) return;
+
+    std::wstring target = JoinPath(panel->Path(), L"архив.zip");
+    if (!InputBox(hwnd_, L"Упаковка", L"Имя архива (.zip или .7z):", target, true)) return;
+    target = Trim(target);
+    if (target.empty()) return;
+
+    std::wstring error;
+    if (!CreateArchive(target, items, error)) {
+        ShowError(error);
+        return;
+    }
+    panel->ClearMarks();
+    panel->Reload();
+    UpdatePromptLabel();
+}
+
 void App::AddBookmark() {
     const std::wstring path = ActivePanel()->Path();
     if (path.empty()) return;
@@ -850,6 +884,9 @@ void App::Dispatch(int id) {
             left_.Reload();
             right_.Reload();
             break;
+        case IDM_PACK:
+            PackSelection();
+            break;
         case IDM_TREE:
             panel->ToggleTree();
             break;
@@ -966,6 +1003,10 @@ bool App::PreTranslate(const MSG& msg) {
     }
     if (alt && msg.wParam == VK_F2) {
         ShowDrivesMenu(1);
+        return true;
+    }
+    if (alt && msg.wParam == VK_F5) {
+        Dispatch(IDM_PACK);
         return true;
     }
     if (alt && msg.wParam == VK_RETURN) {

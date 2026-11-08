@@ -22,6 +22,10 @@ bool ListArchive(const std::wstring& archive, std::vector<ArchiveEntry>& out);
 bool ExtractFromArchive(const std::wstring& archive, const std::vector<std::wstring>& innerPaths,
                         const std::wstring& target, std::wstring& error);
 
+// Упаковка файлов в архив (формат по расширению: .zip, .7z, .tar).
+bool CreateArchive(const std::wstring& archivePath, const std::vector<std::wstring>& items,
+                   std::wstring& error);
+
 // Временный каталог для просмотра файлов из архива.
 std::wstring ArchiveTempDir();
 

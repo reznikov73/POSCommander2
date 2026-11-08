@@ -384,6 +384,42 @@ bool ExtractFromArchive(const std::wstring& archive, const std::vector<std::wstr
     return true;
 }
 
+bool CreateArchive(const std::wstring& archivePath, const std::vector<std::wstring>& items,
+                   std::wstring& error) {
+    const std::wstring exe = Find7z();
+    if (exe.empty()) {
+        error = L"7z.exe не найден. Установите 7-Zip.";
+        return false;
+    }
+    if (items.empty()) {
+        error = L"Нечего упаковывать.";
+        return false;
+    }
+
+    // Формат по расширению итогового файла.
+    std::wstring ext = Lower(archivePath.substr(archivePath.find_last_of(L'.') == std::wstring::npos
+                                                    ? archivePath.size()
+                                                    : archivePath.find_last_of(L'.')));
+    std::wstring format = L"-t7z";
+    if (ext == L".zip") format = L"-tzip";
+    else if (ext == L".tar") format = L"-ttar";
+    else if (ext == L".gz") format = L"-tgzip";
+
+    std::wstring cmd = QuoteArg(exe) + L" a " + format + L" -y -bso0 -bsp0 -sccUTF-8 " + QuoteArg(archivePath);
+    for (auto& item : items) cmd += L" " + QuoteArg(item);
+
+    std::string output;
+    if (!RunCapture(cmd, output)) {
+        error = L"Не удалось запустить 7z.exe";
+        return false;
+    }
+    if (GetFileAttributesW(archivePath.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        error = L"Архив не создан.\n\n" + Utf8ToWide(output);
+        return false;
+    }
+    return true;
+}
+
 std::wstring ArchiveTempDir() {
     wchar_t tmp[MAX_PATH]{};
     if (!GetTempPathW(MAX_PATH, tmp)) return L".";
