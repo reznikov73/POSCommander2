@@ -346,6 +346,8 @@ static HIMAGELIST g_images = nullptr;          // наш список: сюда 
 static int g_iconFolder = -1;
 static int g_iconFile = -1;
 static int g_iconUp = -1;
+static int g_iconFolderHidden = -1;
+static int g_iconFileHidden = -1;
 static std::map<std::wstring, int> g_iconCache;
 static const size_t kIconCacheLimit = 3000;
 
@@ -408,8 +410,20 @@ struct PixelCanvas {
     }
 };
 
+// Красная полоса по левому краю иконки — признак скрытого/системного, как в TC.
+void PaintHiddenMark(PixelCanvas& c) {
+    const int s = c.size;
+    const int top = s * 4 / 16;
+    const int bottom = s - s * 3 / 16;
+    const DWORD dark = 0xFFC00000;
+    const DWORD light = 0xFFE87777;
+
+    c.Fill(1, top, 3, bottom, dark);
+    c.VLine(2, top + 1, bottom - 1, light);
+}
+
 // Классическая жёлтая папка с язычком — как в Total Commander.
-HICON MakeFolderIcon(int size) {
+HICON MakeFolderIcon(int size, bool hidden = false) {
     PixelCanvas c(size);
     const int s = size;
     const int bodyTop = s * 5 / 16;
@@ -437,11 +451,12 @@ HICON MakeFolderIcon(int size) {
     c.VLine(1, bodyTop, s - 2, edge);
     c.VLine(s - 2, bodyTop, s - 2, edge);
 
+    if (hidden) PaintHiddenMark(c);
     return c.ToIcon();
 }
 
 // Белая страница с загнутым уголком — для файлов без своего значка.
-HICON MakeFileIcon(int size) {
+HICON MakeFileIcon(int size, bool hidden = false) {
     PixelCanvas c(size);
     const int s = size;
     const DWORD edge = 0xFF8A8A8A;
@@ -462,6 +477,7 @@ HICON MakeFileIcon(int size) {
     // строки текста
     for (int y = 7; y <= s - 4; y += 3) c.HLine(5, s - 6, y, line);
 
+    if (hidden) PaintHiddenMark(c);
     return c.ToIcon();
 }
 
@@ -550,6 +566,8 @@ void InitShellIcons() {
     g_iconUp = AddIcon(MakeUpArrowIcon(size));
     g_iconFolder = AddIcon(MakeFolderIcon(size));
     g_iconFile = AddIcon(MakeFileIcon(size));
+    g_iconFolderHidden = AddIcon(MakeFolderIcon(size, true));
+    g_iconFileHidden = AddIcon(MakeFileIcon(size, true));
 }
 
 HIMAGELIST ShellSmallImageList() {
@@ -597,7 +615,7 @@ int IconForEntry(const Entry& e, const std::wstring& dir) {
             const int byPath = CachedIcon(L"p:" + full, full, FILE_ATTRIBUTE_DIRECTORY, false);
             if (byPath >= 0) return byPath;
         }
-        return g_iconFolder;
+        return e.hidden() ? g_iconFolderHidden : g_iconFolder;
     }
 
     const std::wstring ext = Lower(e.ext());
@@ -614,7 +632,8 @@ int IconForEntry(const Entry& e, const std::wstring& dir) {
     if (it != g_iconCache.end()) return it->second;
 
     const int byExt = IconFromPath(L"file" + ext, FILE_ATTRIBUTE_NORMAL, true);
-    const int index = byExt >= 0 ? byExt : g_iconFile;
+    int index = byExt >= 0 ? byExt : g_iconFile;
+    if (e.hidden() && ext.empty()) index = g_iconFileHidden;
     if (g_iconCache.size() >= kIconCacheLimit) g_iconCache.clear();
     g_iconCache[L"e:" + ext] = index;
     return index;

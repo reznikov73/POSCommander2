@@ -1158,22 +1158,7 @@ LRESULT Panel::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     if (cd->nmcd.dwDrawStage == CDDS_PREPAINT) return CDRF_NOTIFYITEMDRAW;
                     if (cd->nmcd.dwDrawStage == CDDS_ITEMPREPAINT) {
                         DrawRow(cd);
-                        return CDRF_NEWFONT | CDRF_NOTIFYPOSTPAINT;
-                    }
-                    if (cd->nmcd.dwDrawStage == CDDS_ITEMPOSTPAINT) {
-                        // Метка скрытых/системных поверх значка — как в Total Commander.
-                        const int index = (int)cd->nmcd.dwItemSpec;
-                        if (index >= 0 && index < (int)entries_.size() && entries_[index].hidden()) {
-                            RECT rc = cd->nmcd.rc;
-                            const int w = Scale(3, dpi_);
-                            RECT bar{rc.left + Scale(1, dpi_), rc.top + Scale(1, dpi_),
-                                     rc.left + Scale(1, dpi_) + w, rc.bottom - Scale(1, dpi_)};
-                            HDC dc = cd->nmcd.hdc;
-                            HBRUSH brush = CreateSolidBrush(RGB(200, 40, 40));
-                            FillRect(dc, &bar, brush);
-                            DeleteObject(brush);
-                        }
-                        return CDRF_DODEFAULT;
+                        return CDRF_NEWFONT;
                     }
                     return CDRF_DODEFAULT;
                 }
