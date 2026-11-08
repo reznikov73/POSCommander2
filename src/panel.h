@@ -132,6 +132,7 @@ private:
     DWORD headerClickTick_ = 0;
     int headerClickX_ = -1;
 
+    void DrawRowName(NMLVCUSTOMDRAW* cd);
     void DrawRow(NMLVCUSTOMDRAW* cd);
     void FillDispInfo(NMLVDISPINFO* info);
 

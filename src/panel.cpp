@@ -1264,6 +1264,37 @@ void Panel::FillDispInfo(NMLVDISPINFO* info) {
     }
 }
 
+// Имя отмеченного/скрытого файла: ListView не применяет clrText к первой колонке.
+void Panel::DrawRowName(NMLVCUSTOMDRAW* cd) {
+    const int index = (int)cd->nmcd.dwItemSpec;
+    if (index < 0 || index >= (int)entries_.size()) return;
+
+    Entry& e = entries_[index];
+    if (!e.marked && !e.hidden()) return;
+    if (ListView_GetItemState(list_, index, LVIS_SELECTED) & LVIS_SELECTED) return;   // выделенную не трогаем
+
+    RECT label{};
+    if (!ListView_GetItemRect(list_, index, &label, LVIR_LABEL)) return;
+
+    // Стираем исходную чёрную надпись с запасом, иначе будут видны остатки.
+    RECT erase = label;
+    erase.left -= Scale(6, dpi_);
+    erase.right += Scale(6, dpi_);
+    HBRUSH bg = CreateSolidBrush(GetSysColor(COLOR_WINDOW));
+    FillRect(cd->nmcd.hdc, &erase, bg);
+    DeleteObject(bg);
+
+    SetBkMode(cd->nmcd.hdc, TRANSPARENT);
+    SetTextColor(cd->nmcd.hdc, e.marked ? kMarkedText : kHiddenText);
+    HGDIOBJ old = SelectObject(cd->nmcd.hdc, font_ ? font_ : (HFONT)GetStockObject(DEFAULT_GUI_FONT));
+    RECT tr = label;   // рисуем там же, где рисовал ListView
+    // В колонке «Имя» показывается имя без расширения (расширение — в колонке «Тип»).
+    const std::wstring text = e.isUp ? e.name : e.stem();
+    DrawTextW(cd->nmcd.hdc, text.c_str(), -1, &tr,
+              DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+    SelectObject(cd->nmcd.hdc, old);
+}
+
 void Panel::DrawRow(NMLVCUSTOMDRAW* cd) {
     int index = (int)cd->nmcd.dwItemSpec;
     if (index < 0 || index >= (int)entries_.size()) return;
@@ -1730,7 +1761,16 @@ LRESULT Panel::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     if (cd->nmcd.dwDrawStage == CDDS_PREPAINT) return CDRF_NOTIFYITEMDRAW;
                     if (cd->nmcd.dwDrawStage == CDDS_ITEMPREPAINT) {
                         DrawRow(cd);
+                        return CDRF_NEWFONT | CDRF_NOTIFYSUBITEMDRAW | CDRF_NOTIFYPOSTPAINT;
+                    }
+                    if (cd->nmcd.dwDrawStage == (CDDS_ITEMPREPAINT | CDDS_SUBITEM)) {
+                        DrawRow(cd);
                         return CDRF_NEWFONT;
+                    }
+                    if (cd->nmcd.dwDrawStage == CDDS_ITEMPOSTPAINT) {
+                        // Имя в первой колонке ListView рисует своим цветом, поэтому перерисовываем его сами.
+                        DrawRowName(cd);
+                        return CDRF_DODEFAULT;
                     }
                     return CDRF_DODEFAULT;
                 }
