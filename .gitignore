@@ -1,0 +1,7 @@
+build/
+build-msvc/
+*.ini
+_testdata/
+.zwork/
+NVIDIA Corporation/
+*.user

@@ -1,0 +1,397 @@
+// Реализация утилит: пути, форматирование, перечисление каталогов, иконки.
+#include "util.h"
+
+#include <cstdio>
+#include <cwchar>
+
+// ---------- строки ----------
+
+std::wstring Trim(const std::wstring& text) {
+    size_t b = 0, e = text.size();
+    while (b < e && iswspace(text[b])) b++;
+    while (e > b && iswspace(text[e - 1])) e--;
+    return text.substr(b, e - b);
+}
+
+std::wstring Lower(std::wstring text) {
+    if (!text.empty()) CharLowerBuffW(text.data(), (DWORD)text.size());
+    return text;
+}
+
+std::wstring Upper(std::wstring text) {
+    if (!text.empty()) CharUpperBuffW(text.data(), (DWORD)text.size());
+    return text;
+}
+
+static bool SameNoCase(const std::wstring& a, const std::wstring& b) {
+    return CompareStringOrdinal(a.c_str(), (int)a.size(), b.c_str(), (int)b.size(), TRUE) == CSTR_EQUAL;
+}
+
+bool SamePath(const std::wstring& a, const std::wstring& b) { return SameNoCase(a, b); }
+
+std::wstring ErrText(DWORD error) {
+    wchar_t* buf = nullptr;
+    DWORD len = FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
+                                   FORMAT_MESSAGE_IGNORE_INSERTS,
+                               nullptr, error, 0, (LPWSTR)&buf, 0, nullptr);
+    std::wstring out;
+    if (len && buf) out.assign(buf, len);
+    if (buf) LocalFree(buf);
+    out = Trim(out);
+    if (out.empty()) {
+        wchar_t tmp[64];
+        swprintf(tmp, 64, L"код ошибки %lu", error);
+        out = tmp;
+    }
+    return out;
+}
+
+// ---------- пути ----------
+
+std::wstring JoinPath(const std::wstring& dir, const std::wstring& name) {
+    if (dir.empty()) return name;
+    std::wstring out = dir;
+    if (out.back() != L'\\' && out.back() != L'/') out.push_back(L'\\');
+    out += name;
+    return out;
+}
+
+bool IsRootPath(const std::wstring& path) {
+    if (path.size() == 3 && path[1] == L':' && path[2] == L'\\') return true;
+    if (path.size() == 2 && path[1] == L':') return true;
+    if (path == L"\\") return true;
+    // UNC: \\сервер\общий — корень, если после общего имени нет ни одной черты.
+    if (path.size() > 2 && path[0] == L'\\' && path[1] == L'\\') {
+        size_t first = path.find(L'\\', 2);
+        if (first == std::wstring::npos) return true;
+        size_t second = path.find(L'\\', first + 1);
+        return second == std::wstring::npos ||
+               (second + 1 == path.size());
+    }
+    return false;
+}
+
+std::wstring ParentPath(const std::wstring& dir) {
+    if (dir.empty() || IsRootPath(dir)) return dir;
+    std::wstring base = dir;
+    if (base.back() == L'\\') base.pop_back();
+    size_t pos = base.find_last_of(L'\\');
+    if (pos == std::wstring::npos) return base;
+    std::wstring out = base.substr(0, pos);
+    if (out.empty()) return L"\\";
+    if (out.size() == 2 && out[1] == L':') out.push_back(L'\\');
+    return out;
+}
+
+std::wstring DrivePrefix(const std::wstring& path) {
+    if (path.size() >= 2 && path[1] == L':') return path.substr(0, 2);
+    if (path.size() > 2 && path[0] == L'\\' && path[1] == L'\\') {
+        size_t first = path.find(L'\\', 2);
+        if (first != std::wstring::npos) {
+            size_t second = path.find(L'\\', first + 1);
+            if (second != std::wstring::npos) return path.substr(0, second);
+            return path;
+        }
+    }
+    return {};
+}
+
+std::wstring DriveRootOf(const std::wstring& path) {
+    std::wstring prefix = DrivePrefix(path);
+    if (prefix.empty()) return L"C:\\";
+    if (prefix.size() == 2) return prefix + L"\\";
+    return prefix;
+}
+
+std::wstring NormalizeDir(const std::wstring& path) {
+    std::wstring in = Trim(path);
+    if (in.size() >= 2 && in.front() == L'"' && in.back() == L'"') in = in.substr(1, in.size() - 2);
+    for (auto& ch : in) if (ch == L'/') ch = L'\\';
+    if (in.empty()) return in;
+
+    if (in == L"\\") {
+        wchar_t cwd[MAX_PATH]{};
+        if (GetCurrentDirectoryW(MAX_PATH, cwd)) return DriveRootOf(cwd);
+        return L"C:\\";
+    }
+    if (in.size() == 2 && in[1] == L':') in.push_back(L'\\');
+
+    wchar_t full[32768]{};
+    DWORD n = GetFullPathNameW(in.c_str(), 32768, full, nullptr);
+    std::wstring out = (n > 0 && n < 32768) ? std::wstring(full, n) : in;
+
+    while (out.size() > 3 && out.back() == L'\\') out.pop_back();
+    if (out.size() == 3 && out[1] == L':' && out[2] == L'\\') {
+        wchar_t letter = (wchar_t)towupper(out[0]);
+        out[0] = letter;
+        return out;
+    }
+    // \\сервер\общий\  ->  \\сервер\общий
+    if (out.size() > 2 && out[0] == L'\\' && out[1] == L'\\' && out.back() == L'\\') out.pop_back();
+    return out;
+}
+
+std::wstring ExeDir() {
+    wchar_t path[32768]{};
+    DWORD n = GetModuleFileNameW(nullptr, path, 32768);
+    std::wstring out(path, n);
+    size_t pos = out.find_last_of(L'\\');
+    return pos == std::wstring::npos ? out : out.substr(0, pos);
+}
+
+bool IsDirectory(const std::wstring& path) {
+    DWORD attr = GetFileAttributesW(path.c_str());
+    return attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY) != 0;
+}
+
+// ---------- форматирование ----------
+
+std::wstring FmtNum(ULONGLONG value) {
+    wchar_t raw[32];
+    swprintf(raw, 32, L"%llu", value);
+    std::wstring digits(raw), out;
+    int count = 0;
+    for (int i = (int)digits.size() - 1; i >= 0; --i) {
+        out.insert(out.begin(), digits[i]);
+        if (++count % 3 == 0 && i > 0) out.insert(out.begin(), L' ');
+    }
+    return out;
+}
+
+std::wstring FmtSize(ULONGLONG bytes) {
+    if (bytes < 1024) {
+        wchar_t b[64];
+        swprintf(b, 64, L"%llu байт", bytes);
+        return b;
+    }
+    static const wchar_t* units[] = {L"Кб", L"Мб", L"Гб", L"Тб", L"Пб"};
+    double value = (double)bytes;
+    int unit = -1;
+    while (value >= 1024.0 && unit < 4) {
+        value /= 1024.0;
+        unit++;
+    }
+    wchar_t b[64];
+    swprintf(b, 64, L"%.1f %ls", value, units[unit]);
+    std::wstring out(b);
+    std::replace(out.begin(), out.end(), L'.', L',');
+    return out;
+}
+
+std::wstring FmtDate(const FILETIME& ft) {
+    if (ft.dwLowDateTime == 0 && ft.dwHighDateTime == 0) return {};
+    FILETIME local{};
+    SYSTEMTIME st{};
+    if (!FileTimeToLocalFileTime(&ft, &local)) return {};
+    if (!FileTimeToSystemTime(&local, &st)) return {};
+    wchar_t b[64];
+    swprintf(b, 64, L"%02u.%02u.%02u %02u:%02u", st.wDay, st.wMonth, st.wYear % 100, st.wHour, st.wMinute);
+    return b;
+}
+
+std::wstring Entry::ext() const {
+    if (isDir) return {};
+    size_t dot = name.find_last_of(L'.');
+    if (dot == std::wstring::npos || dot == 0) return {};
+    return name.substr(dot);
+}
+
+std::wstring Entry::stem() const {
+    if (isDir) return name;
+    size_t dot = name.find_last_of(L'.');
+    if (dot == std::wstring::npos || dot == 0) return name;
+    return name.substr(0, dot);
+}
+
+// ---------- маски ----------
+
+std::vector<std::wstring> SplitMasks(const std::wstring& masks) {
+    std::vector<std::wstring> out;
+    size_t i = 0;
+    while (i < masks.size()) {
+        while (i < masks.size() && (iswspace(masks[i]) || masks[i] == L';' || masks[i] == L',')) i++;
+        size_t start = i;
+        while (i < masks.size() && !iswspace(masks[i]) && masks[i] != L';' && masks[i] != L',') i++;
+        if (i > start) {
+            std::wstring item = masks.substr(start, i - start);
+            if (item.find_first_of(L"*?") == std::wstring::npos) item = L"*" + item + L"*";
+            out.push_back(Lower(item));
+        }
+    }
+    if (out.empty()) out.push_back(L"*");
+    return out;
+}
+
+bool MatchMask(const std::wstring& name, const std::wstring& mask) {
+    // Итеративный поиск с возвратом: * и ? без рекурсии.
+    const wchar_t* s = name.c_str();
+    const wchar_t* p = mask.c_str();
+    const wchar_t* star = nullptr;
+    const wchar_t* resume = nullptr;
+    while (*s) {
+        if (*p == L'?' || towlower(*p) == towlower(*s)) {
+            s++; p++;
+        } else if (*p == L'*') {
+            star = p++;
+            resume = s;
+        } else if (star) {
+            p = star + 1;
+            s = ++resume;
+        } else {
+            return false;
+        }
+    }
+    while (*p == L'*') p++;
+    return *p == 0;
+}
+
+// ---------- каталоги и диски ----------
+
+bool ListDir(const std::wstring& dir, bool showHidden, std::vector<Entry>& out, DWORD& error) {
+    out.clear();
+    error = 0;
+    std::wstring pattern = JoinPath(dir, L"*");
+    WIN32_FIND_DATAW data{};
+    HANDLE find = FindFirstFileExW(pattern.c_str(), FindExInfoBasic, &data, FindExSearchNameMatch,
+                                   nullptr, FIND_FIRST_EX_LARGE_FETCH);
+    if (find == INVALID_HANDLE_VALUE) {
+        DWORD err = GetLastError();
+        // Пустой корень пустого устройства — это не ошибка.
+        if (err == ERROR_FILE_NOT_FOUND) return true;
+        error = err;
+        return false;
+    }
+
+    do {
+        if (wcscmp(data.cFileName, L".") == 0 || wcscmp(data.cFileName, L"..") == 0) continue;
+        if (!showHidden && (data.dwFileAttributes & (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM))) continue;
+
+        Entry e;
+        e.name = data.cFileName;
+        e.attr = data.dwFileAttributes;
+        e.isDir = (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+        e.size = e.isDir ? 0 : ((ULONGLONG)data.nFileSizeHigh << 32) | data.nFileSizeLow;
+        e.ft = data.ftLastWriteTime;
+        out.push_back(std::move(e));
+    } while (FindNextFileW(find, &data));
+
+    FindClose(find);
+    return true;
+}
+
+std::vector<DriveItem> GetDrives() {
+    std::vector<DriveItem> out;
+    DWORD mask = GetLogicalDrives();
+    for (int i = 0; i < 26; i++) {
+        if (!(mask & (1u << i))) continue;
+        wchar_t letter = (wchar_t)(L'A' + i);
+        wchar_t root[8] = {letter, L':', L'\\', 0};
+        UINT type = GetDriveTypeW(root);
+        if (type == DRIVE_NO_ROOT_DIR) continue;
+        out.push_back({letter, type});
+    }
+    return out;
+}
+
+std::wstring VolumeSummary(const std::wstring& path) {
+    std::wstring root = DriveRootOf(path);
+    ULARGE_INTEGER freeBytes{}, total{}, totalFree{};
+    if (!GetDiskFreeSpaceExW(root.c_str(), &freeBytes, &total, &totalFree)) return {};
+    std::wstring out = FmtSize(freeBytes.QuadPart) + L" свободно из " + FmtSize(total.QuadPart);
+    wchar_t label[MAX_PATH + 1]{};
+    if (GetVolumeInformationW(root.c_str(), label, MAX_PATH, nullptr, nullptr, nullptr, nullptr, 0) && label[0]) {
+        out += L" · ";
+        out += label;
+    }
+    return out;
+}
+
+// ---------- иконки оболочки ----------
+
+static HIMAGELIST g_smallIcons = nullptr;
+static int g_iconFolder = 0;
+static int g_iconFile = 0;
+static std::map<std::wstring, int> g_extIcons;
+
+void InitShellIcons() {
+    SHFILEINFOW fi{};
+    g_smallIcons = (HIMAGELIST)SHGetFileInfoW(L"C:\\", FILE_ATTRIBUTE_DIRECTORY, &fi, sizeof(fi),
+                                              SHGFI_SYSICONINDEX | SHGFI_SMALLICON | SHGFI_USEFILEATTRIBUTES);
+    g_iconFolder = fi.iIcon;
+
+    SHFILEINFOW ff{};
+    if (SHGetFileInfoW(L"file.txt", FILE_ATTRIBUTE_NORMAL, &ff, sizeof(ff),
+                       SHGFI_SYSICONINDEX | SHGFI_SMALLICON | SHGFI_USEFILEATTRIBUTES)) {
+        g_iconFile = ff.iIcon;
+    }
+}
+
+HIMAGELIST ShellSmallImageList() { return g_smallIcons; }
+
+int IconForEntry(const Entry& e) {
+    if (e.icon >= 0) return e.icon;
+    if (e.isDir) return g_iconFolder;
+    std::wstring ext = Lower(e.ext());
+    auto it = g_extIcons.find(ext);
+    if (it != g_extIcons.end()) return it->second;
+
+    std::wstring probe = L"file" + ext;
+    SHFILEINFOW fi{};
+    int index = g_iconFile;
+    if (SHGetFileInfoW(probe.c_str(), FILE_ATTRIBUTE_NORMAL, &fi, sizeof(fi),
+                       SHGFI_SYSICONINDEX | SHGFI_SMALLICON | SHGFI_USEFILEATTRIBUTES)) {
+        index = fi.iIcon;
+    }
+    g_extIcons[ext] = index;
+    return index;
+}
+
+UINT WindowDpi(HWND hwnd) {
+    using Fn = UINT(WINAPI*)(HWND);
+    static Fn fn = nullptr;
+    static bool probed = false;
+    if (!probed) {
+        probed = true;
+        HMODULE user32 = GetModuleHandleW(L"user32.dll");
+        if (user32) fn = (Fn)GetProcAddress(user32, "GetDpiForWindow");
+    }
+    UINT dpi = fn ? fn(hwnd) : 0;
+    if (!dpi) {
+        HDC dc = GetDC(nullptr);
+        dpi = (UINT)GetDeviceCaps(dc, LOGPIXELSX);
+        ReleaseDC(nullptr, dc);
+    }
+    return dpi ? dpi : 96;
+}
+
+int CompareNatural(const std::wstring& a, const std::wstring& b) {
+    int r = StrCmpLogicalW(a.c_str(), b.c_str());
+    if (r != 0) return r;
+    return CompareStringOrdinal(a.c_str(), (int)a.size(), b.c_str(), (int)b.size(), TRUE) - CSTR_EQUAL;
+}
+
+// ---------- диагностика ----------
+
+void LogDebug(const std::wstring& text) {
+    wchar_t tmp[MAX_PATH]{};
+    if (!GetTempPathW(MAX_PATH, tmp)) return;
+    std::wstring path = std::wstring(tmp) + L"posc2-debug.log";
+
+    SYSTEMTIME st{};
+    GetLocalTime(&st);
+    wchar_t ts[64]{};
+    swprintf(ts, 64, L"%02d:%02d:%02d.%03d ", st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
+    std::wstring line = std::wstring(ts) + text + L"\r\n";
+
+    HANDLE f = CreateFileW(path.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                           OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return;
+    int need = WideCharToMultiByte(CP_UTF8, 0, line.c_str(), (int)line.size(), nullptr, 0, nullptr, nullptr);
+    if (need > 0) {
+        std::string narrow((size_t)need, '\0');
+        WideCharToMultiByte(CP_UTF8, 0, line.c_str(), (int)line.size(), narrow.data(), need, nullptr, nullptr);
+        DWORD written = 0;
+        WriteFile(f, narrow.data(), (DWORD)narrow.size(), &written, nullptr);
+    }
+    CloseHandle(f);
+}
