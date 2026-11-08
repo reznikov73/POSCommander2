@@ -8,6 +8,7 @@
 #include "settings.h"
 #include "search.h"
 #include "archive.h"
+#include "plugins.h"
 
 #include <windowsx.h>
 
@@ -35,6 +36,7 @@ enum : int {
     IDM_TREE = 175,
     IDM_PACK = 178,
     IDM_BATCH_RENAME = 179,
+    IDM_PLUGINS = 182,
 
     IDM_SEL_ALL = 120,
     IDM_SEL_NONE,
@@ -197,6 +199,8 @@ void App::BuildMenu() {
     AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(file, MF_STRING, IDM_PACK, L"У&паковать…\tAlt+F5");
     AppendMenuW(file, MF_STRING, IDM_BATCH_RENAME, L"Пакетное &переименование…\tCtrl+M");
+    AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(file, MF_STRING, IDM_PLUGINS, L"&Плагины Total Commander…");
     AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(file, MF_STRING, IDM_EXIT, L"В&ыход\tAlt+F4");
     AppendMenuW(menu_, MF_POPUP, (UINT_PTR)file, L"&Файл");
@@ -963,6 +967,9 @@ void App::Dispatch(int id) {
             right_.SetShowHidden(showHidden_);
             left_.Reload();
             right_.Reload();
+            break;
+        case IDM_PLUGINS:
+            PluginsDialog(hwnd_);
             break;
         case IDM_BATCH_RENAME:
             BatchRename();
