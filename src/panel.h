@@ -46,6 +46,10 @@ public:
     // Быстрый поиск по буквам: перевод курсора на первую запись с этим префиксом.
     bool FocusPrefix(const std::wstring& prefix);
 
+    // Дерево каталогов (Ctrl+F8) слева от списка.
+    void ToggleTree();
+    bool TreeVisible() const { return treeVisible_; }
+
     bool GoBack();
     bool GoForward();
     bool CanGoBack() const { return histPos_ > 0; }
@@ -72,6 +76,12 @@ private:
 
     void ApplyEntries(const std::wstring& focus, int fallbackIndex);
     void ShowShellContextMenu(int screenX, int screenY);
+    void CreateTree();
+    void FillTreeRoot();
+    HTREEITEM AddTreeItem(HTREEITEM parent, const std::wstring& path, const std::wstring& name);
+    void PopulateTreeChildren(HTREEITEM item);
+    void SyncTreeToPath();
+    std::wstring TreePathOf(HTREEITEM item) const;
     void CreateDriveBar();
     void UpdateDriveBar();
     void UpdateVolume();
@@ -90,6 +100,9 @@ private:
     HWND list_ = nullptr;
     HWND status_ = nullptr;
     HWND volume_ = nullptr;
+    HWND tree_ = nullptr;
+    bool treeVisible_ = false;
+    std::vector<std::wstring> treePaths_;   // lParam узла = индекс в этом векторе
     std::vector<HWND> driveButtons_;
     std::vector<wchar_t> driveLetters_;
     std::vector<HWND> tabButtons_;

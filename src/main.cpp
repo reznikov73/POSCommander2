@@ -31,6 +31,7 @@ enum : int {
     IDM_EXIT,
     IDM_NAV_BACK, IDM_NAV_FORWARD, IDM_NAV_UP,
     IDM_BOOKMARK_ADD = 170, IDM_BOOKMARK_SHOW,
+    IDM_TREE = 175,
 
     IDM_SEL_ALL = 120,
     IDM_SEL_NONE,
@@ -209,6 +210,7 @@ void App::BuildMenu() {
     AppendMenuW(view, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(view, MF_STRING, IDM_BOOKMARK_ADD, L"Добавить &закладку\tCtrl+D");
     AppendMenuW(view, MF_STRING, IDM_BOOKMARK_SHOW, L"&Закладки…");
+    AppendMenuW(view, MF_STRING, IDM_TREE, L"&Дерево каталогов\tCtrl+F8");
     AppendMenuW(menu_, MF_POPUP, (UINT_PTR)view, L"&Вид");
 
     HMENU cmd = CreatePopupMenu();
@@ -778,6 +780,9 @@ void App::Dispatch(int id) {
             left_.Reload();
             right_.Reload();
             break;
+        case IDM_TREE:
+            panel->ToggleTree();
+            break;
         case IDM_BOOKMARK_ADD:
             AddBookmark();
             break;
@@ -915,6 +920,51 @@ bool App::PreTranslate(const MSG& msg) {
     // Прочие Alt+... отдаём системе (Alt+F4 закроет окно, Alt+Tab переключит задачу).
     if (alt) return false;
 
+    // Ctrl-комбинации обрабатываем до обычных клавиш: Ctrl+F8 не должен стать F8-удалением.
+    if (ctrl) {
+        switch (msg.wParam) {
+            case 'A':
+                panel->MarkAll(true);
+                return true;
+            case 'U':
+                Dispatch(IDM_SWAP);
+                return true;
+            case 'R':
+                panel->Reload();
+                return true;
+            case 'H':
+                Dispatch(IDM_HIDDEN);
+                return true;
+            case 'T':
+                panel->AddTab();
+                return true;
+            case 'D':
+                AddBookmark();
+                return true;
+            case VK_F8:
+                Dispatch(IDM_TREE);
+                return true;
+            case 'W':
+                panel->CloseTab();
+                return true;
+            case VK_F3:
+                Dispatch(IDM_SORT_NAME);
+                return true;
+            case VK_F4:
+                Dispatch(IDM_SORT_EXT);
+                return true;
+            case VK_F5:
+                Dispatch(IDM_SORT_SIZE);
+                return true;
+            case VK_F6:
+                Dispatch(IDM_SORT_DATE);
+                return true;
+            default:
+                break;
+        }
+    }
+
+
     switch (msg.wParam) {
         case VK_F3:
             Dispatch(IDM_VIEW);
@@ -977,46 +1027,6 @@ bool App::PreTranslate(const MSG& msg) {
             return true;
         default:
             break;
-    }
-
-    if (ctrl) {
-        switch (msg.wParam) {
-            case 'A':
-                panel->MarkAll(true);
-                return true;
-            case 'U':
-                Dispatch(IDM_SWAP);
-                return true;
-            case 'R':
-                panel->Reload();
-                return true;
-            case 'H':
-                Dispatch(IDM_HIDDEN);
-                return true;
-            case 'T':
-                panel->AddTab();
-                return true;
-            case 'D':
-                AddBookmark();
-                return true;
-            case 'W':
-                panel->CloseTab();
-                return true;
-            case VK_F3:
-                Dispatch(IDM_SORT_NAME);
-                return true;
-            case VK_F4:
-                Dispatch(IDM_SORT_EXT);
-                return true;
-            case VK_F5:
-                Dispatch(IDM_SORT_SIZE);
-                return true;
-            case VK_F6:
-                Dispatch(IDM_SORT_DATE);
-                return true;
-            default:
-                break;
-        }
     }
 
     if (shift && msg.wParam == VK_F6) {

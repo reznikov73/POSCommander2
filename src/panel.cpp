@@ -13,6 +13,7 @@ const int kHeaderId = 1;
 const int kListId = 2;
 const int kStatusId = 3;
 const int kDriveBase = 100;   // 100..125 — кнопки дисков
+const int kTvId = 5;          // дерево каталогов
 const int kTabBase = 200;     // 200..231 — вкладки панели
 const int kVolumeId = 4;      // строка "свободно из" под дисками
 
@@ -273,8 +274,19 @@ void Panel::Layout() {
         }
     }
     int y = driveH + volH + tabH;
+    int listX = 0;
+    int listW = width;
+    if (treeVisible_ && tree_) {
+        const int treeW = Scale(210, dpi_);
+        if (treeW < width - Scale(150, dpi_)) {
+            if (dwp) dwp = DeferWindowPos(dwp, tree_, nullptr, 0, y + headerH, treeW, listH, SWP_NOZORDER);
+            listX = treeW + Scale(4, dpi_);
+            listW = width - listX;
+        }
+    }
+
     if (dwp) dwp = DeferWindowPos(dwp, header_, nullptr, 0, y, width, headerH, SWP_NOZORDER);
-    if (dwp) dwp = DeferWindowPos(dwp, list_, nullptr, 0, y + headerH, width, listH, SWP_NOZORDER);
+    if (dwp) dwp = DeferWindowPos(dwp, list_, nullptr, listX, y + headerH, listW, listH, SWP_NOZORDER);
     if (dwp) dwp = DeferWindowPos(dwp, status_, nullptr, 0, y + headerH + listH, width, statusH, SWP_NOZORDER);
     if (dwp) EndDeferWindowPos(dwp);
 
@@ -460,6 +472,7 @@ bool Panel::GoForward() {
 
 void Panel::ApplyEntries(const std::wstring& focus, int fallbackIndex) {
     UpdateDriveBar();
+    SyncTreeToPath();
     UpdateVolume();
     if (tabs_.empty()) {
         tabs_.push_back(path_);
@@ -698,6 +711,137 @@ void Panel::DrawRow(NMLVCUSTOMDRAW* cd) {
     }
 }
 
+// ---------- дерево каталогов ----------
+
+void Panel::CreateTree() {
+    if (tree_) return;
+    tree_ = CreateWindowExW(WS_EX_CLIENTEDGE, WC_TREEVIEWW, L"",
+                            WS_CHILD | TVS_HASBUTTONS | TVS_HASLINES | TVS_LINESATROOT | TVS_SHOWSELALWAYS,
+                            0, 0, 10, 10, hwnd_, (HMENU)(INT_PTR)kTvId, g_inst, nullptr);
+    if (tree_) {
+        if (font_) SendMessageW(tree_, WM_SETFONT, (WPARAM)font_, TRUE);
+        FillTreeRoot();
+    }
+}
+
+HTREEITEM Panel::AddTreeItem(HTREEITEM parent, const std::wstring& path, const std::wstring& name) {
+    treePaths_.push_back(path);
+
+    TVINSERTSTRUCTW ins{};
+    ins.hParent = parent ? parent : TVI_ROOT;
+    ins.hInsertAfter = TVI_LAST;
+    ins.item.mask = TVIF_TEXT | TVIF_PARAM | TVIF_CHILDREN;
+    ins.item.pszText = (LPWSTR)name.c_str();
+    ins.item.lParam = (LPARAM)(treePaths_.size() - 1);
+    ins.item.cChildren = 1;      // рисуем «+», дети появятся при раскрытии
+    return TreeView_InsertItem(tree_, &ins);
+}
+
+void Panel::FillTreeRoot() {
+    if (!tree_) return;
+    TreeView_DeleteAllItems(tree_);
+    treePaths_.clear();
+
+    for (auto& d : GetDrives()) {
+        std::wstring root;
+        root.push_back(d.letter);
+        root += L":\\";
+        std::wstring name = root;
+        AddTreeItem(nullptr, root, name);
+    }
+}
+
+// Дети узла: только каталоги, без скрытых и системных, с заглушкой для «+».
+void Panel::PopulateTreeChildren(HTREEITEM item) {
+    if (!tree_ || !item) return;
+
+    // Уже заполнено? Проверяем первого ребёнка.
+    HTREEITEM first = TreeView_GetChild(tree_, item);
+    if (first) {
+        TVITEMW tv{};
+        tv.mask = TVIF_HANDLE | TVIF_CHILDREN;
+        tv.hItem = first;
+        if (TreeView_GetItem(tree_, &tv) && tv.lParam != 0) return;
+    }
+
+    const std::wstring dir = TreePathOf(item);
+    if (dir.empty()) return;
+
+    // Убираем заглушку
+    while (HTREEITEM child = TreeView_GetChild(tree_, item)) TreeView_DeleteItem(tree_, child);
+
+    std::wstring pattern = JoinPath(dir, L"*");
+    WIN32_FIND_DATAW data{};
+    HANDLE find = FindFirstFileExW(pattern.c_str(), FindExInfoBasic, &data, FindExSearchNameMatch,
+                                   nullptr, FIND_FIRST_EX_LARGE_FETCH);
+    if (find != INVALID_HANDLE_VALUE) {
+        do {
+            if (!(data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
+            if (wcscmp(data.cFileName, L".") == 0 || wcscmp(data.cFileName, L"..") == 0) continue;
+            if (data.dwFileAttributes & (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM)) continue;
+            AddTreeItem(item, JoinPath(dir, data.cFileName), data.cFileName);
+        } while (FindNextFileW(find, &data));
+        FindClose(find);
+    }
+}
+
+std::wstring Panel::TreePathOf(HTREEITEM item) const {
+    if (!tree_ || !item) return {};
+    TVITEMW tv{};
+    tv.mask = TVIF_HANDLE | TVIF_PARAM;
+    tv.hItem = item;
+    if (!TreeView_GetItem(tree_, &tv)) return {};
+    const size_t index = (size_t)tv.lParam;
+    if (index >= treePaths_.size()) return {};
+    return treePaths_[index];
+}
+
+// Раскрываем дерево до текущего каталога панели.
+void Panel::SyncTreeToPath() {
+    if (!tree_ || !treeVisible_ || path_.empty()) return;
+
+    std::wstring current = path_;
+    std::vector<std::wstring> chain;
+    while (current.size() > 3) {
+        chain.push_back(current);
+        current = ParentPath(current);
+        if (current.empty()) break;
+    }
+    if (current.size() == 3) chain.push_back(current);
+
+    HTREEITEM parent = TVI_ROOT;
+    HTREEITEM match = nullptr;
+    for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
+        HTREEITEM child = TreeView_GetChild(tree_, parent);
+        HTREEITEM found = nullptr;
+        while (child) {
+            if (SamePath(TreePathOf(child), *it)) {
+                found = child;
+                break;
+            }
+            child = TreeView_GetNextSibling(tree_, child);
+        }
+        if (!found) break;
+        TreeView_Expand(tree_, found, TVE_EXPAND);
+        PopulateTreeChildren(found);
+        match = found;
+        parent = found;
+    }
+    if (match) TreeView_SelectItem(tree_, match);
+}
+
+void Panel::ToggleTree() {
+    treeVisible_ = !treeVisible_;
+    if (treeVisible_) {
+        CreateTree();
+        if (tree_) ShowWindow(tree_, SW_SHOW);
+        SyncTreeToPath();
+    } else if (tree_) {
+        ShowWindow(tree_, SW_HIDE);
+    }
+    Layout();
+}
+
 // Контекстное меню Проводника для текущей записи (IContextMenu оболочки).
 void Panel::ShowShellContextMenu(int screenX, int screenY) {
     Entry* e = Cursor();
@@ -818,6 +962,18 @@ LRESULT Panel::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
         case WM_NOTIFY: {
             auto hdr = reinterpret_cast<NMHDR*>(lParam);
+            if (hdr && tree_ && hdr->hwndFrom == tree_) {
+                if (hdr->code == TVN_SELCHANGEDW) {
+                    auto* tv = reinterpret_cast<NMTREEVIEWW*>(lParam);
+                    std::wstring target = TreePathOf(tv->itemNew.hItem);
+                    LogDebug(L"tree select '" + target + L"' current='" + path_ + L"'");
+                    if (!target.empty() && !SamePath(target, path_)) Navigate(target);
+                } else if (hdr->code == TVN_ITEMEXPANDINGW) {
+                    auto* tv = reinterpret_cast<NMTREEVIEWW*>(lParam);
+                    PopulateTreeChildren(tv->itemNew.hItem);
+                }
+                return 0;
+            }
             if (!hdr || hdr->hwndFrom != list_) break;
 
             switch (hdr->code) {
