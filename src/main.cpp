@@ -7,6 +7,7 @@
 #include "selftest.h"
 #include "settings.h"
 #include "search.h"
+#include "archive.h"
 
 #include <windowsx.h>
 
@@ -418,6 +419,18 @@ void App::OpenCursor() {
     }
 
     std::wstring full = JoinPath(panel->Path(), e->name);
+
+    // Архив открываем своим окном: список содержимого и распаковка.
+    if (IsArchivePath(full)) {
+        Panel* other = OtherPanel();
+        const std::wstring target = other ? other->Path() : panel->Path();
+        std::wstring extracted = ArchiveDialog(hwnd_, full, target);
+        panel->Reload();
+        if (other) other->Reload();
+        if (!extracted.empty()) UpdatePromptLabel();
+        return;
+    }
+
     HINSTANCE r = ShellExecuteW(hwnd_, L"open", full.c_str(), nullptr, panel->Path().c_str(), SW_SHOWNORMAL);
     if ((INT_PTR)r <= 32) ShowError(L"Не удалось открыть:\n" + full);
 }
