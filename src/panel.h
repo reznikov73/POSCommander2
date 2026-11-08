@@ -28,6 +28,15 @@ public:
     HWND List() const { return list_; }
     HWND PathEdit() const { return pathEdit_; }
     bool PathEditing() const { return pathEditing_; }
+    void CancelPathEdit() {
+        if (!pathEditing_) return;
+        LeavePathEdit(true);
+        FocusList();
+    }
+    void ConfirmPathEdit() {
+        if (!pathEditing_) return;
+        ApplyPathText();
+    }
     void FocusList();
 
     int CursorIndex() const;
@@ -131,7 +140,7 @@ private:
     static LRESULT CALLBACK PathEditProc(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
     static LRESULT CALLBACK ListProc(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
     void ApplyPathText();
-    void EnterPathEdit(int caretIndex = -1);
+    void EnterPathEdit();
     void NavigatePathPart(int charIndex);
     int PathCharIndexAt(int x, int y) const;
     bool PathClickInEmptyArea(int x) const;
@@ -141,6 +150,7 @@ private:
     void DrawPathButton(DRAWITEMSTRUCT* dis);
 
     bool pathEditing_ = false;      // поле пути в режиме правки (мигает курсор)
+    int pendingPathChar_ = 0;       // символ пути, по которому был клик (переход по таймеру)
 
     int lastCursor_ = 0;           // прошлая позиция курсора (для Shift+клик)
     bool programmaticCursor_ = false;   // курсор двигаем сами, а не мышью

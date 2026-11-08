@@ -1822,12 +1822,40 @@ void App::Dispatch(int id) {
 // ---------- клавиатура ----------
 
 bool App::PreTranslate(const MSG& msg) {
+    // Пока идёт правка пути, Enter и Esc работают на поле, даже если фокус успел уйти.
+    if (msg.message == WM_KEYDOWN || msg.message == WM_SYSKEYDOWN) {
+        if (msg.wParam == VK_ESCAPE) {
+            if (left_.PathEditing()) {
+                left_.CancelPathEdit();
+                return true;
+            }
+            if (right_.PathEditing()) {
+                right_.CancelPathEdit();
+                return true;
+            }
+        }
+        if (msg.wParam == VK_RETURN) {
+            if (left_.PathEditing()) {
+                left_.ConfirmPathEdit();
+                return true;
+            }
+            if (right_.PathEditing()) {
+                right_.ConfirmPathEdit();
+                return true;
+            }
+        }
+    }
+
     // В режиме правки пути клавиши (в том числе Backspace и Delete) идут в поле, а не в панель.
     HWND focusNow = GetFocus();
     if (focusNow && (focusNow == left_.PathEdit() || focusNow == right_.PathEdit())) {
         const bool editing = (focusNow == left_.PathEdit()) ? left_.PathEditing() : right_.PathEditing();
-        if (editing && (msg.message == WM_KEYDOWN || msg.message == WM_SYSKEYDOWN || msg.message == WM_CHAR)) {
-            return false;
+        if (editing) {
+            // Пока идёт правка, клавиши (включая стрелки и Ctrl+A/C/V) обрабатывает само поле.
+            if (msg.message == WM_KEYDOWN || msg.message == WM_SYSKEYDOWN || msg.message == WM_CHAR ||
+                msg.message == WM_KEYUP || msg.message == WM_SYSKEYUP) {
+                return false;
+            }
         }
     }
 

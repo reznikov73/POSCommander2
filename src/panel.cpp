@@ -19,6 +19,7 @@ const int kPathEditId = 1;     // поле пути
 const int kPathApplyId = 3;    // ✓ перейти
 const int kPathFavId = 4;      // ★ избранное
 const int kPathHistId = 5;     // ▼ история
+const UINT_PTR kPathClickTimer = 7;   // отложенный переход по клику на компонент пути
 const int kListId = 2;
 const int kStatusId = 3;
 const int kDriveBase = 100;   // 100..125 — кнопки дисков
@@ -797,18 +798,13 @@ void Panel::NavigatePathPart(int charIndex) {
 }
 
 // Войти в режим правки пути: клик по полю, белый фон, мигающий курсор.
-void Panel::EnterPathEdit(int caretIndex) {
-    if (!pathEdit_) return;
+void Panel::EnterPathEdit() {
+    if (!pathEdit_ || pathEditing_) return;
     pathEditing_ = true;
     SendMessageW(pathEdit_, EM_SETREADONLY, FALSE, 0);
     Layout();                       // появляется кнопка ✓, поле сужается
-    SetFocus(pathEdit_);
-    const int len = GetWindowTextLengthW(pathEdit_);
-    int caret = (caretIndex < 0) ? 0 : caretIndex;
-    if (caret > len) caret = len;
-    SendMessageW(pathEdit_, EM_SETSEL, (WPARAM)caret, (LPARAM)caret);   // пустое выделение = мигающий курсор
     InvalidateRect(pathEdit_, nullptr, TRUE);
-    LogDebug(L"path edit: вход в режим правки, курсор " + std::to_wstring(caret));
+    LogDebug(L"path edit: вход в режим правки");
 }
 
 // Выйти из правки: поле снова только показывает путь.
@@ -1763,8 +1759,9 @@ LRESULT CALLBACK Panel::PathEditProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
     auto* self = reinterpret_cast<Panel*>(ref);
     switch (msg) {
         case WM_SETFOCUS:
+            // Важно: не возвращаем 0, иначе поле не получит фокус по-настоящему и не покажет каретку.
             if (self) self->SetActive(true);
-            return 0;
+            break;
 
         case WM_LBUTTONDOWN: {
             if (!self) break;
@@ -1772,17 +1769,29 @@ LRESULT CALLBACK Panel::PathEditProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
             const int x = GET_X_LPARAM(lParam);
             const int y = GET_Y_LPARAM(lParam);
             if (self->PathClickInEmptyArea(x)) {
-                self->EnterPathEdit(self->PathCharIndexAt(x, y));   // свободное место — правка
-            } else {
-                self->NavigatePathPart(self->PathCharIndexAt(x, y)); // клик по компоненту — переход
+                self->EnterPathEdit();      // свободное место: включаем правку…
+                break;                      // …и отдаём клик полю, как обычному EDIT
             }
+            // Переход по компоненту откладываем на полтаймера двойного клика: если это начало
+            // двойного клика, переход отменяется и поле уходит в правку.
+            self->pendingPathChar_ = self->PathCharIndexAt(x, y);
+            SetTimer(hwnd, kPathClickTimer, (UINT)(GetDoubleClickTime() / 2), nullptr);
             return 0;
         }
 
-        case WM_LBUTTONDBLCLK:
-            if (self && !self->PathEditing()) {
-                self->EnterPathEdit(self->PathCharIndexAt(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)));
+        case WM_TIMER:
+            if (wParam == kPathClickTimer) {
+                KillTimer(hwnd, kPathClickTimer);
+                if (self && !self->PathEditing()) self->NavigatePathPart(self->pendingPathChar_);
                 return 0;
+            }
+            break;
+
+        case WM_LBUTTONDBLCLK:
+            KillTimer(hwnd, kPathClickTimer);   // отменяем отложенный переход
+            if (self && !self->PathEditing()) {
+                self->EnterPathEdit();
+                break;                      // двойной клик обработает поле (выделение слова)
             }
             break;
 
