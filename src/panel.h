@@ -131,7 +131,10 @@ private:
     static LRESULT CALLBACK PathEditProc(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
     static LRESULT CALLBACK ListProc(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
     void ApplyPathText();
-    void EnterPathEdit();
+    void EnterPathEdit(int caretIndex = -1);
+    void NavigatePathPart(int charIndex);
+    int PathCharIndexAt(int x, int y) const;
+    bool PathClickInEmptyArea(int x) const;
     void LeavePathEdit(bool restore);
     void ShowPathHistory();
     void ShowPathFavorites();

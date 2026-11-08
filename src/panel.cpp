@@ -639,11 +639,20 @@ void Panel::Layout() {
     }
 
     const int pbtn = Scale(22, dpi_);
-    const int editW = width - pbtn * 3 - Scale(6, dpi_);
+    const int pgap = Scale(2, dpi_);
+    const int btnCount = pathEditing_ ? 3 : 2;      // ✓ видна только при правке
+    const int editW = width - (pbtn + pgap) * btnCount;
+    if (pathApply_) ShowWindow(pathApply_, pathEditing_ ? SW_SHOW : SW_HIDE);
+
+    int bx = editW;
     if (dwp) dwp = DeferWindowPos(dwp, pathEdit_, nullptr, 0, y + 1, editW, headerH - 2, SWP_NOZORDER);
-    if (dwp) dwp = DeferWindowPos(dwp, pathApply_, nullptr, editW + Scale(2, dpi_), y + 1, pbtn, headerH - 2, SWP_NOZORDER);
-    if (dwp) dwp = DeferWindowPos(dwp, pathFav_, nullptr, editW + pbtn + Scale(2, dpi_), y + 1, pbtn, headerH - 2, SWP_NOZORDER);
-    if (dwp) dwp = DeferWindowPos(dwp, pathHist_, nullptr, editW + pbtn * 2 + Scale(2, dpi_), y + 1, pbtn, headerH - 2, SWP_NOZORDER);
+    if (pathEditing_ && dwp) {
+        dwp = DeferWindowPos(dwp, pathApply_, nullptr, bx, y + 1, pbtn, headerH - 2, SWP_NOZORDER);
+        bx += pbtn + pgap;
+    }
+    if (dwp) dwp = DeferWindowPos(dwp, pathFav_, nullptr, bx, y + 1, pbtn, headerH - 2, SWP_NOZORDER);
+    bx += pbtn + pgap;
+    if (dwp) dwp = DeferWindowPos(dwp, pathHist_, nullptr, bx, y + 1, pbtn, headerH - 2, SWP_NOZORDER);
     if (dwp) dwp = DeferWindowPos(dwp, list_, nullptr, listX, y + headerH, listW, listH, SWP_NOZORDER);
     if (dwp) dwp = DeferWindowPos(dwp, status_, nullptr, 0, y + headerH + listH, width, statusH, SWP_NOZORDER);
     if (dwp) EndDeferWindowPos(dwp);
@@ -733,15 +742,73 @@ void Panel::UpdateHeader() {
     SetWindowTextW(pathEdit_, path.c_str());
 }
 
+// Индекс символа под точкой (x,y) внутри поля пути.
+int Panel::PathCharIndexAt(int x, int y) const {
+    if (!pathEdit_) return 0;
+    const LRESULT r = SendMessageW(pathEdit_, EM_CHARFROMPOS, 0, MAKELPARAM(x, y));
+    int index = (int)(short)LOWORD(r);
+    const int len = GetWindowTextLengthW(pathEdit_);
+    if (index < 0) index = 0;
+    if (index > len) index = len;
+    return index;
+}
+
+// Клик правее текста — «свободное место» поля: там включается правка.
+bool Panel::PathClickInEmptyArea(int x) const {
+    if (!pathEdit_) return true;
+    const std::wstring text = DisplayPath();
+    HDC dc = GetDC(pathEdit_);
+    HGDIOBJ old = SelectObject(dc, (HFONT)SendMessageW(pathEdit_, WM_GETFONT, 0, 0));
+    SIZE sz{};
+    if (!text.empty()) GetTextExtentPoint32W(dc, text.c_str(), (int)text.size(), &sz);
+    SelectObject(dc, old);
+    ReleaseDC(pathEdit_, dc);
+
+    const int margin = Scale(4, dpi_) + GetSystemMetrics(SM_CXBORDER);
+    return x >= margin + sz.cx;
+}
+
+// Переход по клику на компонент пути в нередактируемом состоянии.
+void Panel::NavigatePathPart(int charIndex) {
+    const std::wstring text = DisplayPath();
+    if (text.empty()) return;
+
+    int start = 0;
+    int end = -1;
+    for (int i = 0; i < (int)text.size(); ++i) {
+        if (text[i] != L'\\') continue;
+        end = i;
+        if (charIndex < end) break;
+        start = i + 1;
+        end = -1;
+    }
+    (void)start;
+    if (end < 0) end = (int)text.size();
+    if (end <= 0) return;
+
+    std::wstring target = text.substr(0, end);
+    if (target.size() == 2 && target[1] == L':') target += L'\\';
+
+    LogDebug(L"path click: '" + target + L"'");
+    if (!Navigate(target)) {
+        MessageBoxW(GetParent(hwnd_), NavigateError().c_str(), L"Переход", MB_ICONERROR);
+    }
+    FocusList();
+}
+
 // Войти в режим правки пути: клик по полю, белый фон, мигающий курсор.
-void Panel::EnterPathEdit() {
+void Panel::EnterPathEdit(int caretIndex) {
     if (!pathEdit_) return;
     pathEditing_ = true;
     SendMessageW(pathEdit_, EM_SETREADONLY, FALSE, 0);
+    Layout();                       // появляется кнопка ✓, поле сужается
     SetFocus(pathEdit_);
-    SendMessageW(pathEdit_, EM_SETSEL, 0, -1);
+    const int len = GetWindowTextLengthW(pathEdit_);
+    int caret = (caretIndex < 0) ? 0 : caretIndex;
+    if (caret > len) caret = len;
+    SendMessageW(pathEdit_, EM_SETSEL, (WPARAM)caret, (LPARAM)caret);   // пустое выделение = мигающий курсор
     InvalidateRect(pathEdit_, nullptr, TRUE);
-    LogDebug(L"path edit: вход в режим правки");
+    LogDebug(L"path edit: вход в режим правки, курсор " + std::to_wstring(caret));
 }
 
 // Выйти из правки: поле снова только показывает путь.
@@ -751,6 +818,7 @@ void Panel::LeavePathEdit(bool restore) {
     SendMessageW(pathEdit_, EM_SETREADONLY, TRUE, 0);
     SendMessageW(pathEdit_, EM_SETSEL, 0, 0);
     if (restore) UpdateHeader();
+    Layout();                       // кнопка ✓ снова скрыта
     InvalidateRect(pathEdit_, nullptr, TRUE);
 }
 
@@ -1698,10 +1766,22 @@ LRESULT CALLBACK Panel::PathEditProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
             if (self) self->SetActive(true);
             return 0;
 
-        case WM_LBUTTONDOWN:
-            // Одиночный клик по полю включает режим правки (как в TC).
+        case WM_LBUTTONDOWN: {
+            if (!self) break;
+            if (self->PathEditing()) break;          // в правке работает обычное поведение поля
+            const int x = GET_X_LPARAM(lParam);
+            const int y = GET_Y_LPARAM(lParam);
+            if (self->PathClickInEmptyArea(x)) {
+                self->EnterPathEdit(self->PathCharIndexAt(x, y));   // свободное место — правка
+            } else {
+                self->NavigatePathPart(self->PathCharIndexAt(x, y)); // клик по компоненту — переход
+            }
+            return 0;
+        }
+
+        case WM_LBUTTONDBLCLK:
             if (self && !self->PathEditing()) {
-                self->EnterPathEdit();
+                self->EnterPathEdit(self->PathCharIndexAt(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)));
                 return 0;
             }
             break;
