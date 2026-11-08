@@ -20,6 +20,7 @@ add_executable(POSCommander2 WIN32
   src/search.cpp
   src/archive.cpp
   src/plugins.cpp
+  src/wcx.cpp
   res/app.rc
 )
 

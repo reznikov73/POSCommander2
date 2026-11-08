@@ -9,6 +9,7 @@
 #include "search.h"
 #include "archive.h"
 #include "plugins.h"
+#include "wcx.h"
 
 #include <windowsx.h>
 
@@ -1696,6 +1697,37 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR cmdLine, int) {
     g_inst = inst;
 
     if (cmdLine && wcsstr(cmdLine, L"--selftest")) return RunSelfTest();
+
+    // Диагностика wcx: --wcx-test <путь к .wcx> <путь к архиву>
+    if (cmdLine && wcsstr(cmdLine, L"--wcx-test")) {
+        std::wstring args = cmdLine;
+        size_t pos = args.find(L"--wcx-test");
+        args = args.substr(pos + 10);
+        while (!args.empty() && args.front() == L' ') args.erase(args.begin());
+
+        std::vector<std::wstring> parts;
+        size_t start = 0;
+        while (start < args.size()) {
+            while (start < args.size() && args[start] == L' ') ++start;
+            if (start >= args.size()) break;
+            if (args[start] == L'"') {
+                const size_t end = args.find(L'"', start + 1);
+                if (end == std::wstring::npos) {
+                    parts.push_back(args.substr(start + 1));
+                    break;
+                }
+                parts.push_back(args.substr(start + 1, end - start - 1));
+                start = end + 1;
+            } else {
+                size_t end = args.find(L' ', start);
+                if (end == std::wstring::npos) end = args.size();
+                parts.push_back(args.substr(start, end - start));
+                start = end;
+            }
+        }
+        if (parts.size() >= 2) return WcxSelfTest(parts[0], parts[1]);
+        return 2;
+    }
 
     LoadSettings();
 
