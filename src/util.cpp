@@ -2,6 +2,7 @@
 #include "util.h"
 
 #include <cstring>
+#include <vector>
 
 #include <cstdio>
 #include <cwchar>
@@ -348,6 +349,122 @@ static int g_iconUp = -1;
 static std::map<std::wstring, int> g_iconCache;
 static const size_t kIconCacheLimit = 3000;
 
+// Пиксельный холст 32-бит с альфой: рисуем иконки сами, чтобы выглядели как в TC.
+struct PixelCanvas {
+    int size = 16;
+    std::vector<DWORD> px;
+
+    explicit PixelCanvas(int s) : size(s), px((size_t)s * s, 0) {}
+
+    void Set(int x, int y, DWORD argb) {
+        if (x < 0 || y < 0 || x >= size || y >= size) return;
+        px[(size_t)y * size + x] = argb;
+    }
+
+    void Fill(int x0, int y0, int x1, int y1, DWORD argb) {
+        for (int y = y0; y <= y1; ++y)
+            for (int x = x0; x <= x1; ++x) Set(x, y, argb);
+    }
+
+    void HLine(int x0, int x1, int y, DWORD argb) {
+        for (int x = x0; x <= x1; ++x) Set(x, y, argb);
+    }
+
+    void VLine(int x, int y0, int y1, DWORD argb) {
+        for (int y = y0; y <= y1; ++y) Set(x, y, argb);
+    }
+
+    HICON ToIcon() const {
+        BITMAPV5HEADER bi{};
+        bi.bV5Size = sizeof(bi);
+        bi.bV5Width = size;
+        bi.bV5Height = -size;
+        bi.bV5Planes = 1;
+        bi.bV5BitCount = 32;
+        bi.bV5Compression = BI_BITFIELDS;
+        bi.bV5RedMask = 0x00FF0000;
+        bi.bV5GreenMask = 0x0000FF00;
+        bi.bV5BlueMask = 0x000000FF;
+        bi.bV5AlphaMask = 0xFF000000;
+
+        HDC screen = GetDC(nullptr);
+        void* bits = nullptr;
+        HBITMAP color = CreateDIBSection(screen, reinterpret_cast<BITMAPINFO*>(&bi), DIB_RGB_COLORS, &bits, nullptr, 0);
+        HBITMAP mask = CreateBitmap(size, size, 1, 1, nullptr);
+        HICON icon = nullptr;
+
+        if (color && bits && mask) {
+            std::memcpy(bits, px.data(), px.size() * sizeof(DWORD));
+            ICONINFO ii{};
+            ii.fIcon = TRUE;
+            ii.hbmMask = mask;
+            ii.hbmColor = color;
+            icon = CreateIconIndirect(&ii);
+        }
+        if (color) DeleteObject(color);
+        if (mask) DeleteObject(mask);
+        ReleaseDC(nullptr, screen);
+        return icon;
+    }
+};
+
+// Классическая жёлтая папка с язычком — как в Total Commander.
+HICON MakeFolderIcon(int size) {
+    PixelCanvas c(size);
+    const int s = size;
+    const int bodyTop = s * 5 / 16;
+    const int tabTop = s * 3 / 16;
+    const int tabRight = s * 8 / 16;
+
+    const DWORD edge = 0xFFB8860B;      // тёмно-янтарный контур
+    const DWORD body = 0xFFFFE9A8;      // светлая середина
+    const DWORD bodyDark = 0xFFFFD061;  // низ и тень
+    const DWORD tab = 0xFFFFD061;
+
+    // язычок
+    c.Fill(1, tabTop, tabRight, bodyTop - 1, tab);
+    c.HLine(1, tabRight, tabTop - 1, edge);
+    c.HLine(1, tabRight, bodyTop - 1, edge);
+    c.VLine(1, tabTop, bodyTop - 1, edge);
+
+    // корпус
+    c.Fill(1, bodyTop, s - 2, s - 2, body);
+    c.Fill(1, s - 4, s - 2, s - 2, bodyDark);
+
+    // контур корпуса
+    c.HLine(1, s - 2, bodyTop, edge);
+    c.HLine(1, s - 2, s - 2, edge);
+    c.VLine(1, bodyTop, s - 2, edge);
+    c.VLine(s - 2, bodyTop, s - 2, edge);
+
+    return c.ToIcon();
+}
+
+// Белая страница с загнутым уголком — для файлов без своего значка.
+HICON MakeFileIcon(int size) {
+    PixelCanvas c(size);
+    const int s = size;
+    const DWORD edge = 0xFF8A8A8A;
+    const DWORD paper = 0xFFFFFFFF;
+    const DWORD fold = 0xFFD8D8D8;
+    const DWORD line = 0xFF9A9A9A;
+
+    c.Fill(3, 1, s - 4, s - 2, paper);
+    c.HLine(3, s - 4, 1, edge);
+    c.VLine(3, 1, s - 2, edge);
+    c.HLine(3, s - 4, s - 2, edge);
+    c.VLine(s - 4, 1, s - 2, edge);
+
+    // загнутый уголок
+    c.Fill(s - 7, 1, s - 5, 4, fold);
+    c.HLine(s - 7, s - 5, 5, edge);
+
+    // строки текста
+    for (int y = 7; y <= s - 4; y += 3) c.HLine(5, s - 6, y, line);
+
+    return c.ToIcon();
+}
+
 // Стрелка «вверх» для строки «..» — рисуем сами, как в Total Commander.
 HICON MakeUpArrowIcon(int size) {
     BITMAPV5HEADER bi{};
@@ -428,13 +545,11 @@ void InitShellIcons() {
     if (g_images) return;
 
     const int size = 16;
-    g_images = ImageList_Create(size, size, ILC_COLOR32 | ILC_MASK, 64, 256);
+    g_images = ImageList_Create(size, size, ILC_COLOR32, 64, 256);
 
     g_iconUp = AddIcon(MakeUpArrowIcon(size));
-    g_iconFolder = IconFromPath(L"C:\\", FILE_ATTRIBUTE_DIRECTORY, true);
-    g_iconFile = IconFromPath(L"file.txt", FILE_ATTRIBUTE_NORMAL, true);
-    if (g_iconFolder < 0) g_iconFolder = 0;
-    if (g_iconFile < 0) g_iconFile = 0;
+    g_iconFolder = AddIcon(MakeFolderIcon(size));
+    g_iconFile = AddIcon(MakeFileIcon(size));
 }
 
 HIMAGELIST ShellSmallImageList() {
@@ -464,9 +579,24 @@ int IconForEntry(const Entry& e, const std::wstring& dir) {
     const std::wstring full = dir.empty() ? e.name : JoinPath(dir, e.name);
 
     if (e.isDir) {
-        // Иконка конкретной папки: Корзина, Загрузки, Рабочий стол и прочие узнаваемые.
-        const int byPath = CachedIcon(L"p:" + full, full, FILE_ATTRIBUTE_DIRECTORY, false);
-        if (byPath >= 0) return byPath;
+        // У узнаваемых системных папок берём значок оболочки, у остальных — свою жёлтую папку.
+        static const wchar_t* kSpecial[] = {
+            L"desktop", L"рабочий стол", L"documents", L"документы", L"downloads", L"загрузки",
+            L"pictures", L"изображения", L"music", L"музыка", L"videos", L"видео",
+            L"onedrive", L"3d objects", L"объекты 3d", L"favorites", L"избранное",
+        };
+        const std::wstring lowerName = Lower(e.name);
+        bool special = false;
+        for (auto n : kSpecial) {
+            if (lowerName == n) {
+                special = true;
+                break;
+            }
+        }
+        if (special) {
+            const int byPath = CachedIcon(L"p:" + full, full, FILE_ATTRIBUTE_DIRECTORY, false);
+            if (byPath >= 0) return byPath;
+        }
         return g_iconFolder;
     }
 
