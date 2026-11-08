@@ -129,6 +129,12 @@ int RunSelfTest() {
     rep.Check(FmtSize(1024) == L"1,0 Кб", L"FmtSize: 1,0 Кб", FmtSize(1024));
     rep.Check(FmtSize(5ull * 1024 * 1024) == L"5,0 Мб", L"FmtSize: 5,0 Мб", FmtSize(5ull * 1024 * 1024));
 
+    // Естественная сортировка: числа по значению, регистр не важен.
+    rep.Check(CompareNatural(L"file_2.txt", L"file_10.txt") < 0, L"сортировка: file_2 < file_10");
+    rep.Check(CompareNatural(L"file_10.txt", L"file_2.txt") > 0, L"сортировка: file_10 > file_2");
+    rep.Check(CompareNatural(L"File_3.txt", L"file_3.txt") == 0, L"сортировка: регистр не важен");
+    rep.Check(CompareNatural(L"a.txt", L"b.txt") < 0, L"сортировка: a < b");
+
     rep.Check(MatchMask(L"a.txt", L"*.txt"), L"MatchMask: *.txt совпадает");
     rep.Check(!MatchMask(L"a.bin", L"*.txt"), L"MatchMask: *.txt не совпадает");
     rep.Check(SplitMasks(L"*.txt;*.bin").size() == 2, L"SplitMasks: две маски");

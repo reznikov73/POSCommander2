@@ -95,6 +95,7 @@ private:
     bool PreTranslate(const MSG& msg);
 
     void CreateChildren();
+    void LoadPanels();
     void BuildMenu();
     void Layout();
     void ApplyFont();
@@ -259,17 +260,28 @@ void App::CreateChildren() {
     left_.Sort(st.sortColumn, st.sortReverse);
     right_.Sort(st.sortColumn, st.sortReverse);
 
+    left_.SetActive(true);
+    SetActivePanel(0);
+    UpdatePromptLabel();
+
+    // Каталоги читаем после первого показа окна: на 100 000 файлов это сотни миллисекунд,
+    // и окно не должно их ждать.
+    PostMessageW(hwnd_, WM_APP + 101, 0, 0);
+}
+
+// Отложенная загрузка панелей (после показа окна).
+void App::LoadPanels() {
+    const Settings& st = GetSettings();
     wchar_t cwd[MAX_PATH]{};
     GetCurrentDirectoryW(MAX_PATH, cwd);
 
     if (!st.leftTabs.empty()) left_.RestoreState(st.leftTabs, st.leftActive);
     else left_.Navigate(cwd);
-    left_.SetActive(true);
 
     if (!st.rightTabs.empty()) right_.RestoreState(st.rightTabs, st.rightActive);
     else right_.Navigate(cwd);
 
-    SetActivePanel(0);
+    ActivePanel()->FocusList();
     UpdatePromptLabel();
 }
 
@@ -890,6 +902,10 @@ LRESULT App::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         case WM_CREATE:
             CreateChildren();
             Layout();
+            return 0;
+
+        case WM_APP + 101:
+            LoadPanels();
             return 0;
 
         case WM_SIZE:

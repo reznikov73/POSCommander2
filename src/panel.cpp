@@ -365,9 +365,12 @@ bool Panel::Navigate(const std::wstring& dir, const std::wstring& focus, bool ke
         return false;
     }
 
+    ULONGLONG t0 = GetTickCount64();
     std::vector<Entry> loaded;
     DWORD err = 0;
-    if (!ListDir(target, showHidden_, loaded, err)) {
+    bool listed = ListDir(target, showHidden_, loaded, err);
+    ULONGLONG t1 = GetTickCount64();
+    if (!listed) {
         lastError_ = L"Не удалось открыть папку:\n" + target + L"\n\n" + ErrText(err);
         return false;
     }
@@ -394,9 +397,13 @@ bool Panel::Navigate(const std::wstring& dir, const std::wstring& focus, bool ke
     std::sort(entries_.begin(), entries_.end(),
               [this](const Entry& a, const Entry& b) { return CmpEntry(a, b, sortColumn_, sortReverse_); });
 
+    ULONGLONG t2 = GetTickCount64();
     ApplyEntries(focus, fallback);
     UpdateHeader();
     UpdateStatus();
+    ULONGLONG t3 = GetTickCount64();
+    LogDebug(L"Navigate: list=" + std::to_wstring(t1 - t0) + L" ms, sort=" + std::to_wstring(t2 - t1) +
+             L" ms, apply=" + std::to_wstring(t3 - t2) + L" ms, entries=" + std::to_wstring(entries_.size()));
 
     // История навигации: обычный переход добавляет точку, переход по истории — нет.
     if (!navigatingHistory_) {
