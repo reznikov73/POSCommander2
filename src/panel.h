@@ -50,6 +50,13 @@ public:
     void ToggleTree();
     bool TreeVisible() const { return treeVisible_; }
 
+    // Архив как папка: путь = файл архива + внутренний каталог.
+    bool InArchive() const { return inArchive_; }
+    const std::wstring& ArchiveFile() const { return archiveFile_; }
+    const std::wstring& ArchiveInner() const { return archiveInner_; }
+    std::wstring DisplayPath() const;
+    bool LoadArchiveListing(const std::wstring& focus);
+
     bool GoBack();
     bool GoForward();
     bool CanGoBack() const { return histPos_ > 0; }
@@ -108,6 +115,9 @@ private:
     std::vector<HWND> tabButtons_;
     std::vector<std::wstring> tabs_;
     int tab_ = 0;
+    bool inArchive_ = false;
+    std::wstring archiveFile_;
+    std::wstring archiveInner_;     // пусто = корень архива
     std::vector<std::wstring> history_;
     int histPos_ = -1;
     bool navigatingHistory_ = false;

@@ -4,9 +4,26 @@
 #include "common.h"
 
 #include <string>
+#include <vector>
+
+struct ArchiveEntry {
+    std::wstring name;        // путь внутри архива, разделители '\'
+    std::wstring size;        // как строка из 7z
+    std::wstring modified;
+    bool isDir = false;
+};
 
 bool IsArchivePath(const std::wstring& path);
 
-// Окно содержимого архива. defaultTarget — куда распаковывать по умолчанию.
-// Возвращает путь каталога, куда что-то распаковали (пустая строка, если ничего).
+// Полный список содержимого архива (все уровни).
+bool ListArchive(const std::wstring& archive, std::vector<ArchiveEntry>& out);
+
+// Распаковка указанных путей (пусто = всё) в каталог target.
+bool ExtractFromArchive(const std::wstring& archive, const std::vector<std::wstring>& innerPaths,
+                        const std::wstring& target, std::wstring& error);
+
+// Временный каталог для просмотра файлов из архива.
+std::wstring ArchiveTempDir();
+
+// Окно содержимого архива. Возвращает каталог, куда распаковали (пусто — ничего).
 std::wstring ArchiveDialog(HWND owner, const std::wstring& archivePath, const std::wstring& defaultTarget);

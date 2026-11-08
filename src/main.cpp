@@ -120,6 +120,8 @@ private:
     void ShowDrivesMenu(int side);
     void AddBookmark();
     int PanelAtScreen(POINT screen) const;
+    // Распаковать один файл из архива во временный каталог; вернуть путь или пусто.
+    std::wstring ExtractOneFromArchive(Panel* panel, const std::wstring& innerName);
     void DropOnPanel(int fromSide, int toSide);
     void ShowBookmarksMenu();
     void RunCommandLine();
@@ -418,16 +420,22 @@ void App::OpenCursor() {
         return;
     }
 
+    // Файл внутри архива: распаковываем во временный каталог и открываем.
+    if (panel->InArchive()) {
+        std::wstring inner = panel->ArchiveInner().empty() ? e->name : panel->ArchiveInner() + L"\\" + e->name;
+        std::wstring temp = ExtractOneFromArchive(panel, inner);
+        if (temp.empty()) return;
+        HINSTANCE hr = ShellExecuteW(hwnd_, L"open", temp.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        if ((INT_PTR)hr <= 32) ShowError(L"Не удалось открыть:\n" + temp);
+        return;
+    }
+
     std::wstring full = JoinPath(panel->Path(), e->name);
 
-    // Архив открываем своим окном: список содержимого и распаковка.
+    // Архив открываем как папку: панель входит внутрь, список — содержимое архива.
     if (IsArchivePath(full)) {
-        Panel* other = OtherPanel();
-        const std::wstring target = other ? other->Path() : panel->Path();
-        std::wstring extracted = ArchiveDialog(hwnd_, full, target);
-        panel->Reload();
-        if (other) other->Reload();
-        if (!extracted.empty()) UpdatePromptLabel();
+        if (!panel->Navigate(full)) ShowError(panel->NavigateError());
+        UpdatePromptLabel();
         return;
     }
 
@@ -443,6 +451,33 @@ void App::GoUpActive() {
 void App::DoCopyMove(bool move) {
     Panel* panel = ActivePanel();
     Panel* other = OtherPanel();
+
+    // Из архива — распаковка в каталог другой панели; в архив копировать нельзя.
+    if (panel->InArchive()) {
+        if (other->InArchive()) {
+            ShowError(L"Между архивами копирование не поддерживается.");
+            return;
+        }
+        std::vector<std::wstring> inner;
+        std::wstring prefix = panel->ArchiveInner().empty() ? L"" : panel->ArchiveInner() + L"\\";
+        for (auto& name : panel->SelectedNames()) inner.push_back(prefix + name);
+        if (inner.empty()) return;
+
+        std::wstring target = other->Path();
+        std::wstring error;
+        if (!ExtractFromArchive(panel->ArchiveFile(), inner, target, error)) {
+            ShowError(error);
+            return;
+        }
+        panel->ClearMarks();
+        other->Reload();
+        UpdatePromptLabel();
+        return;
+    }
+    if (other->InArchive()) {
+        ShowError(L"Копирование внутрь архива не поддерживается.");
+        return;
+    }
     std::vector<std::wstring> sources = panel->SelectedPaths();
     LogDebug(L"DoCopyMove move=" + std::to_wstring(move ? 1 : 0) + L" sources=" + std::to_wstring(sources.size()) +
              L" cursor=" + std::to_wstring(panel->CursorIndex()) + L" activeSide=" + std::to_wstring(activeSide_));
@@ -627,6 +662,22 @@ void App::RunCommandLine() {
 }
 
 // Закладки каталогов: список хранится в настройках.
+// Распаковка одного файла из архива во временный каталог (для просмотра и запуска).
+std::wstring App::ExtractOneFromArchive(Panel* panel, const std::wstring& innerName) {
+    const std::wstring dir = ArchiveTempDir();
+    std::wstring rel = innerName;
+    for (auto& ch : rel) {
+        if (ch == L'/') ch = L'\\';
+    }
+
+    std::wstring error;
+    if (!ExtractFromArchive(panel->ArchiveFile(), {innerName}, dir, error)) {
+        ShowError(error);
+        return {};
+    }
+    return dir + L"\\" + rel;
+}
+
 // Какая панель под точкой экрана: 0 — левая, 1 — правая, -1 — мимо.
 int App::PanelAtScreen(POINT screen) const {
     for (int side = 0; side < 2; ++side) {
@@ -713,6 +764,12 @@ void App::Dispatch(int id) {
             if (!e || e->isUp || e->isDir) {
                 MessageBoxW(hwnd_, L"Просмотр доступен только для файлов.", kTitle, MB_ICONINFORMATION);
                 return;
+            }
+            if (panel->InArchive()) {
+                std::wstring inner = panel->ArchiveInner().empty() ? e->name : panel->ArchiveInner() + L"\\" + e->name;
+                std::wstring temp = ExtractOneFromArchive(panel, inner);
+                if (!temp.empty()) ShowLister(hwnd_, temp);
+                break;
             }
             ShowLister(hwnd_, panel->FocusedPath());
             break;

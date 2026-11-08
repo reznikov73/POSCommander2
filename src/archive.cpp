@@ -19,13 +19,6 @@ const int kExtractSelId = 42;
 const int kCloseId = 43;
 const int kStatusId = 44;
 
-struct ArchiveEntry {
-    std::wstring name;
-    std::wstring size;
-    std::wstring modified;
-    bool isDir = false;
-};
-
 struct ArchiveState {
     HWND hwnd = nullptr;
     HWND list = nullptr;
@@ -358,6 +351,46 @@ LRESULT CALLBACK ArchiveProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
 }
 
 }  // namespace
+
+bool ListArchive(const std::wstring& archive, std::vector<ArchiveEntry>& out) {
+    out.clear();
+    const std::wstring exe = Find7z();
+    if (exe.empty()) return false;
+
+    std::string raw;
+    if (!RunCapture(QuoteArg(exe) + L" l -slt -ba -sccUTF-8 " + QuoteArg(archive), raw)) return false;
+    out = ParseListing(raw);
+    return true;
+}
+
+bool ExtractFromArchive(const std::wstring& archive, const std::vector<std::wstring>& innerPaths,
+                        const std::wstring& target, std::wstring& error) {
+    const std::wstring exe = Find7z();
+    if (exe.empty()) {
+        error = L"7z.exe не найден. Установите 7-Zip.";
+        return false;
+    }
+
+    CreateDirectoryW(target.c_str(), nullptr);
+
+    std::wstring cmd = QuoteArg(exe) + L" x -y -bso0 -bsp0 -sccUTF-8 " + QuoteArg(archive) + L" -o" + QuoteArg(target);
+    for (auto& e : innerPaths) cmd += L" " + QuoteArg(e);
+
+    std::string output;
+    if (!RunCapture(cmd, output)) {
+        error = L"Не удалось запустить 7z.exe";
+        return false;
+    }
+    return true;
+}
+
+std::wstring ArchiveTempDir() {
+    wchar_t tmp[MAX_PATH]{};
+    if (!GetTempPathW(MAX_PATH, tmp)) return L".";
+    std::wstring dir = std::wstring(tmp) + L"posc2-arc";
+    CreateDirectoryW(dir.c_str(), nullptr);
+    return dir;
+}
 
 bool IsArchivePath(const std::wstring& path) {
     const size_t dot = path.find_last_of(L'.');

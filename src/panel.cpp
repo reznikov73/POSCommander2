@@ -7,6 +7,8 @@
 #include <shobjidl.h>
 #include <shlwapi.h>
 
+#include "archive.h"
+
 namespace {
 const wchar_t* kPanelClass = L"POSPanel2";
 const int kHeaderId = 1;
@@ -315,15 +317,22 @@ void Panel::SetActive(bool active) {
 }
 
 // Строка под панелью дисков: сколько свободно на текущем томе.
+std::wstring Panel::DisplayPath() const {
+    if (!inArchive_) return path_;
+    std::wstring out = archiveFile_;
+    if (!archiveInner_.empty()) out += L"\\" + archiveInner_;
+    return out;
+}
+
 void Panel::UpdateVolume() {
     if (!volume_) return;
-    SetWindowTextW(volume_, VolumeSummary(path_).c_str());
+    SetWindowTextW(volume_, inArchive_ ? L"архив" : VolumeSummary(path_).c_str());
 }
 
 void Panel::UpdateHeader() {
     if (!header_) return;
 
-    std::wstring full = path_;
+    std::wstring full = DisplayPath();
     if (!full.empty() && full.back() != L'\\') full.push_back(L'\\');
     full += L"*.*";
 
@@ -373,12 +382,112 @@ void Panel::FocusList() {
     if (list_) SetFocus(list_);
 }
 
+// Список содержимого архива для текущего внутреннего каталога.
+bool Panel::LoadArchiveListing(const std::wstring& focus) {
+    lastError_.clear();
+
+    std::vector<ArchiveEntry> all;
+    if (!ListArchive(archiveFile_, all)) {
+        lastError_ = L"Не удалось прочитать архив:\n" + archiveFile_;
+        return false;
+    }
+
+    std::vector<Entry> loaded;
+    Entry up;
+    up.name = L"..";
+    up.isDir = true;
+    up.isUp = true;
+    up.icon = IconForEntry(up);
+    loaded.push_back(std::move(up));
+
+    const std::wstring prefix = archiveInner_.empty() ? L"" : archiveInner_ + L"\\";
+    std::vector<std::wstring> seenDirs;
+
+    for (auto& e : all) {
+        std::wstring name = e.name;
+        for (auto& ch : name) {
+            if (ch == L'/') ch = L'\\';
+        }
+        if (!prefix.empty() && name.rfind(prefix, 0) != 0) continue;
+
+        std::wstring rest = name.substr(prefix.size());
+        while (!rest.empty() && rest.back() == L'\\') rest.pop_back();
+        if (rest.empty()) continue;
+
+        const size_t slash = rest.find(L'\\');
+        if (slash == std::wstring::npos) {
+            Entry en;
+            en.name = rest;
+            en.isDir = e.isDir;
+            en.size = e.size.empty() ? 0 : wcstoull(e.size.c_str(), nullptr, 10);
+            en.icon = IconForEntry(en);
+            loaded.push_back(std::move(en));
+        } else {
+            const std::wstring dirName = rest.substr(0, slash);
+            bool known = false;
+            for (auto& d : seenDirs) {
+                if (d == dirName) {
+                    known = true;
+                    break;
+                }
+            }
+            if (known) continue;
+            seenDirs.push_back(dirName);
+
+            Entry en;
+            en.name = dirName;
+            en.isDir = true;
+            en.icon = IconForEntry(en);
+            loaded.push_back(std::move(en));
+        }
+    }
+
+    path_ = archiveFile_;
+    entries_ = std::move(loaded);
+
+    std::sort(entries_.begin(), entries_.end(),
+              [this](const Entry& a, const Entry& b) { return CmpEntry(a, b, sortColumn_, sortReverse_); });
+
+    ApplyEntries(focus, 0);
+    UpdateHeader();
+    UpdateStatus();
+    return true;
+}
+
 bool Panel::Navigate(const std::wstring& dir, const std::wstring& focus, bool keepCursor) {
     lastError_.clear();
+
+    // Внутри архива: переход по его каталогам или выход наружу.
+    if (inArchive_) {
+        const std::wstring prefix = archiveFile_ + L"\\";
+        if (dir == archiveFile_) {
+            archiveInner_.clear();
+            return LoadArchiveListing(focus);
+        }
+        if (dir.rfind(prefix, 0) == 0) {
+            std::wstring inner = dir.substr(prefix.size());
+            while (!inner.empty() && (inner.back() == L'\\' || inner.back() == L'/')) inner.pop_back();
+            archiveInner_ = inner;
+            return LoadArchiveListing(focus);
+        }
+        // Уходим из архива в обычный каталог
+        inArchive_ = false;
+        archiveFile_.clear();
+        archiveInner_.clear();
+    }
+
     std::wstring target = NormalizeDir(dir);
     if (target.empty()) {
         lastError_ = L"Пустой путь";
         return false;
+    }
+
+    // Файл-архив открываем как папку.
+    if (IsArchivePath(target) && GetFileAttributesW(target.c_str()) != INVALID_FILE_ATTRIBUTES && !IsDirectory(target)) {
+        inArchive_ = true;
+        archiveFile_ = target;
+        archiveInner_.clear();
+        return LoadArchiveListing(focus);
     }
 
     ULONGLONG t0 = GetTickCount64();
@@ -530,6 +639,23 @@ void Panel::Reload() {
 }
 
 bool Panel::GoUp() {
+    if (inArchive_) {
+        if (archiveInner_.empty()) {
+            // Выход из архива в его каталог
+            const std::wstring file = archiveFile_;
+            const std::wstring parent = ParentPath(file);
+            inArchive_ = false;
+            archiveFile_.clear();
+            archiveInner_.clear();
+            const std::wstring leaf = file.substr(file.find_last_of(L'\\') + 1);
+            return Navigate(parent, leaf);
+        }
+        std::wstring inner = archiveInner_;
+        const size_t slash = inner.find_last_of(L'\\');
+        archiveInner_ = (slash == std::wstring::npos) ? L"" : inner.substr(0, slash);
+        return LoadArchiveListing(L"");
+    }
+
     if (IsRootPath(path_)) return false;
     std::wstring parent = ParentPath(path_);
     std::wstring child = path_.substr(path_.find_last_of(L'\\') + 1);
