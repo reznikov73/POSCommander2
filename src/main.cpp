@@ -12,6 +12,7 @@
 #include "wcx.h"
 
 #include <windowsx.h>
+#include <winnetwk.h>
 
 #include <cstdio>
 
@@ -43,6 +44,10 @@ enum : int {
     IDM_NEWFILE = 190,
     IDM_QUICKVIEW = 191,
     IDM_SEARCH = 192,
+    IDM_NET_BROWSE = 193,
+    IDM_NET_MAP = 194,
+    IDM_NET_UNMAP = 195,
+    IDM_NET_UNC = 196,
 
     IDM_SEL_ALL = 120,
     IDM_SEL_NONE,
@@ -110,10 +115,11 @@ static_assert(sizeof(kFKeyLabels) / sizeof(kFKeyLabels[0]) == sizeof(kFKeys) / s
 // Тулбар: кнопки и их команды.
 const int ID_TB_FIRST = 1100;
 struct TbDef { const wchar_t* text; int command; };
+// Тулбар: только то, чего нет на F-клавишах (копирование/перенос/каталог/удаление — там).
 const TbDef kToolbar[] = {
-    {L"Обновить", IDM_REFRESH},   {L"Назад", IDM_NAV_BACK},   {L"Вперёд", IDM_NAV_FORWARD},
-    {L"Вверх", IDM_NAV_UP},       {L"Копия", IDM_COPY},       {L"Перенос", IDM_MOVE},
-    {L"Каталог", IDM_MKDIR},      {L"Удалить", IDM_DELETE},   {L"Свойства", IDM_PROPERTIES},
+    {L"Обновить", IDM_REFRESH}, {L"Назад", IDM_NAV_BACK},     {L"Вперёд", IDM_NAV_FORWARD},
+    {L"Вверх", IDM_NAV_UP},     {L"Просмотр", IDM_VIEW},      {L"Поиск", IDM_SEARCH},
+    {L"Дерево", IDM_TREE},      {L"Очередь", IDM_QUEUE},      {L"Свойства", IDM_PROPERTIES},
 };
 const int kToolbarCount = (int)(sizeof(kToolbar) / sizeof(kToolbar[0]));
 
@@ -163,6 +169,11 @@ private:
     void ShowBookmarksMenu();
     void RunCommandLine();
     void SaveState();
+    void BrowseNetwork();
+    void MapNetworkDrive();
+    void UnmapNetworkDrive();
+    void OpenUncPath();
+    void RebuildDriveBars();
     void ToggleQuickView();
     void DrawFlatButton(DRAWITEMSTRUCT* dis);
     void UpdateFKeyLabels(int kind);
@@ -292,6 +303,14 @@ void App::BuildMenu() {
     AppendMenuW(cmd, MF_STRING, IDM_DRIVE_LEFT, L"Диск &левой панели\tAlt+F1");
     AppendMenuW(cmd, MF_STRING, IDM_DRIVE_RIGHT, L"Диск &правой панели\tAlt+F2");
     AppendMenuW(menu_, MF_POPUP, (UINT_PTR)cmd, L"&Команды");
+
+    HMENU net = CreatePopupMenu();
+    AppendMenuW(net, MF_STRING, IDM_NET_BROWSE, L"&Обзор сети…");
+    AppendMenuW(net, MF_STRING, IDM_NET_UNC, L"Перейти по &UNC-пути…");
+    AppendMenuW(net, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(net, MF_STRING, IDM_NET_MAP, L"&Подключить сетевой диск…");
+    AppendMenuW(net, MF_STRING, IDM_NET_UNMAP, L"&Отключить сетевой диск…");
+    AppendMenuW(menu_, MF_POPUP, (UINT_PTR)net, L"&Сеть");
 
     HMENU help = CreatePopupMenu();
     AppendMenuW(help, MF_STRING, IDM_ABOUT, L"&О программе");
@@ -860,6 +879,102 @@ void App::RefreshQuickView() {
 }
 
 // Состояние на диск: окно, панели, вкладки, курсоры. Вызывается до DestroyWindow.
+// Пересобрать ряды дисков в обеих панелях (после подключения/отключения сети).
+void App::RebuildDriveBars() {
+    left_.RebuildDriveBar();
+    right_.RebuildDriveBar();
+}
+
+// Обзор сети средствами оболочки: можно дойти до сервера и его ресурсов.
+void App::BrowseNetwork() {
+    BROWSEINFOW bi{};
+    bi.hwndOwner = hwnd_;
+    bi.lpszTitle = L"Сеть: выберите папку";
+    bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
+
+    PIDLIST_ABSOLUTE pidl = SHBrowseForFolderW(&bi);
+    if (!pidl) return;
+
+    wchar_t path[32768]{};
+    const bool ok = SHGetPathFromIDListW(pidl, path) != FALSE;
+    CoTaskMemFree(pidl);
+    if (!ok || !path[0]) return;
+
+    LogDebug(L"network browse: '" + std::wstring(path) + L"'");
+    if (!ActivePanel()->Navigate(path)) ShowError(ActivePanel()->NavigateError());
+    ActivePanel()->FocusList();
+}
+
+// Перейти по UNC-пути, введённому вручную (\\сервер\ресурс или \\сервер).
+void App::OpenUncPath() {
+    std::wstring path = L"\\\\";
+    if (!InputBox(hwnd_, L"Сеть", L"UNC-путь (например \\\\сервер\\ресурс):", path, true)) return;
+    path = Trim(path);
+    if (path.empty()) return;
+    if (!ActivePanel()->Navigate(path)) ShowError(ActivePanel()->NavigateError());
+    ActivePanel()->FocusList();
+}
+
+// Подключить сетевой диск: WNetAddConnection2 с выбранной буквой.
+void App::MapNetworkDrive() {
+    std::wstring remote = L"\\\\сервер\\ресурс";
+    if (!InputBox(hwnd_, L"Подключить сетевой диск", L"Сетевой путь (\\\\сервер\\ресурс):", remote, false)) return;
+    remote = Trim(remote);
+    if (remote.empty()) return;
+
+    std::wstring letter = L"Z:";
+    if (!InputBox(hwnd_, L"Подключить сетевой диск", L"Буква диска (например Z:):", letter, false)) return;
+    letter = Upper(Trim(letter));
+    if (!letter.empty() && letter.back() != L':') letter += L':';
+    if (letter.size() != 2 || letter[1] != L':' || letter[0] < L'A' || letter[0] > L'Z') {
+        ShowError(L"Нужна буква диска, например Z:");
+        return;
+    }
+
+    wchar_t local[4] = {letter[0], L':', 0, 0};
+    NETRESOURCEW nr{};
+    nr.dwType = RESOURCETYPE_DISK;
+    nr.lpLocalName = local;
+    nr.lpRemoteName = const_cast<wchar_t*>(remote.c_str());
+
+    const DWORD rc = WNetAddConnection2W(&nr, nullptr, nullptr, CONNECT_TEMPORARY);
+    LogDebug(L"WNetAddConnection2 '" + remote + L"' -> " + letter + L" rc=" + std::to_wstring(rc));
+    if (rc != NO_ERROR) {
+        ShowError(L"Не удалось подключить «" + remote + L"» как " + letter + L":\n" + ErrText(rc));
+        return;
+    }
+    RebuildDriveBars();
+    const std::wstring root = letter + L"\\";
+    if (!ActivePanel()->Navigate(root)) LogDebug(L"map: переход в " + root + L" не удался");
+    ActivePanel()->FocusList();
+}
+
+// Отключить сетевой диск по букве.
+void App::UnmapNetworkDrive() {
+    std::wstring letter = L"Z:";
+    if (!InputBox(hwnd_, L"Отключить сетевой диск", L"Буква диска (например Z:):", letter, false)) return;
+    letter = Upper(Trim(letter));
+    if (!letter.empty() && letter.back() != L':') letter += L':';
+    if (letter.size() != 2) {
+        ShowError(L"Нужна буква диска, например Z:");
+        return;
+    }
+
+    const DWORD rc = WNetCancelConnection2W(letter.c_str(), 0, TRUE);
+    LogDebug(L"WNetCancelConnection2 " + letter + L" rc=" + std::to_wstring(rc));
+    if (rc != NO_ERROR) {
+        ShowError(L"Не удалось отключить " + letter + L"\n" + ErrText(rc));
+        return;
+    }
+    RebuildDriveBars();
+    // Если панель стояла на этом диске — уходим на первый доступный.
+    for (Panel* panel : {&left_, &right_}) {
+        if (!panel->Path().empty() && towupper(panel->Path()[0]) == letter[0]) {
+            panel->Navigate(ExeDir());
+        }
+    }
+}
+
 void App::SaveState() {
     Settings& st = GetSettings();
     WINDOWPLACEMENT wp{};
@@ -1297,6 +1412,18 @@ void App::Dispatch(int id) {
     LogDebug(L"Dispatch id=" + std::to_wstring(id));
     Panel* panel = ActivePanel();
     switch (id) {
+        case IDM_NET_BROWSE:
+            BrowseNetwork();
+            break;
+        case IDM_NET_UNC:
+            OpenUncPath();
+            break;
+        case IDM_NET_MAP:
+            MapNetworkDrive();
+            break;
+        case IDM_NET_UNMAP:
+            UnmapNetworkDrive();
+            break;
         case IDM_SEARCH: {
             std::wstring found = SearchDialog(hwnd_, ActivePanel()->Path());
             LogDebug(L"search chosen='" + found + L"'");
@@ -1512,7 +1639,8 @@ bool App::PreTranslate(const MSG& msg) {
     if (msg.message == WM_CHAR) {
         HWND focus = GetFocus();
         const bool inList = focus && (focus == left_.List() || focus == right_.List());
-        if (inList && msg.wParam >= 32 && msg.wParam != 127) {
+        // Пробел — это отметка файла (как в TC), а не быстрый поиск.
+        if (inList && msg.wParam > 32 && msg.wParam != 127) {
             const ULONGLONG now = GetTickCount64();
             if (now - quickFilterAt_ > 900) quickFilter_.clear();
             quickFilterAt_ = now;

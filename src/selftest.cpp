@@ -3,6 +3,8 @@
 #include "ops.h"
 #include "util.h"
 
+#include <winnetwk.h>
+
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -166,6 +168,33 @@ int RunSelfTest() {
     }
     rep.Check(deep.size() > 260 && PathExists(WithLongPrefix(deep)), L"длинный путь больше 260 символов",
               L"длина " + std::to_wstring(deep.size()));
+
+    // --- сетевые пути ---
+    // Разбор UNC-пути не должен зависеть от доступности сети.
+    rep.Check(NormalizeDir(L"\\\\server\\share\\") == L"\\\\server\\share",
+              L"NormalizeDir сохраняет UNC-путь", NormalizeDir(L"\\\\server\\share\\"));
+    rep.Check(DriveRootOf(L"\\\\server\\share\\dir") == L"\\\\server\\share",
+              L"DriveRootOf: корень общего ресурса", DriveRootOf(L"\\\\server\\share\\dir"));
+
+    // Чтение общего ресурса, если он доступен на этой машине.
+    wchar_t computer[MAX_COMPUTERNAME_LENGTH + 1]{};
+    DWORD computerLen = MAX_COMPUTERNAME_LENGTH + 1;
+    std::wstring share;
+    if (GetComputerNameW(computer, &computerLen)) {
+        const std::wstring candidate = std::wstring(L"\\\\") + computer + L"\\C$";
+        DWORD probeErr = 0;
+        std::vector<Entry> probe;
+        if (ListDir(candidate, false, probe, probeErr)) share = candidate;
+    }
+    if (!share.empty()) {
+        DWORD shareErr = 0;
+        std::vector<Entry> items;
+        const bool listed = ListDir(share, false, items, shareErr);
+        rep.Check(listed, L"UNC: чтение общего ресурса",
+                  share + L", записей " + std::to_wstring(items.size()) + L", код " + std::to_wstring(shareErr));
+    } else {
+        rep.Check(true, L"UNC: общий ресурс недоступен, проверка пропущена");
+    }
 
     std::wstring report = L"POSCommander 2 - самопроверка\r\n";
     report += L"каталог: " + base + L"\r\n\r\n";

@@ -33,7 +33,7 @@ target_compile_definitions(POSCommander2 PRIVATE
 )
 
 target_link_libraries(POSCommander2 PRIVATE
-  comctl32 shell32 shlwapi ole32 uuid user32 gdi32
+  comctl32 shell32 shlwapi ole32 uuid mpr user32 gdi32
 )
 
 if(MSVC)

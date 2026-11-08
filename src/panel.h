@@ -12,6 +12,7 @@ public:
 
     bool Create(HWND parent, int id);
     void SetFont(HFONT font, UINT dpi);
+    void RebuildDriveBar();
     void Layout();
     void SetActive(bool active);
     bool Active() const { return active_; }
@@ -146,6 +147,10 @@ private:
     HWND tree_ = nullptr;
     bool treeVisible_ = false;
     std::vector<std::wstring> treePaths_;   // lParam узла = индекс в этом векторе
+    void DrawDriveButton(DRAWITEMSTRUCT* dis);
+    std::vector<HICON> driveIcons_;
+    std::vector<int> driveIds_;            // ID кнопки: kDriveBase + буква (0..25)
+
     std::vector<HWND> driveButtons_;
     std::vector<wchar_t> driveLetters_;
     std::vector<HWND> tabButtons_;

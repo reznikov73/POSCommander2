@@ -130,32 +130,98 @@ void Panel::CreateDriveBar() {
     DWORD mask = GetLogicalDrives();
     for (int i = 0; i < 26; ++i) {
         if (!(mask & (1u << i))) continue;
-        wchar_t letter = (wchar_t)(L'A' + i);
+        const wchar_t letter = (wchar_t)(L'A' + i);
+        wchar_t root[4] = {letter, L':', L'\\', 0};
+
+        // Значок тома: у сетевых, CD и съёмных он свой — оболочка отдаёт нужный.
+        SHFILEINFOW sfi{};
+        HICON icon = nullptr;
+        if (SHGetFileInfoW(root, 0, &sfi, sizeof(sfi), SHGFI_ICON | SHGFI_SMALLICON)) icon = sfi.hIcon;
+
         wchar_t text[4] = {letter, L':', 0, 0};
         HWND btn = CreateWindowExW(0, L"BUTTON", text,
-                                   WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+                                   WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
                                    0, 0, 10, 10, hwnd_, (HMENU)(INT_PTR)(kDriveBase + i), g_inst, nullptr);
         if (btn) {
+            if (font_) SendMessageW(btn, WM_SETFONT, (WPARAM)font_, TRUE);
             driveButtons_.push_back(btn);
             driveLetters_.push_back(letter);
+            driveIds_.push_back(kDriveBase + i);
+            driveIcons_.push_back(icon);
+        } else if (icon) {
+            DestroyIcon(icon);
         }
     }
     UpdateDriveBar();
 }
 
-// Текущий диск выделяется стилем кнопки по умолчанию.
+// Пересобрать ряд дисков (например, после подключения сетевого диска).
+void Panel::RebuildDriveBar() {
+    for (auto h : driveButtons_) DestroyWindow(h);
+    driveButtons_.clear();
+    driveLetters_.clear();
+    driveIds_.clear();
+    for (auto icon : driveIcons_) {
+        if (icon) DestroyIcon(icon);
+    }
+    driveIcons_.clear();
+    CreateDriveBar();
+    Layout();
+}
+
+// Текущий диск подсвечивается при отрисовке.
 void Panel::UpdateDriveBar() {
-    if (driveButtons_.empty()) return;
-    wchar_t current = path_.empty() ? 0 : path_[0];
-    for (size_t i = 0; i < driveButtons_.size(); ++i) {
-        bool isCurrent = (towupper(current) == towupper(driveLetters_[i]));
-        LONG style = GetWindowLongW(driveButtons_[i], GWL_STYLE);
-        LONG want = isCurrent ? (style | BS_DEFPUSHBUTTON) : (style & ~BS_DEFPUSHBUTTON);
-        if (want != style) {
-            SetWindowLongW(driveButtons_[i], GWL_STYLE, want);
-            InvalidateRect(driveButtons_[i], nullptr, TRUE);
+    for (auto h : driveButtons_) InvalidateRect(h, nullptr, TRUE);
+}
+
+// Кнопка диска: значок тома + буква; текущий диск — светлее и с рамкой.
+void Panel::DrawDriveButton(DRAWITEMSTRUCT* dis) {
+    // ID кнопки — kDriveBase + буква (0..25), поэтому ищем позицию в списке, а не берём как индекс.
+    int index = -1;
+    for (size_t i = 0; i < driveIds_.size(); ++i) {
+        if (driveIds_[i] == (int)dis->CtlID) {
+            index = (int)i;
+            break;
         }
     }
+    if (index < 0) return;
+
+    HDC dc = dis->hDC;
+    RECT rc = dis->rcItem;
+
+    const wchar_t current = path_.empty() ? 0 : path_[0];
+    const bool isCurrent = towupper(current) == towupper(driveLetters_[index]);
+    const bool pressed = (dis->itemState & ODS_SELECTED) != 0;
+
+    HBRUSH fill = CreateSolidBrush(isCurrent ? RGB(255, 255, 255) : GetSysColor(COLOR_BTNFACE));
+    FillRect(dc, &rc, fill);
+    DeleteObject(fill);
+
+    if (isCurrent || pressed) {
+        HPEN pen = CreatePen(PS_SOLID, 1, RGB(120, 120, 120));
+        HGDIOBJ oldPen = SelectObject(dc, pen);
+        HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
+        Rectangle(dc, rc.left, rc.top, rc.right, rc.bottom);
+        SelectObject(dc, oldBrush);
+        SelectObject(dc, oldPen);
+        DeleteObject(pen);
+    }
+
+    int textLeft = rc.left + Scale(3, dpi_);
+    if (index < (int)driveIcons_.size() && driveIcons_[index]) {
+        DrawIconEx(dc, rc.left + Scale(3, dpi_), (rc.top + rc.bottom) / 2 - Scale(8, dpi_),
+                   driveIcons_[index], 16, 16, 0, nullptr, DI_NORMAL);
+        textLeft = rc.left + Scale(22, dpi_);
+    }
+
+    wchar_t text[4] = {driveLetters_[index], L':', 0, 0};
+    RECT tr = rc;
+    tr.left = textLeft;
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, RGB(20, 20, 20));
+    HGDIOBJ oldFont = SelectObject(dc, font_ ? font_ : (HFONT)GetStockObject(DEFAULT_GUI_FONT));
+    DrawTextW(dc, text, -1, &tr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    SelectObject(dc, oldFont);
 }
 
 // ---------- вкладки ----------
@@ -501,24 +567,27 @@ void Panel::Layout() {
     int height = rc.bottom - rc.top;
     if (width <= 0 || height <= 0) return;
 
-    int driveH = Scale(24, dpi_);
-    int volH = Scale(18, dpi_);
+    int driveH = Scale(24, dpi_);      // ряд дисков + свободное место, как в TC — одной строкой
     int tabH = Scale(24, dpi_);
     int headerH = Scale(24, dpi_);
     int statusH = Scale(22, dpi_);
-    int listH = height - driveH - volH - tabH - headerH - statusH;
+    int listH = height - driveH - tabH - headerH - statusH;
     if (listH < 0) listH = 0;
 
     HDWP dwp = BeginDeferWindowPos(5 + (int)driveButtons_.size() + (int)tabButtons_.size());
+    int drivesRight = 0;
     if (dwp) {
         int x = 0;
-        int bw = Scale(26, dpi_);
+        const int bw = Scale(44, dpi_);
         for (auto h : driveButtons_) {
-            dwp = DeferWindowPos(dwp, h, nullptr, x, 1, bw, driveH - 3, SWP_NOZORDER);
+            dwp = DeferWindowPos(dwp, h, nullptr, x, 1, bw, driveH - 2, SWP_NOZORDER);
             x += bw + Scale(1, dpi_);
         }
+        drivesRight = x;
     }
-    if (dwp) dwp = DeferWindowPos(dwp, volume_, nullptr, 0, driveH, width, volH, SWP_NOZORDER);
+    // «1,2 Тб свободно из 3,6 Тб» — справа от кнопок, в той же строке.
+    if (dwp)
+        dwp = DeferWindowPos(dwp, volume_, nullptr, drivesRight, 1, width - drivesRight, driveH - 2, SWP_NOZORDER);
     if (dwp) {
         HDC dc = GetDC(hwnd_);
         HGDIOBJ oldFont = SelectObject(dc, font_ ? font_ : GetStockObject(DEFAULT_GUI_FONT));
@@ -537,13 +606,13 @@ void Panel::Layout() {
                 if (tw < Scale(70, dpi_)) tw = Scale(70, dpi_);
                 if (tw > Scale(230, dpi_)) tw = Scale(230, dpi_);
             }
-            dwp = DeferWindowPos(dwp, tabButtons_[i], nullptr, x, driveH + volH + 1, tw, tabH - 2, SWP_NOZORDER);
+            dwp = DeferWindowPos(dwp, tabButtons_[i], nullptr, x, driveH + 1, tw, tabH - 2, SWP_NOZORDER);
             x += tw + Scale(2, dpi_);
         }
         SelectObject(dc, oldFont);
         ReleaseDC(hwnd_, dc);
     }
-    int y = driveH + volH + tabH;
+    int y = driveH + tabH;
     int listX = 0;
     int listW = width;
     if (treeVisible_ && tree_) {
@@ -623,7 +692,17 @@ std::wstring Panel::DisplayPath() const {
 
 void Panel::UpdateVolume() {
     if (!volume_) return;
-    SetWindowTextW(volume_, inArchive_ ? L"архив" : VolumeSummary(path_).c_str());
+    std::wstring text;
+    if (inArchive_) {
+        text = L"архив";
+    } else if (path_.rfind(L"\\\\", 0) == 0) {
+        // Сетевой путь (\\сервер\ресурс): объём есть не всегда.
+        const std::wstring summary = VolumeSummary(path_);
+        text = summary.empty() ? L"сеть" : (L"сеть · " + summary);
+    } else {
+        text = VolumeSummary(path_);
+    }
+    SetWindowTextW(volume_, text.c_str());
 }
 
 void Panel::UpdateHeader() {
@@ -1574,9 +1653,15 @@ LRESULT Panel::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
         case WM_DRAWITEM: {
             auto dis = reinterpret_cast<DRAWITEMSTRUCT*>(lParam);
-            if (dis && dis->CtlType == ODT_BUTTON && dis->CtlID >= kTabBase && dis->CtlID < kTabBase + 32) {
-                DrawTabButton(dis);
-                return TRUE;
+            if (dis && dis->CtlType == ODT_BUTTON) {
+                if (dis->CtlID >= kTabBase && dis->CtlID < kTabBase + 32) {
+                    DrawTabButton(dis);
+                    return TRUE;
+                }
+                if (dis->CtlID >= kDriveBase && dis->CtlID < kDriveBase + 26) {
+                    DrawDriveButton(dis);
+                    return TRUE;
+                }
             }
             return FALSE;
         }
