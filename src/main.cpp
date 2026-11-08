@@ -34,6 +34,7 @@ enum : int {
     IDM_BOOKMARK_ADD = 170, IDM_BOOKMARK_SHOW,
     IDM_TREE = 175,
     IDM_PACK = 178,
+    IDM_BATCH_RENAME = 179,
 
     IDM_SEL_ALL = 120,
     IDM_SEL_NONE,
@@ -121,6 +122,7 @@ private:
     void ShowDrivesMenu(int side);
     void AddBookmark();
     void PackSelection();
+    void BatchRename();
     int PanelAtScreen(POINT screen) const;
     // Распаковать один файл из архива во временный каталог; вернуть путь или пусто.
     std::wstring ExtractOneFromArchive(Panel* panel, const std::wstring& innerName);
@@ -194,6 +196,7 @@ void App::BuildMenu() {
     AppendMenuW(file, MF_STRING, IDM_PROPERTIES, L"С&войства\tAlt+Enter");
     AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(file, MF_STRING, IDM_PACK, L"У&паковать…\tAlt+F5");
+    AppendMenuW(file, MF_STRING, IDM_BATCH_RENAME, L"Пакетное &переименование…\tCtrl+M");
     AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(file, MF_STRING, IDM_EXIT, L"В&ыход\tAlt+F4");
     AppendMenuW(menu_, MF_POPUP, (UINT_PTR)file, L"&Файл");
@@ -272,6 +275,9 @@ void App::CreateChildren() {
     }
 
     ApplyFont();
+
+    // Приём файлов, перетащенных из Проводника.
+    DragAcceptFiles(hwnd_, TRUE);
 
     const Settings& st = GetSettings();
     showHidden_ = st.showHidden;
@@ -748,6 +754,80 @@ void App::PackSelection() {
     UpdatePromptLabel();
 }
 
+// Пакетное переименование: {name} — исходное имя без расширения, {n} — номер по порядку.
+void App::BatchRename() {
+    Panel* panel = ActivePanel();
+    if (!panel) return;
+
+    if (panel->InArchive()) {
+        MessageBoxW(hwnd_, L"Переименование внутри архива не поддерживается.", kTitle, MB_ICONINFORMATION);
+        return;
+    }
+
+    std::vector<std::wstring> names = panel->SelectedNames();
+    if (names.empty()) return;
+
+    std::wstring pattern = L"{name}_{n}";
+    if (!InputBox(hwnd_, L"Пакетное переименование",
+                  L"Шаблон: {name} — имя, {n} — номер (с 1):", pattern, false)) {
+        return;
+    }
+    pattern = Trim(pattern);
+    if (pattern.empty()) return;
+
+    const int digits = (int)std::to_wstring(names.size()).size();
+    int done = 0;
+    int failed = 0;
+    std::wstring firstError;
+
+    for (size_t i = 0; i < names.size(); ++i) {
+        const std::wstring& oldName = names[i];
+
+        std::wstring base = oldName;
+        std::wstring ext;
+        const size_t dot = oldName.find_last_of(L'.');
+        if (dot != std::wstring::npos && dot > 0) {
+            base = oldName.substr(0, dot);
+            ext = oldName.substr(dot);
+        }
+
+        std::wstring number = std::to_wstring(i + 1);
+        while ((int)number.size() < digits) number.insert(number.begin(), L'0');
+
+        std::wstring newName = pattern;
+        auto replaceAll = [&](const std::wstring& what, const std::wstring& with) {
+            size_t pos = 0;
+            while ((pos = newName.find(what, pos)) != std::wstring::npos) {
+                newName.replace(pos, what.size(), with);
+                pos += with.size();
+            }
+        };
+        replaceAll(L"{name}", base);
+        replaceAll(L"{n}", number);
+
+        if (newName.empty() || newName == oldName) continue;
+        newName += ext;
+
+        DWORD err = 0;
+        const std::wstring from = JoinPath(panel->Path(), oldName);
+        const std::wstring to = JoinPath(panel->Path(), newName);
+        if (RenamePath(from, to, err)) {
+            ++done;
+        } else {
+            ++failed;
+            if (firstError.empty()) firstError = oldName + L": " + ErrText(err);
+        }
+    }
+
+    panel->ClearMarks();
+    panel->Reload();
+    UpdatePromptLabel();
+
+    std::wstring report = L"Переименовано: " + std::to_wstring(done);
+    if (failed) report += L"\nНе удалось: " + std::to_wstring(failed) + L"\n" + firstError;
+    MessageBoxW(hwnd_, report.c_str(), L"Пакетное переименование", MB_ICONINFORMATION);
+}
+
 void App::AddBookmark() {
     const std::wstring path = ActivePanel()->Path();
     if (path.empty()) return;
@@ -883,6 +963,9 @@ void App::Dispatch(int id) {
             right_.SetShowHidden(showHidden_);
             left_.Reload();
             right_.Reload();
+            break;
+        case IDM_BATCH_RENAME:
+            BatchRename();
             break;
         case IDM_PACK:
             PackSelection();
@@ -1051,6 +1134,9 @@ bool App::PreTranslate(const MSG& msg) {
                 return true;
             case 'D':
                 AddBookmark();
+                return true;
+            case 'M':
+                Dispatch(IDM_BATCH_RENAME);
                 return true;
             case VK_F8:
                 Dispatch(IDM_TREE);
@@ -1250,6 +1336,52 @@ LRESULT App::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 return 0;
             }
             break;
+        }
+
+        case WM_DROPFILES: {
+            HDROP drop = (HDROP)wParam;
+            UINT count = DragQueryFileW(drop, 0xFFFFFFFF, nullptr, 0);
+            if (count == 0) {
+                DragFinish(drop);
+                return 0;
+            }
+
+            POINT pt{};
+            DragQueryPoint(drop, &pt);
+            const int side = PanelAtScreen([&] {
+                POINT screen = pt;
+                ClientToScreen(hwnd_, &screen);
+                return screen;
+            }());
+
+            if (side < 0) {
+                DragFinish(drop);
+                return 0;
+            }
+
+            Panel* target = (side == 0) ? &left_ : &right_;
+            if (target->InArchive()) {
+                DragFinish(drop);
+                ShowError(L"Перетаскивание в архив не поддерживается.");
+                return 0;
+            }
+
+            std::vector<std::wstring> sources;
+            for (UINT i = 0; i < count; ++i) {
+                wchar_t path[MAX_PATH * 4]{};
+                if (DragQueryFileW(drop, i, path, MAX_PATH * 4) > 0) sources.push_back(path);
+            }
+            DragFinish(drop);
+
+            const bool moveFiles = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+            if (!ShellCopyMove(hwnd_, sources, target->Path(), moveFiles)) {
+                ShowError(moveFiles ? L"Перемещение не выполнено или отменено."
+                                    : L"Копирование не выполнено или отменено.");
+            }
+            left_.Reload();
+            right_.Reload();
+            UpdatePromptLabel();
+            return 0;
         }
 
         case WM_MOUSEMOVE: {
