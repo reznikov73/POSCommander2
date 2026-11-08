@@ -16,6 +16,8 @@
 
 #include <commctrl.h>
 
+#include <iphlpapi.h>
+
 #include <cmath>
 #include <cstdio>
 
@@ -116,6 +118,8 @@ static_assert(sizeof(kFKeyLabels) / sizeof(kFKeyLabels[0]) == sizeof(kFKeys) / s
               "подписи F-клавиш должны совпадать с кнопками");
 
 // Тулбар: кнопки и их команды.
+const UINT_PTR kTitleTimer = 10;      // обновление заголовка окна
+
 const int ID_TB_FIRST = 1100;
 struct TbDef { const wchar_t* text; int command; };
 // Тулбар: только то, чего нет на F-клавишах (копирование/перенос/каталог/удаление — там).
@@ -172,6 +176,7 @@ private:
     void ShowBookmarksMenu();
     void RunCommandLine();
     void SaveState();
+    void UpdateTitle();
     void BrowseNetwork();
     void MapNetworkDrive();
     void UnmapNetworkDrive();
@@ -193,6 +198,15 @@ private:
     HWND label_ = nullptr;
     HWND prompt_ = nullptr;
     HWND fkeys_[kFKeyCount]{};
+    // Данные для строки состояния в заголовке окна (как в TC).
+    ULONGLONG titleCpuIdle_ = 0, titleCpuKernel_ = 0, titleCpuUser_ = 0;
+    struct IfCounter {
+        DWORD index = 0;
+        DWORD in = 0;
+        DWORD out = 0;
+    };
+    std::vector<IfCounter> netCounters_;
+
     HFONT iconFont_ = nullptr;          // шрифт значков (Segoe Fluent Icons / MDL2 Assets)
     bool haveIconFont_ = false;
     HWND tip_ = nullptr;                // подсказки кнопок тулбара
@@ -410,6 +424,10 @@ void App::CreateChildren() {
 
     // Приём файлов, перетащенных из Проводника.
     DragAcceptFiles(hwnd_, TRUE);
+
+    // Заголовок окна: дата/время, сеть, память, ЦП — обновляем раз в секунду, как TC.
+    SetTimer(hwnd_, kTitleTimer, 1000, nullptr);
+    UpdateTitle();
 
     const Settings& st = GetSettings();
     showHidden_ = st.showHidden;
@@ -1074,6 +1092,100 @@ void App::RefreshQuickView() {
 }
 
 // Состояние на диск: окно, панели, вкладки, курсоры. Вызывается до DestroyWindow.
+// Заголовок окна в духе TC: имя, дата и время, сеть, память, ЦП.
+void App::UpdateTitle() {
+    SYSTEMTIME st{};
+    GetLocalTime(&st);
+    static const wchar_t* kWeekday[7] = {L"Вс", L"Пн", L"Вт", L"Ср", L"Чт", L"Пт", L"Сб"};
+    static const wchar_t* kMonth[12] = {L"янв", L"фев", L"мар", L"апр", L"мая", L"июн",
+                                        L"июл", L"авг", L"сен", L"окт", L"ноя", L"дек"};
+
+    MEMORYSTATUSEX ms{};
+    ms.dwLength = sizeof(ms);
+    int memUsedTenths = 0, memTotalTenths = 0, memPct = 0;
+    if (GlobalMemoryStatusEx(&ms)) {
+        const double totalGb = ms.ullTotalPhys / (1024.0 * 1024 * 1024);
+        const double usedGb = (ms.ullTotalPhys - ms.ullAvailPhys) / (1024.0 * 1024 * 1024);
+        memTotalTenths = (int)(totalGb * 10 + 0.5);
+        memUsedTenths = (int)(usedGb * 10 + 0.5);
+        memPct = (int)ms.dwMemoryLoad;
+    }
+
+    // ЦП: разница системных времён между обновлениями.
+    int cpuPct = 0;
+    FILETIME idle{}, kern{}, user{};
+    if (GetSystemTimes(&idle, &kern, &user)) {
+        auto ticks = [](const FILETIME& ft) {
+            ULARGE_INTEGER u;
+            u.LowPart = ft.dwLowDateTime;
+            u.HighPart = ft.dwHighDateTime;
+            return u.QuadPart;
+        };
+        const ULONGLONG i = ticks(idle), k = ticks(kern), u = ticks(user);
+        if (titleCpuKernel_ || titleCpuUser_) {
+            const ULONGLONG di = i - titleCpuIdle_;
+            const ULONGLONG dk = k - titleCpuKernel_;
+            const ULONGLONG du = u - titleCpuUser_;
+            const ULONGLONG span = dk + du;
+            if (span > 0) cpuPct = (int)((span - di) * 100 / span);
+        }
+        titleCpuIdle_ = i;
+        titleCpuKernel_ = k;
+        titleCpuUser_ = u;
+    }
+
+    // Сеть: сколько байт прошло за секунду, в Мбит/с. Счётчики 32-битные, разность считаем
+    // по модулю 2^32 — так переполнение не даёт всплесков.
+    double downMbit = 0.0, upMbit = 0.0;
+    {
+        DWORD size = 0;
+        if (GetIfTable(nullptr, &size, FALSE) == ERROR_INSUFFICIENT_BUFFER && size > 0) {
+            std::vector<BYTE> raw(size);
+            auto* table = reinterpret_cast<MIB_IFTABLE*>(raw.data());
+            if (GetIfTable(table, &size, FALSE) == NO_ERROR) {
+                std::vector<IfCounter> now;
+                DWORD bestDown = 0, bestUp = 0;
+                for (DWORD i = 0; i < table->dwNumEntries; ++i) {
+                    const MIB_IFROW& row = table->table[i];
+                    if (row.dwType == IF_TYPE_SOFTWARE_LOOPBACK) continue;
+                    if (row.dwOperStatus != MIB_IF_OPER_STATUS_OPERATIONAL) continue;
+
+                    IfCounter counter;
+                    counter.index = row.dwIndex;
+                    counter.in = row.dwInOctets;
+                    counter.out = row.dwOutOctets;
+                    now.push_back(counter);
+
+                    for (const auto& prev : netCounters_) {
+                        if (prev.index != row.dwIndex) continue;
+                        const DWORD down = (DWORD)(row.dwInOctets - prev.in);
+                        const DWORD up = (DWORD)(row.dwOutOctets - prev.out);
+                        if (down > bestDown) bestDown = down;
+                        if (up > bestUp) bestUp = up;
+                        break;
+                    }
+                }
+                if (!netCounters_.empty()) {
+                    // Берём самый нагруженный интерфейс: виртуальные адаптеры дублируют трафик.
+                    downMbit = (double)bestDown * 8.0 / 1000000.0;
+                    upMbit = (double)bestUp * 8.0 / 1000000.0;
+                }
+                netCounters_ = std::move(now);
+            }
+        }
+    }
+
+    wchar_t buf[512]{};
+    swprintf(buf, 512,
+             L"%ls - Win32   %ls %02d %ls %04d %02d:%02d:%02d   Сеть: %d,%d/%d,%d Мбит/с   "
+             L"Память: %d,%d/%d,%d ГБ (%d%%)   ЦП: %d%%",
+             kTitle, kWeekday[st.wDayOfWeek], st.wDay, kMonth[st.wMonth - 1], st.wYear, st.wHour,
+             st.wMinute, st.wSecond, (int)downMbit, (int)((downMbit - (int)downMbit) * 10), (int)upMbit,
+             (int)((upMbit - (int)upMbit) * 10), memUsedTenths / 10, memUsedTenths % 10,
+             memTotalTenths / 10, memTotalTenths % 10, memPct, cpuPct);
+    SetWindowTextW(hwnd_, buf);
+}
+
 // Пересобрать ряды дисков в обеих панелях (после подключения/отключения сети).
 void App::RebuildDriveBars() {
     left_.RebuildDriveBar();
@@ -2144,6 +2256,13 @@ LRESULT App::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         case WM_APP + 101:
             LoadPanels();
             return 0;
+
+        case WM_TIMER:
+            if (wParam == kTitleTimer) {
+                UpdateTitle();
+                return 0;
+            }
+            break;
 
         case WM_APP + 302: {
             // Вкладка скопирована на другую панель.
