@@ -71,6 +71,7 @@ private:
     LRESULT Proc(HWND, UINT, WPARAM, LPARAM);
 
     void ApplyEntries(const std::wstring& focus, int fallbackIndex);
+    void ShowShellContextMenu(int screenX, int screenY);
     void CreateDriveBar();
     void UpdateDriveBar();
     void UpdateVolume();

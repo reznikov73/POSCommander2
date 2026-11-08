@@ -2,6 +2,10 @@
 #include "panel.h"
 
 #include <commctrl.h>
+#include <windowsx.h>
+#include <shlobj.h>
+#include <shobjidl.h>
+#include <shlwapi.h>
 
 namespace {
 const wchar_t* kPanelClass = L"POSPanel2";
@@ -694,6 +698,49 @@ void Panel::DrawRow(NMLVCUSTOMDRAW* cd) {
     }
 }
 
+// Контекстное меню Проводника для текущей записи (IContextMenu оболочки).
+void Panel::ShowShellContextMenu(int screenX, int screenY) {
+    Entry* e = Cursor();
+    if (!e || !list_) return;
+
+    const std::wstring full = e->isUp ? path_ : JoinPath(path_, e->name);
+
+    IShellItem* item = nullptr;
+    if (FAILED(SHCreateItemFromParsingName(full.c_str(), nullptr, IID_PPV_ARGS(&item))) || !item) return;
+
+    IContextMenu* menu = nullptr;
+    if (FAILED(item->BindToHandler(nullptr, BHID_SFUIObject, IID_PPV_ARGS(&menu))) || !menu) {
+        item->Release();
+        return;
+    }
+
+    HMENU popup = CreatePopupMenu();
+    const UINT kFirst = 1;
+    const UINT kLast = 0x6FFF;
+    bool shown = false;
+
+    if (popup && SUCCEEDED(menu->QueryContextMenu(popup, 0, kFirst, kLast, CMF_NORMAL))) {
+        int cmd = TrackPopupMenu(popup, TPM_RETURNCMD | TPM_RIGHTBUTTON, screenX, screenY, 0, hwnd_, nullptr);
+        if (cmd > 0) {
+            CMINVOKECOMMANDINFOEX info{};
+            info.cbSize = sizeof(info);
+            info.hwnd = hwnd_;
+            info.lpVerb = MAKEINTRESOURCEA((UINT)(cmd - kFirst));
+            info.lpVerbW = MAKEINTRESOURCEW((UINT)(cmd - kFirst));
+            info.nShow = SW_SHOWNORMAL;
+            info.fMask = CMIC_MASK_UNICODE;
+            shown = SUCCEEDED(menu->InvokeCommand(reinterpret_cast<LPCMINVOKECOMMANDINFO>(&info)));
+        }
+    }
+
+    if (popup) DestroyMenu(popup);
+    menu->Release();
+    item->Release();
+
+    // Команда оболочки могла изменить файлы — обновляем список.
+    if (shown) Reload();
+}
+
 LRESULT CALLBACK Panel::ProcStatic(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     Panel* self = nullptr;
     if (msg == WM_NCCREATE) {
@@ -713,6 +760,31 @@ LRESULT Panel::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         case WM_SIZE:
             Layout();
             return 0;
+
+        case WM_CONTEXTMENU: {
+            // Курсор под мышью (если ПКМ по элементу списка), иначе — на текущей записи.
+            int x = GET_X_LPARAM(lParam);
+            int y = GET_Y_LPARAM(lParam);
+            if (x != -1 && y != -1 && list_) {
+                POINT pt{x, y};
+                ScreenToClient(list_, &pt);
+                LVHITTESTINFO hit{};
+                hit.pt = pt;
+                const int index = ListView_HitTest(list_, &hit);
+                if (index >= 0) SetCursorIndex(index);
+            } else {
+                RECT rc{};
+                int index = CursorIndex();
+                if (index >= 0 && ListView_GetItemRect(list_, index, &rc, LVIR_BOUNDS)) {
+                    POINT pt{rc.left, rc.bottom};
+                    ClientToScreen(list_, &pt);
+                    x = pt.x;
+                    y = pt.y;
+                }
+            }
+            ShowShellContextMenu(x, y);
+            return 0;
+        }
 
         case WM_COMMAND: {
             int id = LOWORD(wParam);

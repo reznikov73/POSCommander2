@@ -88,6 +88,8 @@ void LoadSettings() {
     s.rightTabs = ReadTabs(L"Right", L"Tab");
     s.leftActive = ReadInt(L"Left", L"Active", 0);
     s.rightActive = ReadInt(L"Right", L"Active", 0);
+
+    s.bookmarks = ReadTabs(L"Bookmarks", L"Path");
 }
 
 void SaveSettings() {
@@ -109,4 +111,10 @@ void SaveSettings() {
     WriteInt(L"Left", L"Active", s.leftActive);
     WriteTabs(L"Right", L"Tab", s.rightTabs);
     WriteInt(L"Right", L"Active", s.rightActive);
+
+    WriteInt(L"Bookmarks", L"PathCount", (int)s.bookmarks.size());
+    for (size_t i = 0; i < s.bookmarks.size(); ++i) {
+        std::wstring key = L"Path" + std::to_wstring(i);
+        WriteStr(L"Bookmarks", key.c_str(), s.bookmarks[i]);
+    }
 }

@@ -17,6 +17,7 @@ struct Settings {
     bool sortReverse = false;
 
     std::vector<std::wstring> leftTabs, rightTabs;
+    std::vector<std::wstring> bookmarks;
     int leftActive = 0, rightActive = 0;
 };
 

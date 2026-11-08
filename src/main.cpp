@@ -30,6 +30,7 @@ enum : int {
     IDM_PROPERTIES,
     IDM_EXIT,
     IDM_NAV_BACK, IDM_NAV_FORWARD, IDM_NAV_UP,
+    IDM_BOOKMARK_ADD = 170, IDM_BOOKMARK_SHOW,
 
     IDM_SEL_ALL = 120,
     IDM_SEL_NONE,
@@ -115,6 +116,8 @@ private:
     void DoProperties();
     void DoSort(int column);
     void ShowDrivesMenu(int side);
+    void AddBookmark();
+    void ShowBookmarksMenu();
     void RunCommandLine();
     void AppendToPrompt(const std::wstring& text, bool quoted);
     void ShowError(const std::wstring& text);
@@ -199,6 +202,9 @@ void App::BuildMenu() {
     AppendMenuW(view, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(view, MF_STRING, IDM_HIDDEN, L"Скрытые &файлы\tCtrl+H");
     AppendMenuW(view, MF_STRING, IDM_REFRESH, L"&Обновить\tCtrl+R");
+    AppendMenuW(view, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(view, MF_STRING, IDM_BOOKMARK_ADD, L"Добавить &закладку\tCtrl+D");
+    AppendMenuW(view, MF_STRING, IDM_BOOKMARK_SHOW, L"&Закладки…");
     AppendMenuW(menu_, MF_POPUP, (UINT_PTR)view, L"&Вид");
 
     HMENU cmd = CreatePopupMenu();
@@ -601,6 +607,48 @@ void App::RunCommandLine() {
     if ((INT_PTR)r <= 32) ShowError(L"Не удалось выполнить:\n" + command);
 }
 
+// Закладки каталогов: список хранится в настройках.
+void App::AddBookmark() {
+    const std::wstring path = ActivePanel()->Path();
+    if (path.empty()) return;
+
+    Settings& st = GetSettings();
+    for (auto& b : st.bookmarks) {
+        if (SamePath(b, path)) {
+            MessageBoxW(hwnd_, L"Этот каталог уже в закладках.", L"Закладки", MB_ICONINFORMATION);
+            return;
+        }
+    }
+    st.bookmarks.push_back(path);
+    SaveSettings();
+}
+
+void App::ShowBookmarksMenu() {
+    Settings& st = GetSettings();
+    if (st.bookmarks.empty()) {
+        MessageBoxW(hwnd_, L"Закладок пока нет. Нажмите Ctrl+D, чтобы добавить текущий каталог.",
+                    L"Закладки", MB_ICONINFORMATION);
+        return;
+    }
+
+    HMENU popup = CreatePopupMenu();
+    for (size_t i = 0; i < st.bookmarks.size() && i < 200; ++i) {
+        AppendMenuW(popup, MF_STRING, 2000 + (UINT)i, st.bookmarks[i].c_str());
+    }
+
+    POINT pt{};
+    GetCursorPos(&pt);
+    int cmd = TrackPopupMenu(popup, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd_, nullptr);
+    DestroyMenu(popup);
+
+    if (cmd >= 2000) {
+        size_t index = (size_t)(cmd - 2000);
+        if (index < st.bookmarks.size()) {
+            if (!ActivePanel()->Navigate(st.bookmarks[index])) ShowError(ActivePanel()->NavigateError());
+        }
+    }
+}
+
 void App::Dispatch(int id) {
     LogDebug(L"Dispatch id=" + std::to_wstring(id));
     Panel* panel = ActivePanel();
@@ -689,6 +737,12 @@ void App::Dispatch(int id) {
             right_.SetShowHidden(showHidden_);
             left_.Reload();
             right_.Reload();
+            break;
+        case IDM_BOOKMARK_ADD:
+            AddBookmark();
+            break;
+        case IDM_BOOKMARK_SHOW:
+            ShowBookmarksMenu();
             break;
         case IDM_NAV_BACK:
             panel->GoBack();
@@ -901,6 +955,9 @@ bool App::PreTranslate(const MSG& msg) {
                 return true;
             case 'T':
                 panel->AddTab();
+                return true;
+            case 'D':
+                AddBookmark();
                 return true;
             case 'W':
                 panel->CloseTab();
