@@ -6,3 +6,4 @@ _testdata/
 NVIDIA Corporation/
 *.user
 _*.ps1
+_*.py
