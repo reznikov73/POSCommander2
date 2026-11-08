@@ -5,3 +5,4 @@ _testdata/
 .zwork/
 NVIDIA Corporation/
 *.user
+_*.ps1
