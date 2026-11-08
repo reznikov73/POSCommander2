@@ -148,6 +148,14 @@ int RunSelfTest() {
     rep.Check(RenamePath(copy, renamed, renameErr), L"RenamePath", L"код " + std::to_wstring(renameErr));
     rep.Check(PathExists(renamed), L"переименованный файл на месте");
 
+    // Перемещение в отдельный подкаталог
+    const std::wstring moved = base + L"\\moved";
+    MakeDir(moved);
+    const std::wstring toMove = dest + L"\\a.txt";
+    WriteText(toMove, "move me");
+    rep.Check(ShellCopyMove(nullptr, {toMove}, moved, true, true), L"ShellCopyMove: перемещение");
+    rep.Check(!PathExists(toMove) && PathExists(moved + L"\\a.txt"), L"перемещение: файл на новом месте");
+
     rep.Check(DeleteViaShell(nullptr, {renamed}, true), L"DeleteViaShell: удаление");
     rep.Check(!PathExists(renamed), L"файл после удаления отсутствует");
 

@@ -6,7 +6,8 @@
 #include <string>
 #include <vector>
 
-// Копирование/перемещение через оболочку: системный прогресс, конфликты, отмена.
+// Копирование/перемещение. Основной путь — IFileOperation (системный прогресс,
+// пауза, отмена, конфликты), при недоступности COM — SHFileOperation.
 // silent = true — без диалогов и прогресса (для автотестов).
 bool ShellCopyMove(HWND owner, const std::vector<std::wstring>& sources, const std::wstring& target,
                    bool move, bool silent = false);
@@ -14,7 +15,7 @@ bool ShellCopyMove(HWND owner, const std::vector<std::wstring>& sources, const s
 // Переименование одного пути. При неудаче err = код GetLastError, иначе 0.
 bool RenamePath(const std::wstring& from, const std::wstring& to, DWORD& err);
 
-// Удаление в корзину через оболочку.
+// Удаление в корзину (IFileOperation, при недоступности COM — SHFileOperation).
 bool DeleteViaShell(HWND owner, const std::vector<std::wstring>& items, bool silent = false);
 
 // Создание одного каталога. true, если каталог создан или уже существует.
