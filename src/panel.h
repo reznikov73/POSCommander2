@@ -43,6 +43,9 @@ public:
     void RestoreState(const std::vector<std::wstring>& tabs, int active);
     void CaptureState(std::vector<std::wstring>& tabs, int& active) const;
 
+    // Быстрый поиск по буквам: перевод курсора на первую запись с этим префиксом.
+    bool FocusPrefix(const std::wstring& prefix);
+
     bool GoBack();
     bool GoForward();
     bool CanGoBack() const { return histPos_ > 0; }

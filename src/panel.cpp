@@ -419,6 +419,21 @@ bool Panel::Navigate(const std::wstring& dir, const std::wstring& focus, bool ke
     return true;
 }
 
+// Быстрый поиск: первая запись, начинающаяся с набранных букв.
+bool Panel::FocusPrefix(const std::wstring& prefix) {
+    if (prefix.empty()) return false;
+    const std::wstring needle = Lower(prefix);
+    for (size_t i = 0; i < entries_.size(); ++i) {
+        if (entries_[i].isUp) continue;
+        const std::wstring name = Lower(entries_[i].name);
+        if (name.rfind(needle, 0) == 0) {
+            SetCursorIndex((int)i);
+            return true;
+        }
+    }
+    return false;
+}
+
 bool Panel::GoBack() {
     if (!CanGoBack()) return false;
     int target = histPos_ - 1;

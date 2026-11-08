@@ -133,6 +133,8 @@ private:
     UINT dpi_ = 96;
     bool showHidden_ = true;
     int splitPercent_ = 50;
+    std::wstring quickFilter_;          // буфер быстрого поиска по буквам
+    ULONGLONG quickFilterAt_ = 0;       // время последнего символа
     bool draggingSplit_ = false;
     std::vector<std::wstring> history_;
 };
@@ -735,6 +737,26 @@ void App::Dispatch(int id) {
 // ---------- клавиатура ----------
 
 bool App::PreTranslate(const MSG& msg) {
+    // Быстрый поиск по буквам: WM_CHAR даёт символ с учётом раскладки.
+    if (msg.message == WM_CHAR) {
+        HWND focus = GetFocus();
+        const bool inList = focus && (focus == left_.List() || focus == right_.List());
+        if (inList && msg.wParam >= 32 && msg.wParam != 127) {
+            const ULONGLONG now = GetTickCount64();
+            if (now - quickFilterAt_ > 900) quickFilter_.clear();
+            quickFilterAt_ = now;
+            quickFilter_.push_back((wchar_t)msg.wParam);
+
+            Panel* target = ActivePanel();
+            if (!target->FocusPrefix(quickFilter_) && quickFilter_.size() > 1) {
+                quickFilter_.pop_back();
+                target->FocusPrefix(quickFilter_);
+            }
+            return true;
+        }
+        return false;
+    }
+
     // Alt+клавиша приходит как WM_SYSKEYDOWN, обычная — как WM_KEYDOWN.
     if (msg.message != WM_KEYDOWN && msg.message != WM_SYSKEYDOWN) return false;
     LogDebug(L"vk=" + std::to_wstring(msg.wParam));
@@ -852,6 +874,9 @@ bool App::PreTranslate(const MSG& msg) {
                 return true;
             }
             break;
+        case VK_ESCAPE:
+            quickFilter_.clear();
+            return true;
         case VK_DELETE:
             if (!inPrompt && !inList) break;
             Dispatch(IDM_DELETE);

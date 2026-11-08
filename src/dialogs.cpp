@@ -128,68 +128,155 @@ INT_PTR CALLBACK InputProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM lParam) {
 
 struct ListerState {
     std::wstring path;
-    std::wstring text;
+    std::vector<BYTE> raw;
+    UINT codepage = CP_ACP;      // текущая кодировка
+    bool hex = false;            // режим дампа
     HFONT font = nullptr;
     HWND edit = nullptr;
+    HWND hint = nullptr;
 };
 
-std::wstring BytesToText(const std::vector<BYTE>& raw) {
+// Автоопределение: BOM UTF-16 / UTF-8, иначе проверка на корректный UTF-8, иначе ANSI.
+UINT DetectCodepage(const std::vector<BYTE>& raw) {
+    if (raw.size() >= 2 && raw[0] == 0xFF && raw[1] == 0xFE) return 1200;
+    if (raw.size() >= 3 && raw[0] == 0xEF && raw[1] == 0xBB && raw[2] == 0xBF) return CP_UTF8;
+    if (!raw.empty()) {
+        int wide = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, (LPCCH)raw.data(), (int)raw.size(), nullptr, 0);
+        if (wide > 0) return CP_UTF8;
+    }
+    return CP_ACP;
+}
+
+// Похоже ли на двоичный файл: много неуправляемых байтов в начале.
+bool LooksBinary(const std::vector<BYTE>& raw) {
+    const size_t sample = raw.size() < 4096 ? raw.size() : 4096;
+    if (sample == 0) return false;
+    size_t odd = 0;
+    for (size_t i = 0; i < sample; ++i) {
+        const BYTE b = raw[i];
+        if (b == 0) return true;
+        if (b < 9 || (b > 13 && b < 32)) ++odd;
+    }
+    return odd * 5 > sample;   // больше 20% странных байтов
+}
+
+std::wstring DecodeBytes(const std::vector<BYTE>& raw, UINT codepage) {
     if (raw.empty()) return L"(пустой файл)";
 
     const BYTE* data = raw.data();
     size_t size = raw.size();
-    UINT codepage = CP_ACP;
+    UINT cp = codepage;
 
-    if (size >= 3 && data[0] == 0xEF && data[1] == 0xBB && data[2] == 0xBF) {
-        data += 3;
-        size -= 3;
-        codepage = CP_UTF8;
-    } else if (size >= 2 && data[0] == 0xFF && data[1] == 0xFE) {
+    if (cp == 1200 && size >= 2 && data[0] == 0xFF && data[1] == 0xFE) {
         data += 2;
         size -= 2;
-        codepage = 1200;  // UTF-16 LE
-    } else {
-        // Проверяем, что байты — корректный UTF-8; иначе системная кодировка.
-        int wide = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, (LPCCH)data, (int)size, nullptr, 0);
-        codepage = wide > 0 ? CP_UTF8 : CP_ACP;
+    } else if (cp == CP_UTF8 && size >= 3 && data[0] == 0xEF && data[1] == 0xBB && data[2] == 0xBF) {
+        data += 3;
+        size -= 3;
     }
+    if (size == 0) return L"(пустой файл)";
 
-    int need = MultiByteToWideChar(codepage, 0, (LPCCH)data, (int)size, nullptr, 0);
-    if (need <= 0) return L"(не текст)";
+    int need = MultiByteToWideChar(cp, 0, (LPCCH)data, (int)size, nullptr, 0);
+    if (need <= 0) return L"(не читается в этой кодировке)";
     std::wstring out((size_t)need, L'\0');
-    MultiByteToWideChar(codepage, 0, (LPCCH)data, (int)size, out.data(), need);
+    MultiByteToWideChar(cp, 0, (LPCCH)data, (int)size, out.data(), need);
     return out;
 }
 
-bool ReadWholeFile(const std::wstring& path, std::vector<BYTE>& out, std::wstring& error) {
-    HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                              nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (file == INVALID_HANDLE_VALUE) {
-        error = ErrText(GetLastError());
-        return false;
+// Дамп в стиле hex-редактора: смещение, 16 байт, ASCII.
+std::wstring HexDump(const std::vector<BYTE>& raw, size_t limit) {
+    if (raw.empty()) return L"(пустой файл)";
+
+    const size_t total = raw.size();
+    const size_t n = total < limit ? total : limit;
+    std::wstring out;
+    out.reserve(n * 6);
+    wchar_t line[160];
+
+    for (size_t offset = 0; offset < n; offset += 16) {
+        std::wstring hex, ascii;
+        for (size_t i = 0; i < 16; ++i) {
+            if (offset + i < n) {
+                const BYTE b = raw[offset + i];
+                swprintf(line, 160, L"%02X ", b);
+                hex += line;
+                ascii.push_back((b >= 32 && b < 127) ? (wchar_t)b : L'.');
+            } else {
+                hex += L"   ";
+            }
+        }
+        swprintf(line, 160, L"%08llX  %ls %ls\r\n", (unsigned long long)offset, hex.c_str(), ascii.c_str());
+        out += line;
     }
-    LARGE_INTEGER size{};
-    GetFileSizeEx(file, &size);
-    const LONGLONG limit = 8LL * 1024 * 1024;
-    DWORD toRead = (DWORD)(size.QuadPart > limit ? limit : size.QuadPart);
-    out.resize(toRead);
-    DWORD read = 0;
-    BOOL ok = ReadFile(file, out.data(), toRead, &read, nullptr);
-    CloseHandle(file);
-    if (!ok) {
-        error = ErrText(GetLastError());
-        return false;
+    if (total > n) {
+        out += L"\r\nпоказаны первые " + std::to_wstring(n) + L" байт из " + std::to_wstring(total);
     }
-    out.resize(read);
-    return true;
+    return out;
+}
+
+void RefreshLister(HWND hwnd, ListerState* st) {
+    if (!st || !st->edit) return;
+
+    const size_t kTextLimit = 4u * 1024 * 1024;
+    std::wstring body;
+    if (st->hex) {
+        body = HexDump(st->raw, 64u * 1024);
+    } else {
+        body = DecodeBytes(st->raw, st->codepage);
+        if (body.size() > kTextLimit) {
+            body.resize(kTextLimit);
+            body += L"\r\n… файл обрезан";
+        }
+    }
+
+    SetWindowTextW(st->edit, body.c_str());
+    SendMessageW(st->edit, EM_SETSEL, 0, 0);
+    SendMessageW(st->edit, EM_SCROLLCARET, 0, 0);
+
+    std::wstring name = st->path.substr(st->path.find_last_of(L'\\') + 1);
+    std::wstring mode;
+    if (st->hex) mode = L"hex";
+    else if (st->codepage == CP_UTF8) mode = L"UTF-8";
+    else if (st->codepage == 1200) mode = L"UTF-16";
+    else if (st->codepage == CP_OEMCP) mode = L"OEM";
+    else mode = L"ANSI";
+
+    SetWindowTextW(hwnd, (L"Просмотр — " + name + L" · " + mode).c_str());
+    if (st->hint) {
+        SetWindowTextW(st->hint, L"1 ANSI · 2 OEM · 3 UTF-8 · 4 UTF-16 · H hex · T текст · ESC закрыть");
+    }
 }
 
 // Просмотрщик: ESC/F3/F10 закрывают окно, даже когда фокус в дочернем EDIT.
 LRESULT CALLBACK ListerEditProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
                                 UINT_PTR id, DWORD_PTR ref) {
-    if (msg == WM_KEYDOWN && (wParam == VK_ESCAPE || wParam == VK_F3 || wParam == VK_F10)) {
-        DestroyWindow(GetParent(hwnd));
-        return 0;
+    if (msg == WM_KEYDOWN) {
+        HWND parent = GetParent(hwnd);
+        auto* st = reinterpret_cast<ListerState*>(GetWindowLongPtrW(parent, GWLP_USERDATA));
+
+        if (wParam == VK_ESCAPE || wParam == VK_F3 || wParam == VK_F10) {
+            DestroyWindow(parent);
+            return 0;
+        }
+        if (st) {
+            UINT cp = 0;
+            bool switchCp = true;
+            switch (wParam) {
+                case '1': cp = CP_ACP; break;
+                case '2': cp = CP_OEMCP; break;
+                case '3': cp = CP_UTF8; break;
+                case '4': cp = 1200; break;
+                case 'H': st->hex = !st->hex; RefreshLister(parent, st); return 0;
+                case 'T': st->hex = false; RefreshLister(parent, st); return 0;
+                default: switchCp = false; break;
+            }
+            if (switchCp) {
+                st->hex = false;
+                st->codepage = cp;
+                RefreshLister(parent, st);
+                return 0;
+            }
+        }
     }
     return DefSubclassProc(hwnd, msg, wParam, lParam);
 }
@@ -201,23 +288,32 @@ LRESULT CALLBACK ListerProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             auto cs = reinterpret_cast<CREATESTRUCTW*>(lParam);
             st = reinterpret_cast<ListerState*>(cs->lpCreateParams);
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)st);
+
             st->edit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
                                        WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_HSCROLL | ES_MULTILINE |
                                            ES_READONLY | ES_AUTOVSCROLL | ES_AUTOHSCROLL,
                                        0, 0, 10, 10, hwnd, (HMENU)1, g_inst, nullptr);
+            st->hint = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_LEFT | SS_CENTERIMAGE,
+                                       0, 0, 10, 10, hwnd, (HMENU)2, g_inst, nullptr);
+
             if (st->edit) {
                 st->font = CreateFontW(-Scale(15, WindowDpi(hwnd)), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                                        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                        CLEARTYPE_QUALITY, FIXED_PITCH | FF_MODERN, L"Consolas");
                 SendMessageW(st->edit, WM_SETFONT, (WPARAM)st->font, TRUE);
-                SetWindowTextW(st->edit, st->text.c_str());
+                if (st->hint) SendMessageW(st->hint, WM_SETFONT, (WPARAM)st->font, TRUE);
                 SetWindowSubclass(st->edit, ListerEditProc, 1, 0);
+                RefreshLister(hwnd, st);
             }
             return 0;
         }
         case WM_SIZE: {
             if (st && st->edit) {
-                MoveWindow(st->edit, 0, 0, LOWORD(lParam), HIWORD(lParam), TRUE);
+                const int hintH = Scale(22, WindowDpi(hwnd));
+                int w = LOWORD(lParam);
+                int h = HIWORD(lParam);
+                MoveWindow(st->edit, 0, 0, w, h - hintH, TRUE);
+                if (st->hint) MoveWindow(st->hint, 0, h - hintH, w, hintH, TRUE);
             }
             return 0;
         }
@@ -246,6 +342,29 @@ LRESULT CALLBACK ListerProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
 
+bool ReadWholeFile(const std::wstring& path, std::vector<BYTE>& out, std::wstring& error) {
+    HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                              nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        error = ErrText(GetLastError());
+        return false;
+    }
+    LARGE_INTEGER size{};
+    GetFileSizeEx(file, &size);
+    const LONGLONG limit = 8LL * 1024 * 1024;
+    DWORD toRead = (DWORD)(size.QuadPart > limit ? limit : size.QuadPart);
+    out.resize(toRead);
+    DWORD read = 0;
+    BOOL ok = toRead == 0 ? TRUE : ReadFile(file, out.data(), toRead, &read, nullptr);
+    CloseHandle(file);
+    if (!ok) {
+        error = ErrText(GetLastError());
+        return false;
+    }
+    out.resize(read);
+    return true;
+}
+
 }  // namespace
 
 bool InputBox(HWND owner, const std::wstring& title, const std::wstring& prompt, std::wstring& value,
@@ -263,7 +382,8 @@ bool InputBox(HWND owner, const std::wstring& title, const std::wstring& prompt,
     ctx.value = value;
     ctx.isPath = isPath;
 
-    LogDebug(L"InputBox title='" + title + L"' valueLen=" + std::to_wstring(value.size()) + L" isPath=" + std::to_wstring(isPath ? 1 : 0));
+    LogDebug(L"InputBox title='" + title + L"' valueLen=" + std::to_wstring(value.size()) +
+             L" isPath=" + std::to_wstring(isPath ? 1 : 0));
     INT_PTR result = DialogBoxIndirectParamW(g_inst, builder.Get(), owner, InputProc, (LPARAM)&ctx);
     LogDebug(L"InputBox result=" + std::to_wstring((long long)result));
     if (result == 1 && ctx.ok) {
@@ -297,7 +417,9 @@ void ShowLister(HWND owner, const std::wstring& path) {
 
     auto* st = new ListerState();
     st->path = path;
-    st->text = BytesToText(raw);
+    st->raw = std::move(raw);
+    st->codepage = DetectCodepage(st->raw);
+    st->hex = LooksBinary(st->raw);
 
     std::wstring name = path.substr(path.find_last_of(L'\\') + 1);
     std::wstring title = L"Просмотр — " + name;
