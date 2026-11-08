@@ -9,6 +9,8 @@
 
 #include "archive.h"
 
+#include <thread>
+
 namespace {
 const wchar_t* kPanelClass = L"POSPanel2";
 const int kHeaderId = 1;
@@ -811,7 +813,13 @@ void Panel::FillDispInfo(NMLVDISPINFO* info) {
                 if (!text.empty() && text[0] == L'.') text.erase(0, 1);
                 break;
             case 2:
-                text = e.isDir ? L"<Папка>" : FmtSize(e.size);
+                if (e.isUp) {
+                    text = L"<Папка>";
+                } else if (e.isDir) {
+                    text = e.dirSizeBusy ? L"…" : (e.dirSizeKnown ? FmtSize(e.dirSize) : L"<Папка>");
+                } else {
+                    text = FmtSize(e.size);
+                }
                 break;
             case 3:
                 text = e.isUp ? L"" : FmtDate(e.ft);
@@ -1011,6 +1019,26 @@ void Panel::ShowShellContextMenu(int screenX, int screenY) {
     if (shown) Reload();
 }
 
+// Размер каталога считаем в фоне: рекурсия по большому дереву иначе подвесила бы окно.
+void Panel::CalculateDirSize(int index) {
+    if (index < 0 || index >= (int)entries_.size()) return;
+    Entry& e = entries_[index];
+    if (!e.isDir || e.isUp) return;
+
+    const std::wstring target = JoinPath(path_, e.name);
+    e.dirSizeBusy = true;
+    InvalidateRect(list_, nullptr, FALSE);
+
+    const int item = index;
+    HWND self = hwnd_;
+    std::thread([this, target, item, self]() {
+        const ULONGLONG size = DirectorySize(target);
+        dirSizeResult_.store(size);
+        dirSizeIndex_ = item;
+        PostMessageW(self, WM_APP + 500, 0, 0);
+    }).detach();
+}
+
 LRESULT CALLBACK Panel::ProcStatic(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     Panel* self = nullptr;
     if (msg == WM_NCCREATE) {
@@ -1053,6 +1081,20 @@ LRESULT Panel::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 }
             }
             ShowShellContextMenu(x, y);
+            return 0;
+        }
+
+        case WM_APP + 500: {
+            const int index = dirSizeIndex_;
+            if (index >= 0 && index < (int)entries_.size()) {
+                Entry& e = entries_[index];
+                e.dirSizeBusy = false;
+                e.dirSizeKnown = true;
+                e.dirSize = dirSizeResult_.load();
+                LogDebug(L"dirsize '" + e.name + L"' = " + std::to_wstring(e.dirSize) + L" байт");
+                if (list_) ListView_RedrawItems(list_, index, index);
+                UpdateStatus();
+            }
             return 0;
         }
 

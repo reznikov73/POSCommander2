@@ -2,6 +2,8 @@
 #pragma once
 
 #include "common.h"
+
+#include <atomic>
 #include "util.h"
 
 class Panel {
@@ -47,6 +49,9 @@ public:
     bool FocusPrefix(const std::wstring& prefix);
 
     // Дерево каталогов (Ctrl+F8) слева от списка.
+    // Размер каталога под курсором считается в фоне.
+    void CalculateDirSize(int index);
+
     void ToggleTree();
     bool TreeVisible() const { return treeVisible_; }
 
@@ -107,6 +112,8 @@ private:
     HWND list_ = nullptr;
     HWND status_ = nullptr;
     HWND volume_ = nullptr;
+    std::atomic<ULONGLONG> dirSizeResult_{0};
+    int dirSizeIndex_ = -1;
     HWND tree_ = nullptr;
     bool treeVisible_ = false;
     std::vector<std::wstring> treePaths_;   // lParam узла = индекс в этом векторе

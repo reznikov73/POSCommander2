@@ -279,6 +279,37 @@ bool ListDir(const std::wstring& dir, bool showHidden, std::vector<Entry>& out, 
     return true;
 }
 
+// Рекурсивный подсчёт размера каталога. Ссылки и точки повторной обработки пропускаем.
+ULONGLONG DirectorySize(const std::wstring& dir, const std::atomic<bool>* cancel) {
+    ULONGLONG total = 0;
+
+    std::wstring pattern = JoinPath(dir, L"*");
+    WIN32_FIND_DATAW data{};
+    HANDLE find = FindFirstFileExW(pattern.c_str(), FindExInfoBasic, &data, FindExSearchNameMatch,
+                                   nullptr, FIND_FIRST_EX_LARGE_FETCH);
+    if (find == INVALID_HANDLE_VALUE) return 0;
+
+    std::vector<std::wstring> subdirs;
+    do {
+        if (cancel && cancel->load()) break;
+        if (wcscmp(data.cFileName, L".") == 0 || wcscmp(data.cFileName, L"..") == 0) continue;
+
+        if (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            if (data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) continue;
+            subdirs.push_back(JoinPath(dir, data.cFileName));
+        } else {
+            total += ((ULONGLONG)data.nFileSizeHigh << 32) | data.nFileSizeLow;
+        }
+    } while (FindNextFileW(find, &data));
+    FindClose(find);
+
+    for (auto& sub : subdirs) {
+        if (cancel && cancel->load()) break;
+        total += DirectorySize(sub, cancel);
+    }
+    return total;
+}
+
 std::vector<DriveItem> GetDrives() {
     std::vector<DriveItem> out;
     DWORD mask = GetLogicalDrives();

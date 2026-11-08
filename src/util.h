@@ -3,6 +3,8 @@
 
 #include "common.h"
 
+#include <atomic>
+
 // Запись в панели: файл, каталог или строка "..".
 struct Entry {
     std::wstring name;
@@ -13,6 +15,9 @@ struct Entry {
     bool isUp = false;
     bool marked = false;
     int icon = -1;          // индекс в системном списке значков, -1 = ещё не взят
+    bool dirSizeKnown = false;   // размер каталога посчитан
+    bool dirSizeBusy = false;    // размер считается прямо сейчас
+    ULONGLONG dirSize = 0;       // суммарный размер содержимого каталога
 
     bool hidden() const {
         return (attr & (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM)) != 0;
@@ -34,6 +39,9 @@ bool ListDir(const std::wstring& dir, bool showHidden, std::vector<Entry>& out, 
 
 // Диагностический лог в %TEMP%\posc2-debug.log (append, UTF-8).
 void LogDebug(const std::wstring& text);
+// Суммарный размер содержимого каталога (рекурсивно, без переходов по ссылкам).
+ULONGLONG DirectorySize(const std::wstring& dir, const std::atomic<bool>* cancel = nullptr);
+
 std::vector<DriveItem> GetDrives();
 std::wstring DriveRootOf(const std::wstring& path);
 // "1 253,6 Гб свободно из 3 726,0 Гб" для строки состояния.

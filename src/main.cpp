@@ -38,6 +38,7 @@ enum : int {
     IDM_BATCH_RENAME = 179,
     IDM_PLUGINS = 182,
     IDM_QUEUE = 184,
+    IDM_DIRSIZE = 186,
 
     IDM_SEL_ALL = 120,
     IDM_SEL_NONE,
@@ -222,6 +223,7 @@ void App::BuildMenu() {
     AppendMenuW(file, MF_STRING, IDM_PLUGINS, L"&Плагины Total Commander…");
     AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(file, MF_STRING, IDM_QUEUE, L"Очередь &операций…");
+    AppendMenuW(file, MF_STRING, IDM_DIRSIZE, L"Размер &каталога\tAlt+Shift+Enter");
     AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(file, MF_STRING, IDM_EXIT, L"В&ыход\tAlt+F4");
     AppendMenuW(menu_, MF_POPUP, (UINT_PTR)file, L"&Файл");
@@ -1161,6 +1163,12 @@ void App::Dispatch(int id) {
             left_.Reload();
             right_.Reload();
             break;
+        case IDM_DIRSIZE: {
+            Panel* p = ActivePanel();
+            int index = p->CursorIndex();
+            if (index >= 0) p->CalculateDirSize(index);
+            break;
+        }
         case IDM_QUEUE:
             ShowQueueWindow();
             break;
@@ -1289,6 +1297,10 @@ bool App::PreTranslate(const MSG& msg) {
     }
     if (alt && msg.wParam == VK_F2) {
         ShowDrivesMenu(1);
+        return true;
+    }
+    if (alt && shift && msg.wParam == VK_RETURN) {
+        Dispatch(IDM_DIRSIZE);
         return true;
     }
     if (alt && msg.wParam == VK_F5) {
