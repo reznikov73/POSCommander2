@@ -48,6 +48,15 @@ public:
     std::vector<std::wstring> SelectedNames() const;
     std::vector<std::wstring> SelectedPaths() const;
 
+    // Маска файлов: «*.*» справа от поля пути, история последних 8 (этап 5 план-UI).
+    HWND MaskEdit() const { return maskEdit_; }
+    bool MaskEditing() const { return maskEditing_; }
+    const std::wstring& Mask() const { return mask_; }
+    void SetMask(const std::wstring& mask);       // применить и перечитать каталог
+    void RestoreMask(const std::wstring& mask);   // выставить без перечитывания (при запуске)
+    void ConfirmMaskEdit();
+    void CancelMaskEdit();
+
     void ToggleMarkCursor();
     void MarkAll(bool mark, bool includingDirs = true);
     void InvertMarks();
@@ -140,6 +149,13 @@ private:
     void SaveColumnWidths();
     static LRESULT CALLBACK PathEditProc(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
     static LRESULT CALLBACK ListProc(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
+    static LRESULT CALLBACK MaskEditProc(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
+    void EnterMaskEdit();
+    void LeaveMaskEdit(bool restore);
+    void ShowMaskHistory();
+    void UpdateMaskField();
+    void PushMaskHistory(const std::wstring& mask);
+    void FilterByMask();
     void ApplyPathText();
     void EnterPathEdit();
     void NavigatePathPart(int charIndex);
@@ -192,6 +208,11 @@ private:
     HWND pathApply_ = nullptr;     // ✓ — перейти по введённому пути
     HWND pathFav_ = nullptr;       // ★ — избранные каталоги
     HWND pathHist_ = nullptr;      // ▼ — история каталогов
+    HWND maskEdit_ = nullptr;      // поле маски файлов («*.*»)
+    HWND maskHist_ = nullptr;      // ▼ — история масок
+    HWND statusInfo_ = nullptr;    // сводка «Отмечено: …» у правого края статуса
+    bool maskEditing_ = false;
+    std::wstring mask_ = L"*.*";
 
     void DrawRowName(NMLVCUSTOMDRAW* cd);
     void DrawRow(NMLVCUSTOMDRAW* cd);

@@ -11,6 +11,7 @@
 #include "settings.h"
 #include "dialogs.h"
 
+#include <algorithm>
 #include <thread>
 
 namespace {
@@ -19,6 +20,9 @@ const int kPathEditId = 1;     // поле пути
 const int kPathApplyId = 3;    // ✓ перейти
 const int kPathFavId = 4;      // ★ избранное
 const int kPathHistId = 5;     // ▼ история
+const int kMaskEditId = 6;     // поле маски файлов
+const int kMaskHistId = 7;     // ▼ история масок
+const int kStatusInfoId = 8;   // сводка «Отмечено: …» справа статуса
 const UINT_PTR kPathClickTimer = 7;   // отложенный переход по клику на компонент пути
 const UINT_PTR kHoverShowTimer = 8;   // показ списка содержимого каталога
 const UINT_PTR kHoverHideTimer = 9;   // скрытие списка
@@ -72,6 +76,29 @@ std::wstring LeafOf(const std::wstring& path) {
     return path.substr(pos + 1);
 }
 
+// Сокращение пути слева, как в TC («…\src\main.cpp»): пока текст не влезает,
+// отрезаем ведущие компоненты и ставим многоточие. Последний компонент не режем.
+std::wstring CompactPathLeft(const std::wstring& text, int maxWidth, HFONT font) {
+    if (text.empty() || maxWidth <= 0) return text;
+    HDC dc = GetDC(nullptr);
+    HGDIOBJ old = SelectObject(dc, font ? font : GetStockObject(DEFAULT_GUI_FONT));
+    SIZE sz{};
+    std::wstring t = text;
+    GetTextExtentPoint32W(dc, t.c_str(), (int)t.size(), &sz);
+    while (sz.cx > maxWidth) {
+        const size_t lead = t.find_first_not_of(L'\\');      // UNC: ведущие '\' пропускаем
+        if (lead == std::wstring::npos) break;
+        const size_t cut = t.find(L'\\', lead);
+        if (cut == std::wstring::npos) break;                // остался последний компонент
+        t = L"…" + t.substr(cut + 1);
+        if (!GetTextExtentPoint32W(dc, t.c_str(), (int)t.size(), &sz)) break;
+        if (t.size() <= 2) break;                             // «…x» — короче некуда
+    }
+    SelectObject(dc, old);
+    ReleaseDC(nullptr, dc);
+    return t;
+}
+
 }  // namespace
 
 bool Panel::Create(HWND parent, int id) {
@@ -106,6 +133,13 @@ bool Panel::Create(HWND parent, int id) {
     pathFav_ = CreateWindowExW(0, L"BUTTON", L"★", pathBtn, 0, 0, 10, 10, hwnd_, (HMENU)(INT_PTR)kPathFavId, g_inst, nullptr);
     pathHist_ = CreateWindowExW(0, L"BUTTON", L"▼", pathBtn, 0, 0, 10, 10, hwnd_, (HMENU)(INT_PTR)kPathHistId, g_inst, nullptr);
 
+    // Поле маски файлов «*.*» — справа от поля пути, с историей масок (этап 5 план-UI).
+    maskEdit_ = CreateWindowExW(0, L"EDIT", L"*.*",
+                                WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL | ES_READONLY,
+                                0, 0, 10, 10, hwnd_, (HMENU)(INT_PTR)kMaskEditId, g_inst, nullptr);
+    if (maskEdit_) SetWindowSubclass(maskEdit_, MaskEditProc, 2, (DWORD_PTR)this);
+    maskHist_ = CreateWindowExW(0, L"BUTTON", L"", pathBtn, 0, 0, 10, 10, hwnd_, (HMENU)(INT_PTR)kMaskHistId, g_inst, nullptr);
+
     list_ = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
                             WS_CHILD | WS_VISIBLE | WS_TABSTOP | LVS_REPORT | LVS_OWNERDATA |
                                 LVS_SINGLESEL | LVS_SHOWSELALWAYS,   // без LVS_NOSORTHEADER: клик по заголовку сортирует
@@ -138,6 +172,10 @@ bool Panel::Create(HWND parent, int id) {
 
     volume_ = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE | SS_RIGHT,
                               0, 0, 10, 10, hwnd_, (HMENU)(INT_PTR)kVolumeId, g_inst, nullptr);
+
+    // Справа в статусной строке — сводка «Отмечено: …»; слева путь под курсором (этап 5).
+    statusInfo_ = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE | SS_RIGHT,
+                                  0, 0, 10, 10, hwnd_, (HMENU)(INT_PTR)kStatusInfoId, g_inst, nullptr);
 
     CreateDriveBar();
 
@@ -625,8 +663,11 @@ void Panel::SetFont(HFONT font, UINT dpi) {
     if (pathApply_) SendMessageW(pathApply_, WM_SETFONT, (WPARAM)font, TRUE);
     if (pathFav_) SendMessageW(pathFav_, WM_SETFONT, (WPARAM)font, TRUE);
     if (pathHist_) SendMessageW(pathHist_, WM_SETFONT, (WPARAM)font, TRUE);
+    if (maskEdit_) SendMessageW(maskEdit_, WM_SETFONT, (WPARAM)font, TRUE);
+    if (maskHist_) SendMessageW(maskHist_, WM_SETFONT, (WPARAM)font, TRUE);
     if (list_) SendMessageW(list_, WM_SETFONT, (WPARAM)font, TRUE);
     if (status_) SendMessageW(status_, WM_SETFONT, (WPARAM)font, TRUE);
+    if (statusInfo_) SendMessageW(statusInfo_, WM_SETFONT, (WPARAM)font, TRUE);
     if (volume_) SendMessageW(volume_, WM_SETFONT, (WPARAM)font, TRUE);
     if (rootBtn_) SendMessageW(rootBtn_, WM_SETFONT, (WPARAM)font, TRUE);
     if (upBtn_) SendMessageW(upBtn_, WM_SETFONT, (WPARAM)font, TRUE);
@@ -650,7 +691,7 @@ void Panel::Layout() {
     int listH = height - driveH - tabH - headerH - statusH;
     if (listH < 0) listH = 0;
 
-    HDWP dwp = BeginDeferWindowPos(5 + 2 + (int)driveButtons_.size() + (int)tabButtons_.size());
+    HDWP dwp = BeginDeferWindowPos(8 + 2 + (int)driveButtons_.size() + (int)tabButtons_.size());
     int drivesRight = 0;
     if (dwp) {
         // Ширина кнопки диска — по фактическому тексту «C:» (макет: поля 7px, значок 16, зазор 4).
@@ -721,11 +762,14 @@ void Panel::Layout() {
     const int pbtn = Scale(22, dpi_);
     const int pgap = Scale(2, dpi_);
     const int btnCount = pathEditing_ ? 3 : 2;      // ✓ видна только при правке
-    const int editW = width - (pbtn + pgap) * btnCount;
+    const int maskW = Scale(58, dpi_);              // поле маски — как в макете (.pmask 58px)
+    const int editW = width - maskW - (pbtn + pgap) * (btnCount + 1);   // +1 — ▼ истории масок
     if (pathApply_) ShowWindow(pathApply_, pathEditing_ ? SW_SHOW : SW_HIDE);
 
-    int bx = editW;
+    int bx = editW + maskW + pbtn + pgap;
     if (dwp) dwp = DeferWindowPos(dwp, pathEdit_, nullptr, 0, y + 1, editW, headerH - 2, SWP_NOZORDER);
+    if (dwp) dwp = DeferWindowPos(dwp, maskEdit_, nullptr, editW, y + 1, maskW, headerH - 2, SWP_NOZORDER);
+    if (dwp) dwp = DeferWindowPos(dwp, maskHist_, nullptr, editW + maskW, y + 1, pbtn, headerH - 2, SWP_NOZORDER);
     if (pathEditing_ && dwp) {
         dwp = DeferWindowPos(dwp, pathApply_, nullptr, bx, y + 1, pbtn, headerH - 2, SWP_NOZORDER);
         bx += pbtn + pgap;
@@ -734,7 +778,12 @@ void Panel::Layout() {
     bx += pbtn + pgap;
     if (dwp) dwp = DeferWindowPos(dwp, pathHist_, nullptr, bx, y + 1, pbtn, headerH - 2, SWP_NOZORDER);
     if (dwp) dwp = DeferWindowPos(dwp, list_, nullptr, listX, y + headerH, listW, listH, SWP_NOZORDER);
-    if (dwp) dwp = DeferWindowPos(dwp, status_, nullptr, 0, y + headerH + listH, width, statusH, SWP_NOZORDER);
+    if (dwp) {
+        // Статус: слева — путь под курсором, справа — сводка «Отмечено: …».
+        const int infoW = std::min(Scale(260, dpi_), width / 2);
+        dwp = DeferWindowPos(dwp, status_, nullptr, 0, y + headerH + listH, width - infoW, statusH, SWP_NOZORDER);
+        dwp = DeferWindowPos(dwp, statusInfo_, nullptr, width - infoW, y + headerH + listH, infoW, statusH, SWP_NOZORDER);
+    }
     if (dwp) EndDeferWindowPos(dwp);
 
     UpdateColumns(width);
@@ -1319,6 +1368,172 @@ void Panel::ShowPathFavorites() {
     FocusList();
 }
 
+// ---------- маска файлов (этап 5 план-UI) ----------
+
+void Panel::UpdateMaskField() {
+    if (maskEdit_) SetWindowTextW(maskEdit_, mask_.c_str());
+}
+
+// Последние 8 масок — общая история в настройках; повтор маски поднимает его наверх.
+void Panel::PushMaskHistory(const std::wstring& mask) {
+    Settings& st = GetSettings();
+    for (auto it = st.maskHistory.begin(); it != st.maskHistory.end();) {
+        if (SameName(*it, mask)) {
+            it = st.maskHistory.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    st.maskHistory.push_back(mask);
+    if (st.maskHistory.size() > 8) {
+        st.maskHistory.erase(st.maskHistory.begin(), st.maskHistory.end() - 8);
+    }
+    SaveSettings();
+}
+
+// Применить маску и перечитать каталог: Enter в поле или выбор из истории.
+void Panel::SetMask(const std::wstring& mask) {
+    std::wstring text = Trim(mask);
+    if (text.empty()) text = L"*.*";
+    mask_ = text;
+    PushMaskHistory(text);
+    UpdateMaskField();
+    Reload();
+}
+
+// При запуске: просто выставить поле, фильтр применится при чтении каталога.
+void Panel::RestoreMask(const std::wstring& mask) {
+    std::wstring text = Trim(mask);
+    if (text.empty()) text = L"*.*";
+    mask_ = text;
+    UpdateMaskField();
+}
+
+void Panel::EnterMaskEdit() {
+    if (!maskEdit_ || maskEditing_) return;
+    maskEditing_ = true;
+    SendMessageW(maskEdit_, EM_SETREADONLY, FALSE, 0);
+    SetFocus(maskEdit_);
+    SendMessageW(maskEdit_, EM_SETSEL, 0, -1);   // всё выделено: ввод заменяет маску
+    InvalidateRect(maskEdit_, nullptr, TRUE);
+}
+
+void Panel::LeaveMaskEdit(bool restore) {
+    if (!maskEdit_) return;
+    maskEditing_ = false;
+    SendMessageW(maskEdit_, EM_SETREADONLY, TRUE, 0);
+    SendMessageW(maskEdit_, EM_SETSEL, 0, 0);
+    if (restore) UpdateMaskField();
+    InvalidateRect(maskEdit_, nullptr, TRUE);
+}
+
+void Panel::ConfirmMaskEdit() {
+    if (!maskEditing_) return;
+    wchar_t buf[256]{};
+    GetWindowTextW(maskEdit_, buf, 256);
+    LeaveMaskEdit(false);
+    SetMask(buf);
+    FocusList();
+}
+
+void Panel::CancelMaskEdit() {
+    if (!maskEditing_) return;
+    LeaveMaskEdit(true);
+    FocusList();
+}
+
+// ▼ — история масок: свежие сверху, плюс «*.* — все файлы».
+void Panel::ShowMaskHistory() {
+    Settings& st = GetSettings();
+    HMENU menu = CreatePopupMenu();
+    if (!menu) return;
+
+    int shown = 0;
+    for (int i = (int)st.maskHistory.size() - 1; i >= 0; --i, ++shown) {
+        AppendMenuW(menu, MF_STRING, 100 + shown, st.maskHistory[i].c_str());
+    }
+    if (shown) {
+        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(menu, MF_STRING, 1, L"*.*  (все файлы)");
+    } else {
+        AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, L"(история пуста)");
+    }
+
+    RECT rc{};
+    GetWindowRect(maskHist_, &rc);
+    const int cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, rc.left, rc.bottom, 0,
+                                   hwnd_, nullptr);
+    DestroyMenu(menu);
+    if (cmd == 1) {
+        SetMask(L"*.*");
+        FocusList();
+    } else if (cmd >= 100) {
+        const int index = (int)st.maskHistory.size() - 1 - (cmd - 100);
+        if (index >= 0 && index < (int)st.maskHistory.size()) {
+            SetMask(st.maskHistory[index]);
+            FocusList();
+        }
+    }
+}
+
+// Поле маски: клик — правка, Enter/Tab — применить, Esc — отменить, уход фокуса — отмена.
+LRESULT CALLBACK Panel::MaskEditProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, UINT_PTR id,
+                                      DWORD_PTR ref) {
+    auto* self = reinterpret_cast<Panel*>(ref);
+    switch (msg) {
+        case WM_SETFOCUS:
+            // Поле на неактивной панели получило фокус — активируем её (как поле пути).
+            if (self && !self->active_) {
+                PostMessageW(GetParent(self->hwnd_), WM_APP + 303, (WPARAM)self->side_, 0);
+            }
+            break;
+        case WM_LBUTTONDOWN:
+            if (self && !self->maskEditing_) self->EnterMaskEdit();
+            break;
+        case WM_KEYDOWN:
+            if (!self) break;
+            if (wParam == VK_RETURN || wParam == VK_TAB) {
+                self->ConfirmMaskEdit();
+                return 0;
+            }
+            if (wParam == VK_ESCAPE) {
+                self->CancelMaskEdit();
+                return 0;
+            }
+            break;
+        case WM_KILLFOCUS:
+            if (self && self->maskEditing_) self->LeaveMaskEdit(true);
+            break;
+        default:
+            break;
+    }
+    return DefSubclassProc(hwnd, msg, wParam, lParam);
+}
+
+// Маска действует только на файлы; каталоги и «..» остаются всегда (как в TC).
+// «*.*» и «*» — показать всё (в том числе файлы без расширения).
+void Panel::FilterByMask() {
+    const auto masks = SplitMasks(mask_);
+    bool all = masks.empty();
+    for (auto& m : masks) {
+        if (m == L"*.*" || m == L"*") {
+            all = true;
+            break;
+        }
+    }
+    if (all) return;
+    entries_.erase(std::remove_if(entries_.begin(), entries_.end(),
+                                  [&masks](const Entry& e) {
+                                      if (e.isUp || e.isDir) return false;
+                                      const std::wstring lower = Lower(e.name);
+                                      for (auto& m : masks) {
+                                          if (MatchMask(lower, m)) return false;
+                                      }
+                                      return true;
+                                  }),
+                   entries_.end());
+}
+
 // Кнопки ✓ ★ ▼: плоские, знак рисуем сами.
 void Panel::DrawPathButton(DRAWITEMSTRUCT* dis) {
     HDC dc = dis->hDC;
@@ -1367,7 +1582,9 @@ void Panel::DrawPathButton(DRAWITEMSTRUCT* dis) {
             SelectObject(dc, ob);
             break;
         }
-        case kPathHistId: {                        // треугольник вниз
+        case kPathHistId:                        // треугольник вниз
+        case kMaskHistId:                        // тот же знак у истории масок
+        {
             POINT pts[3] = {{cx - s, cy - s / 2}, {cx + s, cy - s / 2}, {cx, cy + s}};
             HBRUSH br = CreateSolidBrush(RGB(60, 60, 60));
             HGDIOBJ ob = SelectObject(dc, br);
@@ -1449,6 +1666,7 @@ bool Panel::LoadArchiveListing(const std::wstring& focus) {
 
     path_ = archiveFile_;
     entries_ = std::move(loaded);
+    FilterByMask();                        // внутри архива — тот же фильтр
 
     std::sort(entries_.begin(), entries_.end(),
               [this](const Entry& a, const Entry& b) { return CmpEntry(a, b, sortColumn_, sortReverse_); });
@@ -1520,6 +1738,7 @@ bool Panel::Navigate(const std::wstring& dir, const std::wstring& focus, bool ke
     std::wstring previousPath = path_;
     path_ = target;
     entries_ = std::move(loaded);
+    FilterByMask();                        // маска действует и при смене каталога
 
     if (!IsRootPath(path_)) {
         Entry up;
@@ -1850,46 +2069,32 @@ void Panel::Sort(int column, bool reverse) {
 
 void Panel::UpdateStatus() {
     if (!status_) return;
-    size_t files = 0, dirs = 0, marked = 0;
-    ULONGLONG total = 0, markedSize = 0;
+
+    // Путь элемента под курсором, как в TC («..» — родительский каталог);
+    // при нехватке места путь сокращается слева: «…\src\main.cpp».
+    std::wstring head = path_;
+    if (Entry* cur = Cursor()) head = FullPathOf(*cur);
+    RECT rc{};
+    GetClientRect(status_, &rc);
+    HFONT f = (HFONT)SendMessageW(status_, WM_GETFONT, 0, 0);
+    SetWindowTextW(status_, CompactPathLeft(head, rc.right - rc.left - Scale(8, dpi_), f).c_str());
+
+    // Справа — сводка по отметкам, как в TC.
+    if (!statusInfo_) return;
+    size_t marked = 0;
+    ULONGLONG markedSize = 0;
     for (auto& e : entries_) {
         if (e.isUp) continue;
-        if (e.isDir) {
-            dirs++;
-        } else {
-            files++;
-            total += e.size;
-        }
         if (e.marked) {
             marked++;
             if (!e.isDir) markedSize += e.size;
         }
     }
-
-    wchar_t buf[512];
+    wchar_t info[96]{};
     if (marked) {
-        swprintf(buf, 512, L"Отмечено: %zu · %ls   |   Файлов: %zu · %ls   |   Папок: %zu",
-                 marked, FmtSize(markedSize).c_str(), files, FmtSize(total).c_str(), dirs);
-    } else {
-        swprintf(buf, 512, L"Файлов: %zu · %ls   |   Папок: %zu", files, FmtSize(total).c_str(), dirs);
+        swprintf(info, 96, L"Отмечено: %zu · %ls", marked, FmtSize(markedSize).c_str());
     }
-    // Слева — сведения о записи под курсором, как в TC, затем сводка.
-    std::wstring head;
-    if (Entry* cur = Cursor(); cur && !cur->isUp) {
-        head = cur->name;
-        head += L"   ·   ";
-        head += cur->isDir ? L"<DIR>" : FmtSize(cur->size);
-        const std::wstring date = FmtDate(cur->ft);
-        if (!date.empty()) {
-            head += L"   ·   ";
-            head += date;
-        }
-        head += L"   ·   ";
-        head += AttrMask(cur->attr);
-    }
-
-    const std::wstring text = head.empty() ? std::wstring(buf) : head + L"   |   " + buf;
-    SetWindowTextW(status_, text.c_str());
+    SetWindowTextW(statusInfo_, info);
 }
 
 void Panel::FillDispInfo(NMLVDISPINFO* info) {
@@ -2420,7 +2625,8 @@ LRESULT Panel::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     DrawNavButton(dis);
                     return TRUE;
                 }
-                if (dis->CtlID == kPathApplyId || dis->CtlID == kPathFavId || dis->CtlID == kPathHistId) {
+                if (dis->CtlID == kPathApplyId || dis->CtlID == kPathFavId || dis->CtlID == kPathHistId ||
+                    dis->CtlID == kMaskHistId) {
                     DrawPathButton(dis);
                     return TRUE;
                 }
@@ -2440,6 +2646,10 @@ LRESULT Panel::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             }
             if (id == kPathHistId) {
                 ShowPathHistory();
+                return 0;
+            }
+            if (id == kMaskHistId) {
+                ShowMaskHistory();
                 return 0;
             }
             if (id >= kTabBase && id < kTabBase + 32) {
@@ -2481,9 +2691,21 @@ LRESULT Panel::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 SetBkColor(dc, active_ ? kActiveHeaderBg : kInactiveHeaderBg);
                 return (LRESULT)(active_ ? brActive_ : brInactive_);
             }
+            if (child == maskEdit_) {
+                // Поле маски всегда на белом фоне с чёрным текстом (макет: .pmask #fff).
+                SetBkMode(dc, OPAQUE);
+                SetTextColor(dc, RGB(0, 0, 0));
+                SetBkColor(dc, RGB(255, 255, 255));
+                return (LRESULT)GetStockObject(WHITE_BRUSH);
+            }
             if (child == volume_ && msg == WM_CTLCOLORSTATIC) {
                 SetBkMode(dc, TRANSPARENT);
                 SetTextColor(dc, RGB(102, 102, 102));   // #666, как .dfree в макете
+                return (LRESULT)(HBRUSH)(COLOR_BTNFACE + 1);
+            }
+            if (child == statusInfo_ && msg == WM_CTLCOLORSTATIC) {
+                SetBkMode(dc, TRANSPARENT);
+                SetTextColor(dc, RGB(90, 90, 90));       // приглушённая сводка справа статуса
                 return (LRESULT)(HBRUSH)(COLOR_BTNFACE + 1);
             }
             if (msg == WM_CTLCOLOREDIT) return (LRESULT)(HBRUSH)(COLOR_WINDOW + 1);

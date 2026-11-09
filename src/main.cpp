@@ -452,6 +452,10 @@ void App::LoadPanels() {
     wchar_t cwd[MAX_PATH]{};
     GetCurrentDirectoryW(MAX_PATH, cwd);
 
+    // Маски панелей из настроек: фильтр применяется при чтении каталога.
+    left_.RestoreMask(st.leftMask);
+    right_.RestoreMask(st.rightMask);
+
     if (!st.leftTabs.empty()) left_.RestoreState(st.leftTabs, st.leftActive);
     else left_.Navigate(cwd);
 
@@ -1268,6 +1272,8 @@ void App::SaveState() {
     st.activeSide = activeSide_;
     st.leftCursor = left_.CursorIndex();
     st.rightCursor = right_.CursorIndex();
+    st.leftMask = left_.Mask();
+    st.rightMask = right_.Mask();
     SaveSettings();
 }
 
@@ -1912,6 +1918,14 @@ bool App::PreTranslate(const MSG& msg) {
                 right_.CancelPathEdit();
                 return true;
             }
+            if (left_.MaskEditing()) {
+                left_.CancelMaskEdit();
+                return true;
+            }
+            if (right_.MaskEditing()) {
+                right_.CancelMaskEdit();
+                return true;
+            }
         }
         if (msg.wParam == VK_RETURN) {
             if (left_.PathEditing()) {
@@ -1922,13 +1936,25 @@ bool App::PreTranslate(const MSG& msg) {
                 right_.ConfirmPathEdit();
                 return true;
             }
+            if (left_.MaskEditing()) {
+                left_.ConfirmMaskEdit();
+                return true;
+            }
+            if (right_.MaskEditing()) {
+                right_.ConfirmMaskEdit();
+                return true;
+            }
         }
     }
 
-    // В режиме правки пути клавиши (в том числе Backspace и Delete) идут в поле, а не в панель.
+    // В режиме правки пути или маски клавиши (в том числе Backspace и Delete) идут в поле, а не в панель.
     HWND focusNow = GetFocus();
-    if (focusNow && (focusNow == left_.PathEdit() || focusNow == right_.PathEdit())) {
-        const bool editing = (focusNow == left_.PathEdit()) ? left_.PathEditing() : right_.PathEditing();
+    if (focusNow && (focusNow == left_.PathEdit() || focusNow == right_.PathEdit() ||
+                     focusNow == left_.MaskEdit() || focusNow == right_.MaskEdit())) {
+        const bool inMask = focusNow == left_.MaskEdit() || focusNow == right_.MaskEdit();
+        const bool editing = inMask ? (focusNow == left_.MaskEdit() ? left_.MaskEditing() : right_.MaskEditing())
+                                    : (focusNow == left_.PathEdit() ? left_.PathEditing()
+                                                                    : right_.PathEditing());
         if (editing) {
             // Пока идёт правка, клавиши (включая стрелки и Ctrl+A/C/V) обрабатывает само поле.
             if (msg.message == WM_KEYDOWN || msg.message == WM_SYSKEYDOWN || msg.message == WM_CHAR ||

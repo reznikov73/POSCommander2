@@ -24,6 +24,8 @@ struct Settings {
     int leftActive = 0, rightActive = 0;
     int activeSide = 0;                                      // какая панель активна при запуске
     int leftCursor = 0, rightCursor = 0;                     // позиция курсора в панели
+    std::vector<std::wstring> maskHistory;                   // последние маски файлов (общие, до 8)
+    std::wstring leftMask = L"*.*", rightMask = L"*.*";      // текущие маски панелей
 };
 
 Settings& GetSettings();

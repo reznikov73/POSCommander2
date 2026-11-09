@@ -140,6 +140,10 @@ void LoadSettings() {
     if (s.activeSide != 1) s.activeSide = 0;
 
     s.bookmarks = ReadTabs(L"Bookmarks", L"Path");
+
+    s.maskHistory = ReadTabs(L"Panels", L"Mask");
+    s.leftMask = ReadStr(L"Left", L"Mask", L"*.*");
+    s.rightMask = ReadStr(L"Right", L"Mask", L"*.*");
 }
 
 void SaveSettings() {
@@ -179,4 +183,8 @@ void SaveSettings() {
         std::wstring key = L"Path" + std::to_wstring(i);
         WriteStr(L"Bookmarks", key.c_str(), s.bookmarks[i]);
     }
+
+    WriteTabs(L"Panels", L"Mask", s.maskHistory);
+    WriteStr(L"Left", L"Mask", s.leftMask);
+    WriteStr(L"Right", L"Mask", s.rightMask);
 }
