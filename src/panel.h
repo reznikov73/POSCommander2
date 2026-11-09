@@ -142,6 +142,14 @@ private:
     void ApplyPathText();
     void EnterPathEdit();
     void NavigatePathPart(int charIndex);
+    std::wstring PathPartTarget(int charIndex) const;
+    int PathPartStart(int charIndex) const;
+    // Выпадающий список содержимого каталога при наведении на компонент пути (как в TC).
+    void SchedulePathHover(int charIndex);
+    void ShowPathHover();
+    void HidePathHover();
+    void FillPathHover(const std::wstring& dir);
+    static LRESULT CALLBACK HoverProc(HWND, UINT, WPARAM, LPARAM);
     int PathCharIndexAt(int x, int y) const;
     bool PathClickInEmptyArea(int x) const;
     void LeavePathEdit(bool restore);
@@ -156,6 +164,11 @@ private:
     bool programmaticCursor_ = false;   // курсор двигаем сами, а не мышью
     bool clickShift_ = false;      // Shift был зажат в момент клика
     bool clickCtrl_ = false;       // Ctrl был зажат в момент клика
+
+    HWND hoverWin_ = nullptr;      // всплывающий список содержимого каталога
+    HWND hoverList_ = nullptr;
+    std::wstring hoverDir_;
+    int hoverChars_ = -1;          // компонент пути под курсором
 
     HWND tip_ = nullptr;           // подсказка с полным путём
     std::wstring tipText_;         // текст подсказки (живёт до следующего запроса)
