@@ -254,6 +254,15 @@ int RunSelfTest() {
         rep.Check(FtpLeafName(L"ftp://user@host:2121/dir/sub") == L"sub", L"FTP: имя записи URL");
         rep.Check(FtpLeafName(L"ftp://user@host:2121/") == L"host", L"FTP: имя корня — host");
 
+        // Пароль из URL берётся для входа, но в собранный URL не попадает.
+        FtpSite withPass;
+        std::wstring passPath;
+        rep.Check(FtpParseUrl(L"ftp://user:secret@host/dir", withPass, passPath) &&
+                      withPass.user == L"user" && withPass.password == L"secret",
+                  L"FTP: пароль из URL разобран");
+        rep.Check(FtpMakeUrl(withPass, passPath).find(L"secret") == std::wstring::npos,
+                  L"FTP: пароль не попадает в URL", FtpMakeUrl(withPass, passPath));
+
         const std::wstring secret = L"пароль-123";
         const std::wstring obfuscated = FtpObfuscatePassword(secret);
         rep.Check(!obfuscated.empty() && obfuscated != secret, L"FTP: пароль обфусцирован");

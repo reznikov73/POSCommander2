@@ -204,8 +204,8 @@
 - WinINet FTP непригоден: пробник на WinINet против UTF-8 сервера вернул имена
   `РїР°РїРєР°` и `С‚РµСЃС‚.txt` вместо `папка` и `тест.txt`. Свой клиент на Winsock
   с `OPTS UTF8 ON` эти же имена читает и пишет правильно.
-- `--selftest`: 53 из 53. Добавлены проверки `IsFtpUrl`, `FtpParseUrl`, `FtpMakeUrl`,
-  `FtpJoinUrl`/`FtpParentUrl`/`FtpRootUrl`, обфускации пароля, строк MLSD/Unix/DOS.
+- `--selftest`: 55 из 55. Добавлены проверки `IsFtpUrl`, `FtpParseUrl`, `FtpMakeUrl`,
+  пароля из URL (в собранный URL не попадает), обфускации пароля, строк MLSD/Unix/DOS.
 - `--ftp-test` против `tools/ftp_test_server.py`: 22 из 22. В том числе:
   - список корня — 4 записи (hello.txt, тест.txt, папка, sub);
   - загрузка `файл-тест.bin` 262 144 байта, размер на сервере совпал;
