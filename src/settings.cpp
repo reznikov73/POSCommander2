@@ -142,6 +142,7 @@ void LoadSettings() {
     s.bookmarks = ReadTabs(L"Bookmarks", L"Path");
 
     s.maskHistory = ReadTabs(L"Panels", L"Mask");
+    s.commandHistory = ReadTabs(L"CommandLine", L"Hist");
     s.leftMask = ReadStr(L"Left", L"Mask", L"*.*");
     s.rightMask = ReadStr(L"Right", L"Mask", L"*.*");
 }
@@ -185,6 +186,7 @@ void SaveSettings() {
     }
 
     WriteTabs(L"Panels", L"Mask", s.maskHistory);
+    WriteTabs(L"CommandLine", L"Hist", s.commandHistory);
     WriteStr(L"Left", L"Mask", s.leftMask);
     WriteStr(L"Right", L"Mask", s.rightMask);
 }

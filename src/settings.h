@@ -26,6 +26,7 @@ struct Settings {
     int leftCursor = 0, rightCursor = 0;                     // позиция курсора в панели
     std::vector<std::wstring> maskHistory;                   // последние маски файлов (общие, до 8)
     std::wstring leftMask = L"*.*", rightMask = L"*.*";      // текущие маски панелей
+    std::vector<std::wstring> commandHistory;                // история командной строки (до 64)
 };
 
 Settings& GetSettings();

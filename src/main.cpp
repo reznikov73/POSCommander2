@@ -54,6 +54,11 @@ enum : int {
     IDM_NET_MAP = 194,
     IDM_NET_UNMAP = 195,
     IDM_NET_UNC = 196,
+    IDM_TAB_COPY = 205,
+    IDM_TAB_LOCK = 204,
+    IDM_TAB_CLOSEALL = 203,
+    IDM_TAB_CLOSE = 202,
+    IDM_TAB_NEW = 201,
     IDM_UNPACK = 197,
     IDM_SYNC = 198,
 
@@ -83,6 +88,7 @@ const int ID_PANEL_RIGHT = 1001;
 const int ID_PROMPT_LABEL = 1002;
 const int ID_PROMPT = 1003;
 const int ID_FKEY_FIRST = 1010;
+const int ID_TERM = 1004;            // кнопка «Терминал» справа от командной строки
 const int ID_OPEN_ITEM = 0x8001;
 
 struct FKeyDef {
@@ -207,6 +213,7 @@ private:
     void RebuildDriveBars();
     void ToggleQuickView();
     void DrawFlatButton(DRAWITEMSTRUCT* dis);
+    void DrawTermButton(DRAWITEMSTRUCT* dis);
     static LRESULT CALLBACK TbBtnProc(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
     HICON ToolIcon(int command);
     void UpdateFKeyLabels(int kind);
@@ -220,6 +227,9 @@ private:
     HMENU menu_ = nullptr;
     HWND label_ = nullptr;
     HWND prompt_ = nullptr;
+    HWND term_ = nullptr;               // кнопка «Терминал» у командной строки
+    int histPos_ = -1;                  // позиция в истории команд (-1 — новая строка)
+    HFONT boldFont_ = nullptr;          // жирный шрифт для клавиши в F-кнопках
     HWND fkeys_[kFKeyCount]{};
     // Данные для строки состояния в заголовке окна (как в TC).
     ULONGLONG titleCpuIdle_ = 0, titleCpuKernel_ = 0, titleCpuUser_ = 0;
@@ -294,7 +304,10 @@ bool App::Create(HINSTANCE inst) {
 }
 
 void App::BuildMenu() {
+    // Порядок и состав пунктов — как в TCUP 9.0a (docs/tc-ui-reference.md):
+    // Файл, Выделение, Навигация, Сеть, Вид, Вкладки, Конфигурация, Инструменты, Запуск, Помощь.
     menu_ = CreateMenu();
+
     HMENU file = CreatePopupMenu();
     AppendMenuW(file, MF_STRING, IDM_VIEW, L"&Просмотр\tF3");
     AppendMenuW(file, MF_STRING, IDM_EDIT, L"&Правка\tF4");
@@ -303,18 +316,15 @@ void App::BuildMenu() {
     AppendMenuW(file, MF_STRING, IDM_MOVE, L"&Переместить\tF6");
     AppendMenuW(file, MF_STRING, IDM_RENAME, L"Пере&именовать\tF2");
     AppendMenuW(file, MF_STRING, IDM_MKDIR, L"Создать &каталог\tF7");
+    AppendMenuW(file, MF_STRING, IDM_NEWFILE, L"&Новый файл\tShift+F4");
     AppendMenuW(file, MF_STRING, IDM_DELETE, L"&Удалить\tF8");
     AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(file, MF_STRING, IDM_PROPERTIES, L"С&войства\tAlt+Enter");
+    AppendMenuW(file, MF_STRING, IDM_DIRSIZE, L"Размер &каталога\tAlt+Shift+Enter");
     AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(file, MF_STRING, IDM_PACK, L"У&паковать…\tAlt+F5");
     AppendMenuW(file, MF_STRING, IDM_UNPACK, L"Рас&паковать…");
     AppendMenuW(file, MF_STRING, IDM_BATCH_RENAME, L"Пакетное &переименование…\tCtrl+M");
-    AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(file, MF_STRING, IDM_PLUGINS, L"&Плагины Total Commander…");
-    AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(file, MF_STRING, IDM_QUEUE, L"Очередь &операций…");
-    AppendMenuW(file, MF_STRING, IDM_DIRSIZE, L"Размер &каталога\tAlt+Shift+Enter");
     AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(file, MF_STRING, IDM_EXIT, L"В&ыход\tAlt+F4");
     AppendMenuW(menu_, MF_POPUP, (UINT_PTR)file, L"&Файл");
@@ -323,8 +333,27 @@ void App::BuildMenu() {
     AppendMenuW(sel, MF_STRING, IDM_SEL_ALL, L"Выделить &всё\tCtrl+A");
     AppendMenuW(sel, MF_STRING, IDM_SEL_NONE, L"&Снять выделение");
     AppendMenuW(sel, MF_STRING, IDM_SEL_INVERT, L"&Инвертировать");
-    AppendMenuW(sel, MF_STRING, IDM_SEL_MASK, L"По &маске…");
+    AppendMenuW(sel, MF_STRING, IDM_SEL_MASK, L"По &маске…\tNum +");
     AppendMenuW(menu_, MF_POPUP, (UINT_PTR)sel, L"В&ыделение");
+
+    HMENU nav = CreatePopupMenu();
+    AppendMenuW(nav, MF_STRING, IDM_NAV_UP, L"&Вверх\tCtrl+PgUp");
+    AppendMenuW(nav, MF_STRING, IDM_NAV_BACK, L"&Назад\tAlt+←");
+    AppendMenuW(nav, MF_STRING, IDM_NAV_FORWARD, L"Вперёд\tAlt+→");
+    AppendMenuW(nav, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(nav, MF_STRING, IDM_TREE, L"&Дерево каталогов\tCtrl+F8");
+    AppendMenuW(nav, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(nav, MF_STRING, IDM_DRIVE_LEFT, L"Диск &левой панели\tAlt+F1");
+    AppendMenuW(nav, MF_STRING, IDM_DRIVE_RIGHT, L"Диск &правой панели\tAlt+F2");
+    AppendMenuW(menu_, MF_POPUP, (UINT_PTR)nav, L"&Навигация");
+
+    HMENU net = CreatePopupMenu();
+    AppendMenuW(net, MF_STRING, IDM_NET_BROWSE, L"&Обзор сети…");
+    AppendMenuW(net, MF_STRING, IDM_NET_UNC, L"Перейти по &UNC-пути…");
+    AppendMenuW(net, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(net, MF_STRING, IDM_NET_MAP, L"&Подключить сетевой диск…");
+    AppendMenuW(net, MF_STRING, IDM_NET_UNMAP, L"&Отключить сетевой диск…");
+    AppendMenuW(menu_, MF_POPUP, (UINT_PTR)net, L"&Сеть");
 
     HMENU view = CreatePopupMenu();
     AppendMenuW(view, MF_STRING, IDM_SORT_NAME, L"По &имени\tCtrl+F3");
@@ -335,28 +364,39 @@ void App::BuildMenu() {
     AppendMenuW(view, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(view, MF_STRING, IDM_HIDDEN, L"Скрытые &файлы\tCtrl+H");
     AppendMenuW(view, MF_STRING, IDM_REFRESH, L"&Обновить\tCtrl+R");
+    AppendMenuW(view, MF_STRING, IDM_QUICKVIEW, L"&Быстрый просмотр\tCtrl+Q");
     AppendMenuW(view, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(view, MF_STRING, IDM_BOOKMARK_ADD, L"Добавить &закладку\tCtrl+D");
     AppendMenuW(view, MF_STRING, IDM_BOOKMARK_SHOW, L"&Закладки…");
-    AppendMenuW(view, MF_STRING, IDM_TREE, L"&Дерево каталогов\tCtrl+F8");
     AppendMenuW(menu_, MF_POPUP, (UINT_PTR)view, L"&Вид");
 
-    HMENU cmd = CreatePopupMenu();
-    AppendMenuW(cmd, MF_STRING, IDM_SWAP, L"С&менить панель\tCtrl+U");
-    AppendMenuW(cmd, MF_STRING, IDM_CONSOLE, L"Командная &строка");
-    AppendMenuW(cmd, MF_STRING, IDM_EXPLORER, L"&Проводник");
-    AppendMenuW(cmd, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(cmd, MF_STRING, IDM_DRIVE_LEFT, L"Диск &левой панели\tAlt+F1");
-    AppendMenuW(cmd, MF_STRING, IDM_DRIVE_RIGHT, L"Диск &правой панели\tAlt+F2");
-    AppendMenuW(menu_, MF_POPUP, (UINT_PTR)cmd, L"&Команды");
+    HMENU tabs = CreatePopupMenu();
+    AppendMenuW(tabs, MF_STRING, IDM_TAB_NEW, L"&Новая вкладка\tCtrl+T");
+    AppendMenuW(tabs, MF_STRING, IDM_TAB_CLOSE, L"&Закрыть вкладку\tCtrl+W");
+    AppendMenuW(tabs, MF_STRING, IDM_TAB_CLOSEALL, L"Закрыть &все вкладки\tCtrl+Shift+W");
+    AppendMenuW(tabs, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(tabs, MF_STRING, IDM_TAB_LOCK, L"&Блокировать вкладку");
+    AppendMenuW(tabs, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(tabs, MF_STRING, IDM_TAB_COPY, L"&Копировать вкладку на другую панель");
+    AppendMenuW(menu_, MF_POPUP, (UINT_PTR)tabs, L"В&кладки");
 
-    HMENU net = CreatePopupMenu();
-    AppendMenuW(net, MF_STRING, IDM_NET_BROWSE, L"&Обзор сети…");
-    AppendMenuW(net, MF_STRING, IDM_NET_UNC, L"Перейти по &UNC-пути…");
-    AppendMenuW(net, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(net, MF_STRING, IDM_NET_MAP, L"&Подключить сетевой диск…");
-    AppendMenuW(net, MF_STRING, IDM_NET_UNMAP, L"&Отключить сетевой диск…");
-    AppendMenuW(menu_, MF_POPUP, (UINT_PTR)net, L"&Сеть");
+    HMENU cfg = CreatePopupMenu();
+    AppendMenuW(cfg, MF_STRING, IDM_PLUGINS, L"&Плагины Total Commander…");
+    AppendMenuW(cfg, MF_STRING, IDM_QUEUE, L"&Очередь операций…");
+    AppendMenuW(menu_, MF_POPUP, (UINT_PTR)cfg, L"&Конфигурация");
+
+    HMENU tools = CreatePopupMenu();
+    AppendMenuW(tools, MF_STRING, IDM_SEARCH, L"&Поиск файлов\tAlt+F7");
+    AppendMenuW(tools, MF_STRING, IDM_SYNC, L"&Синхронизация каталогов");
+    AppendMenuW(tools, MF_STRING, IDM_BATCH_RENAME, L"&Пакетное переименование…\tCtrl+M");
+    AppendMenuW(tools, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(tools, MF_STRING, IDM_SWAP, L"С&менить панели\tCtrl+U");
+    AppendMenuW(menu_, MF_POPUP, (UINT_PTR)tools, L"&Инструменты");
+
+    HMENU startMenu = CreatePopupMenu();
+    AppendMenuW(startMenu, MF_STRING, IDM_EXPLORER, L"&Проводник здесь");
+    AppendMenuW(startMenu, MF_STRING, IDM_CONSOLE, L"&Командная строка здесь");
+    AppendMenuW(menu_, MF_POPUP, (UINT_PTR)startMenu, L"&Запуск");
 
     HMENU help = CreatePopupMenu();
     AppendMenuW(help, MF_STRING, IDM_ABOUT, L"&О программе");
@@ -395,6 +435,15 @@ void App::CreateChildren() {
         // Кнопкам (не сепараторам) — subclass для hover-подсветки, как в TC.
         if (!kToolbar[i].separator) SetWindowSubclass(toolbar_[i], TbBtnProc, 5, (DWORD_PTR)this);
     }
+
+    // Кнопка «Терминал» справа от командной строки: запускает cmd в каталоге активной панели.
+    term_ = CreateWindowExW(0, L"BUTTON", L"",
+                            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, 0, 0, 10, 10,
+                            hwnd_, (HMENU)(INT_PTR)ID_TERM, g_inst, nullptr);
+
+    // История командной строки из настроек — в выпадающий список.
+    history_ = GetSettings().commandHistory;
+    for (auto& item : history_) SendMessageW(prompt_, CB_ADDSTRING, 0, (LPARAM)item.c_str());
 
     for (int i = 0; i < kFKeyCount; i++) {
         fkeys_[i] = CreateWindowExW(0, L"BUTTON", kFKeys[i].text,
@@ -493,6 +542,7 @@ void App::ApplyFont() {
     for (auto h : toolbar_) {
         if (h) SendMessageW(h, WM_SETFONT, (WPARAM)font_, TRUE);
     }
+    if (term_) SendMessageW(term_, WM_SETFONT, (WPARAM)font_, TRUE);
 }
 
 // ---------- раскладка ----------
@@ -542,9 +592,14 @@ void App::Layout() {
     int labelW = Scale(330, dpi_);
     if (labelW > width / 2) labelW = width / 2;
     int bottomY = panelsY + panelsH;
+    const int termW = promptH;                       // квадратная кнопка «Терминал», как в TC
+    int promptW = width - labelW - termW;
+    if (promptW < Scale(80, dpi_)) promptW = Scale(80, dpi_);
     if (dwp) dwp = DeferWindowPos(dwp, label_, nullptr, 0, bottomY, labelW, promptH, SWP_NOZORDER);
     if (dwp)
-        dwp = DeferWindowPos(dwp, prompt_, nullptr, labelW, bottomY, width - labelW, promptH, SWP_NOZORDER);
+        dwp = DeferWindowPos(dwp, prompt_, nullptr, labelW, bottomY, promptW, promptH, SWP_NOZORDER);
+    if (dwp)
+        dwp = DeferWindowPos(dwp, term_, nullptr, labelW + promptW, bottomY, termW, promptH, SWP_NOZORDER);
 
     if (quickView_) {
         Panel& other = (quickViewSide_ == 0) ? left_ : right_;
@@ -581,11 +636,46 @@ void App::SetActivePanel(int index) {
     UpdatePromptLabel();
 }
 
+// Сокращение длинного пути слева, как в TC: «...\net10.0>».
+// Отрезаем ведущие компоненты, пока строка не влезет в ширину подписи.
+static std::wstring CompactPathLeft(HDC dc, const std::wstring& text, int width) {
+    SIZE sz{};
+    GetTextExtentPoint32W(dc, text.c_str(), (int)text.size(), &sz);
+    if (sz.cx <= width) return text;
+
+    size_t pos = 0;
+    while (true) {
+        const size_t next = text.find(L'\\', pos);
+        if (next == std::wstring::npos) break;
+        pos = next + 1;
+        const std::wstring candidate = L"..." + text.substr(pos - 1);
+        GetTextExtentPoint32W(dc, candidate.c_str(), (int)candidate.size(), &sz);
+        if (sz.cx <= width) return candidate;
+    }
+    // Совсем длинное имя одного компонента: оставить хвост.
+    const size_t keep = 12;
+    return L"..." + text.substr(text.size() > keep ? text.size() - keep : 0);
+}
+
 void App::UpdatePromptLabel() {
     if (!label_) return;
     std::wstring text = ActivePanel()->Path();
     if (!text.empty() && text.back() != L'\\') text.push_back(L'\\');
     text += L">";
+
+    // Длинный путь сокращаем слева с многоточием под ширину подписи (как в TC: «...\net10.0>»).
+    RECT rc{};
+    GetClientRect(label_, &rc);
+    const int width = rc.right - rc.left;
+    if (width > 0) {
+        HDC dc = GetDC(label_);
+        HGDIOBJ old = SelectObject(dc, font_ ? font_ : (HFONT)GetStockObject(DEFAULT_GUI_FONT));
+        const std::wstring compact = CompactPathLeft(dc, text, width);
+        SelectObject(dc, old);
+        ReleaseDC(label_, dc);
+        SetWindowTextW(label_, compact.c_str());
+        return;
+    }
     SetWindowTextW(label_, text.c_str());
 }
 
@@ -916,11 +1006,78 @@ void App::DrawFlatButton(DRAWITEMSTRUCT* dis) {
 
     SetBkMode(dc, TRANSPARENT);
     SetTextColor(dc, disabled ? GetSysColor(COLOR_GRAYTEXT) : RGB(20, 20, 20));
-    HGDIOBJ oldFont = SelectObject(dc, font_ ? font_ : (HFONT)GetStockObject(DEFAULT_GUI_FONT));
+    HFONT normal = font_ ? font_ : (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+
+    // Клавиша жирным, подпись обычным — как в TC («F5» жирное, «Копирование» обычное).
+    const std::wstring full(text);
+    const size_t sp = full.find(L' ');
+    if (sp != std::wstring::npos && sp > 0) {
+        if (!boldFont_) {
+            LOGFONTW lf{};
+            if (GetObjectW(normal, sizeof(lf), &lf) != sizeof(lf)) {
+                lf = LOGFONTW{};
+                lf.lfHeight = -MulDiv(9, (int)dpi_, 72);
+                lf.lfCharSet = DEFAULT_CHARSET;
+                lf.lfQuality = CLEARTYPE_QUALITY;
+                wcscpy_s(lf.lfFaceName, L"Segoe UI");
+            }
+            lf.lfWeight = FW_BOLD;
+            boldFont_ = CreateFontIndirectW(&lf);
+        }
+        const std::wstring key = full.substr(0, sp);
+        const std::wstring rest = full.substr(sp);
+
+        HGDIOBJ oldFont = SelectObject(dc, boldFont_ ? boldFont_ : normal);
+        SIZE keySize{};
+        GetTextExtentPoint32W(dc, key.c_str(), (int)key.size(), &keySize);
+        SelectObject(dc, normal);
+        SIZE restSize{};
+        GetTextExtentPoint32W(dc, rest.c_str(), (int)rest.size(), &restSize);
+
+        const int total = keySize.cx + restSize.cx;
+        int x = rc.left + ((rc.right - rc.left) - total) / 2;
+        const int minX = rc.left + Scale(2, dpi_);
+        if (x < minX) x = minX;
+
+        RECT kr{x, rc.top, rc.right, rc.bottom};
+        SelectObject(dc, boldFont_ ? boldFont_ : normal);
+        DrawTextW(dc, key.c_str(), -1, &kr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        RECT rr{x + keySize.cx, rc.top, rc.right, rc.bottom};
+        SelectObject(dc, normal);
+        DrawTextW(dc, rest.c_str(), -1, &rr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+        SelectObject(dc, oldFont);
+        return;
+    }
+
+    HGDIOBJ oldFont = SelectObject(dc, normal);
     RECT tr = rc;
     InflateRect(&tr, -Scale(3, dpi_), 0);
     DrawTextW(dc, text, -1, &tr, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
     SelectObject(dc, oldFont);
+}
+
+// Кнопка «Терминал» у командной строки: плоская, знак «>_» зелёным (#4CE44C), как в TCUP.
+void App::DrawTermButton(DRAWITEMSTRUCT* dis) {
+    HDC dc = dis->hDC;
+    RECT rc = dis->rcItem;
+    const bool pressed = (dis->itemState & ODS_SELECTED) != 0;
+
+    HBRUSH fill = CreateSolidBrush(pressed ? RGB(0xC8, 0xC6, 0xC0) : GetSysColor(COLOR_BTNFACE));
+    FillRect(dc, &rc, fill);
+    DeleteObject(fill);
+    if (pressed) DrawEdge(dc, &rc, BDR_SUNKENOUTER, BF_RECT);
+
+    const int cx = (rc.left + rc.right) / 2;
+    const int cy = (rc.top + rc.bottom) / 2;
+    HPEN pen = CreatePen(PS_SOLID, Scale(2, dpi_), RGB(0x4C, 0xE4, 0x4C));
+    HGDIOBJ oldPen = SelectObject(dc, pen);
+    MoveToEx(dc, cx - Scale(5, dpi_), cy - Scale(4, dpi_), nullptr);
+    LineTo(dc, cx - Scale(1, dpi_), cy);
+    LineTo(dc, cx - Scale(5, dpi_), cy + Scale(4, dpi_));
+    MoveToEx(dc, cx + Scale(1, dpi_), cy + Scale(4, dpi_), nullptr);
+    LineTo(dc, cx + Scale(6, dpi_), cy + Scale(4, dpi_));
+    SelectObject(dc, oldPen);
+    DeleteObject(pen);
 }
 
 // Hover кнопок тулбара: TrackMouseEvent, подсветка при наведении.
@@ -1149,11 +1306,11 @@ void App::UpdateTitle() {
     wchar_t buf[512]{};
     swprintf(buf, 512,
              L"%ls - Win32   %ls %02d %ls %04d %02d:%02d:%02d   Сеть: %d,%d/%d,%d Мбит/с   "
-             L"Память: %d,%d/%d,%d ГБ (%d%%)   ЦП: %d%%   [сборка %hs]",
+             L"Память: %d,%d/%d,%d ГБ (%d%%)   ЦП: %d%%",
              kTitle, kWeekday[st.wDayOfWeek], st.wDay, kMonth[st.wMonth - 1], st.wYear, st.wHour,
              st.wMinute, st.wSecond, (int)downMbit, (int)((downMbit - (int)downMbit) * 10), (int)upMbit,
              (int)((upMbit - (int)upMbit) * 10), memUsedTenths / 10, memUsedTenths % 10,
-             memTotalTenths / 10, memTotalTenths % 10, memPct, cpuPct, __TIME__);   // метка сборки — временная, для проверки свежести бинарника
+             memTotalTenths / 10, memTotalTenths % 10, memPct, cpuPct);
     SetWindowTextW(hwnd_, buf);
 }
 
@@ -1291,9 +1448,14 @@ void App::RunCommandLine() {
     std::wstring command = Trim(buf);
     if (command.empty()) return;
 
-    history_.push_back(command);
-    if (history_.size() > 50) history_.erase(history_.begin());
-    SendMessageW(prompt_, CB_ADDSTRING, 0, (LPARAM)command.c_str());
+    // История командной строки: до 64 строк, без повтора подряд, как в TC.
+    if (history_.empty() || history_.back() != command) {
+        history_.push_back(command);
+        if (history_.size() > 64) history_.erase(history_.begin());
+        SendMessageW(prompt_, CB_ADDSTRING, 0, (LPARAM)command.c_str());
+        GetSettings().commandHistory = history_;
+    }
+    histPos_ = -1;
     SetWindowTextW(prompt_, L"");
 
     std::wstring lower = Lower(command);
@@ -1900,6 +2062,21 @@ void App::Dispatch(int id) {
         case IDM_DRIVE_RIGHT:
             ShowDrivesMenu(1);
             break;
+        case IDM_TAB_NEW:
+            panel->AddTab();
+            break;
+        case IDM_TAB_CLOSE:
+            panel->CloseTab();
+            break;
+        case IDM_TAB_CLOSEALL:
+            panel->CloseAllTabs();
+            break;
+        case IDM_TAB_LOCK:
+            panel->ToggleTabLock(panel->ActiveTab());
+            break;
+        case IDM_TAB_COPY:
+            PostMessageW(hwnd_, WM_APP + 302, (WPARAM)panel->Side(), (LPARAM)panel->ActiveTab());
+            break;
         case IDM_ABOUT:
             MessageBoxW(hwnd_, L"POSCommander 2\nДвухпанельный файловый менеджер на Win32 API.\n\nC++ / MinGW · без внешних зависимостей",
                         L"О программе", MB_ICONINFORMATION | MB_OK);
@@ -2015,11 +2192,32 @@ bool App::PreTranslate(const MSG& msg) {
 
     if (inPrompt) {
         switch (msg.wParam) {
+            case VK_UP:                        // история: назад по списку
+                if (!history_.empty()) {
+                    if (histPos_ < 0) histPos_ = (int)history_.size() - 1;
+                    else if (histPos_ > 0) histPos_--;
+                    SetWindowTextW(prompt_, history_[histPos_].c_str());
+                    SendMessageW(prompt_, CB_SETEDITSEL, 0, MAKELPARAM(-1, 0));
+                }
+                return true;
+            case VK_DOWN:                      // история: вперёд, дальше — пустая строка
+                if (!history_.empty() && histPos_ >= 0) {
+                    if (histPos_ + 1 < (int)history_.size()) {
+                        histPos_++;
+                        SetWindowTextW(prompt_, history_[histPos_].c_str());
+                    } else {
+                        histPos_ = -1;
+                        SetWindowTextW(prompt_, L"");
+                    }
+                    SendMessageW(prompt_, CB_SETEDITSEL, 0, MAKELPARAM(-1, 0));
+                }
+                return true;
             case VK_RETURN:
                 RunCommandLine();
                 return true;
             case VK_ESCAPE:
                 SetWindowTextW(prompt_, L"");
+                histPos_ = -1;
                 ActivePanel()->FocusList();
                 return true;
             case VK_TAB:
@@ -2324,6 +2522,10 @@ LRESULT App::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     DrawFlatButton(dis);
                     return TRUE;
                 }
+                if (id == ID_TERM) {
+                    DrawTermButton(dis);
+                    return TRUE;
+                }
             }
             return DefWindowProcW(hwnd, msg, wParam, lParam);
         }
@@ -2344,6 +2546,10 @@ LRESULT App::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             }
             if (id >= ID_FKEY_FIRST && id < ID_FKEY_FIRST + kFKeyCount) {
                 Dispatch(FKeyCommand(id - ID_FKEY_FIRST, modKind_ < 0 ? 0 : modKind_));
+                return 0;
+            }
+            if (id == ID_TERM) {
+                Dispatch(IDM_CONSOLE);
                 return 0;
             }
             if (id == ID_PROMPT) {
@@ -2483,6 +2689,10 @@ LRESULT App::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             for (auto& kv : toolIcons_)
                 if (kv.second) DestroyIcon(kv.second);
             toolIcons_.clear();
+            if (boldFont_) {
+                DeleteObject(boldFont_);
+                boldFont_ = nullptr;
+            }
             PostQuitMessage(0);
             return 0;
         }

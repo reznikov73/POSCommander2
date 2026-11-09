@@ -114,6 +114,7 @@ public:
         return index >= 0 && index < (int)tabLocked_.size() && tabLocked_[index];
     }
     int TabCount() const { return (int)tabs_.size(); }
+    int ActiveTab() const { return tab_; }
 
     void Sort(int column, bool reverse);
     int SortColumn() const { return sortColumn_; }
