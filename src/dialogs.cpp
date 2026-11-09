@@ -621,3 +621,352 @@ void ShowLister(HWND owner, const std::wstring& path) {
         SetFocus(owner);
     }
 }
+
+// ---------- подключение к FTP ----------
+
+namespace {
+
+const int kIdFtpSite = 110;
+const int kIdFtpHost = 111;
+const int kIdFtpPort = 112;
+const int kIdFtpUser = 113;
+const int kIdFtpPass = 114;
+const int kIdFtpPassive = 115;
+const int kIdFtpAnon = 116;
+const int kIdFtpSave = 117;
+
+struct FtpCtx {
+    FtpConnectOptions* options = nullptr;
+    const std::vector<FtpSite>* sites = nullptr;
+};
+
+void FtpFill(HWND dlg, const FtpSite& site) {
+    SetDlgItemTextW(dlg, kIdFtpHost, site.host.c_str());
+    wchar_t port[16]{};
+    swprintf(port, 16, L"%d", site.port > 0 ? site.port : 21);
+    SetDlgItemTextW(dlg, kIdFtpPort, port);
+    SetDlgItemTextW(dlg, kIdFtpUser, site.user.c_str());
+    SetDlgItemTextW(dlg, kIdFtpPass, site.password.c_str());
+    CheckDlgButton(dlg, kIdFtpPassive, site.passive ? BST_CHECKED : BST_UNCHECKED);
+    const bool anon = site.user.empty();
+    CheckDlgButton(dlg, kIdFtpAnon, anon ? BST_CHECKED : BST_UNCHECKED);
+    EnableWindow(GetDlgItem(dlg, kIdFtpUser), !anon);
+    EnableWindow(GetDlgItem(dlg, kIdFtpPass), !anon);
+}
+
+void FtpRead(HWND dlg, FtpSite& site) {
+    wchar_t host[1024]{};
+    wchar_t port[32]{};
+    wchar_t user[512]{};
+    wchar_t pass[512]{};
+    GetDlgItemTextW(dlg, kIdFtpHost, host, 1024);
+    GetDlgItemTextW(dlg, kIdFtpPort, port, 32);
+    GetDlgItemTextW(dlg, kIdFtpUser, user, 512);
+    GetDlgItemTextW(dlg, kIdFtpPass, pass, 512);
+    site.host = Trim(host);
+    site.port = _wtoi(port);
+    if (site.port <= 0 || site.port > 65535) site.port = 21;
+    const bool anon = IsDlgButtonChecked(dlg, kIdFtpAnon) == BST_CHECKED;
+    site.user = anon ? L"" : Trim(user);
+    site.password = anon ? L"" : pass;
+    site.passive = IsDlgButtonChecked(dlg, kIdFtpPassive) == BST_CHECKED;
+}
+
+INT_PTR CALLBACK FtpProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM lParam) {
+    auto* ctx = reinterpret_cast<FtpCtx*>(GetWindowLongPtrW(dlg, GWLP_USERDATA));
+    switch (msg) {
+        case WM_INITDIALOG: {
+            ctx = reinterpret_cast<FtpCtx*>(lParam);
+            SetWindowLongPtrW(dlg, GWLP_USERDATA, (LONG_PTR)ctx);
+            if (!ctx) return FALSE;
+
+            if (ctx->sites) {
+                for (size_t i = 0; i < ctx->sites->size(); ++i) {
+                    const FtpSite& site = (*ctx->sites)[i];
+                    std::wstring label = site.name;
+                    if (label.empty()) label = site.user.empty() ? site.host : (site.user + L"@" + site.host);
+                    SendDlgItemMessageW(dlg, kIdFtpSite, CB_ADDSTRING, 0, (LPARAM)label.c_str());
+                }
+            }
+
+            if (ctx->options->site.host.empty() && ctx->sites && !ctx->sites->empty()) {
+                FtpFill(dlg, (*ctx->sites)[0]);
+                SendDlgItemMessageW(dlg, kIdFtpSite, CB_SETCURSEL, 0, 0);
+            } else {
+                FtpFill(dlg, ctx->options->site);
+                // Если это уже сохранённый сайт — подсветить его в списке.
+                if (ctx->sites) {
+                    for (size_t i = 0; i < ctx->sites->size(); ++i) {
+                        const FtpSite& saved = (*ctx->sites)[i];
+                        if (SamePath(saved.host, ctx->options->site.host) &&
+                            saved.port == ctx->options->site.port &&
+                            SamePath(saved.user, ctx->options->site.user)) {
+                            SendDlgItemMessageW(dlg, kIdFtpSite, CB_SETCURSEL, i, 0);
+                            break;
+                        }
+                    }
+                }
+            }
+            SetFocus(GetDlgItem(dlg, kIdFtpHost));
+            SendDlgItemMessageW(dlg, kIdFtpHost, EM_SETSEL, 0, -1);
+            return FALSE;
+        }
+        case WM_COMMAND: {
+            const int id = LOWORD(wParam);
+            const int code = HIWORD(wParam);
+            if (id == kIdFtpSite && code == CBN_SELCHANGE) {
+                const int sel = (int)SendDlgItemMessageW(dlg, kIdFtpSite, CB_GETCURSEL, 0, 0);
+                if (ctx && ctx->sites && sel >= 0 && sel < (int)ctx->sites->size()) {
+                    const FtpSite& saved = (*ctx->sites)[sel];
+                    FtpFill(dlg, saved);
+                    if (ctx->options) {
+                        ctx->options->site.root = saved.root;
+                        ctx->options->site.name = saved.name;
+                    }
+                }
+                return TRUE;
+            }
+            if (id == kIdFtpAnon && code == BN_CLICKED) {
+                const bool anon = IsDlgButtonChecked(dlg, kIdFtpAnon) == BST_CHECKED;
+                EnableWindow(GetDlgItem(dlg, kIdFtpUser), !anon);
+                EnableWindow(GetDlgItem(dlg, kIdFtpPass), !anon);
+                return TRUE;
+            }
+            if (id == IDOK) {
+                FtpSite site;
+                if (ctx && ctx->options) site = ctx->options->site;
+                FtpRead(dlg, site);
+                if (site.host.empty()) {
+                    MessageBoxW(dlg, L"Укажите адрес FTP-сервера.", L"FTP", MB_ICONWARNING | MB_OK);
+                    SetFocus(GetDlgItem(dlg, kIdFtpHost));
+                    return TRUE;
+                }
+                if (ctx && ctx->options) {
+                    site.root = ctx->options->site.root.empty() ? L"/" : ctx->options->site.root;
+                    if (site.root[0] != L'/') site.root = L"/" + site.root;
+                    ctx->options->site = site;
+                    ctx->options->saveSite = IsDlgButtonChecked(dlg, kIdFtpSave) == BST_CHECKED;
+                }
+                EndDialog(dlg, 1);
+                return TRUE;
+            }
+            if (id == IDCANCEL) {
+                EndDialog(dlg, 0);
+                return TRUE;
+            }
+            break;
+        }
+        case WM_CLOSE:
+            EndDialog(dlg, 0);
+            return TRUE;
+        default:
+            break;
+    }
+    return FALSE;
+}
+
+}  // namespace
+
+bool FtpConnectBox(HWND owner, FtpConnectOptions& options, const std::vector<FtpSite>& sites) {
+    DlgBuilder builder(L"FTP: подключение", 380, 176);
+    builder.Add(L"Сохранённый сайт:", 0, kClsStatic, WS_CHILD | WS_VISIBLE | SS_LEFT, 10, 8, 120, 10);
+    builder.Add(L"", kIdFtpSite, 0x0085,
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST, 10, 20, 360, 90);
+    builder.Add(L"Сервер:", 0, kClsStatic, WS_CHILD | WS_VISIBLE | SS_LEFT, 10, 44, 50, 10);
+    builder.Add(L"", kIdFtpHost, kClsEdit,
+                WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL, 62, 42, 210, 14);
+    builder.Add(L"Порт:", 0, kClsStatic, WS_CHILD | WS_VISIBLE | SS_LEFT, 282, 44, 34, 10);
+    builder.Add(L"", kIdFtpPort, kClsEdit,
+                WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL | ES_NUMBER, 318, 42, 52, 14);
+    builder.Add(L"Пользователь:", 0, kClsStatic, WS_CHILD | WS_VISIBLE | SS_LEFT, 10, 66, 80, 10);
+    builder.Add(L"", kIdFtpUser, kClsEdit,
+                WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL, 96, 64, 140, 14);
+    builder.Add(L"Пароль:", 0, kClsStatic, WS_CHILD | WS_VISIBLE | SS_LEFT, 244, 66, 42, 10);
+    builder.Add(L"", kIdFtpPass, kClsEdit,
+                WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL | ES_PASSWORD, 290, 64, 80, 14);
+    builder.Add(L"Пассивный режим", kIdFtpPassive, kClsButton,
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX, 10, 88, 150, 12);
+    builder.Add(L"Анонимно", kIdFtpAnon, kClsButton,
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX, 170, 88, 100, 12);
+    builder.Add(L"Сохранить сайт", kIdFtpSave, kClsButton,
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX, 10, 106, 150, 12);
+    builder.Add(L"Пароль пишется в INI в обфусцированном виде.", 0, kClsStatic,
+                WS_CHILD | WS_VISIBLE | SS_LEFT, 10, 126, 360, 10);
+    builder.Add(L"OK", IDOK, kClsButton,
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON, 250, 150, 58, 16);
+    builder.Add(L"Отмена", IDCANCEL, kClsButton,
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 312, 150, 58, 16);
+
+    FtpCtx ctx;
+    ctx.options = &options;
+    ctx.sites = &sites;
+    const INT_PTR result = DialogBoxIndirectParamW(g_inst, builder.Get(), owner, FtpProc, (LPARAM)&ctx);
+    LogDebug(L"FtpConnectBox result=" + std::to_wstring((long long)result) + L" host='" + options.site.host +
+             L"' user='" + options.site.user + L"' save=" + std::to_wstring(options.saveSite ? 1 : 0));
+    return result == 1;
+}
+
+// ---------- окно прогресса FTP ----------
+
+namespace {
+
+const wchar_t* kFtpProgressClass = L"POSFtpProgress2";
+const int kFtpProgTextId = 80;
+const int kFtpProgPercentId = 81;
+const int kFtpProgBarId = 82;
+const int kFtpProgCancelId = 83;
+
+struct FtpProgState {
+    HWND hwnd = nullptr;
+    HWND text = nullptr;
+    HWND percent = nullptr;
+    HWND bar = nullptr;
+    HWND cancel = nullptr;
+    HWND owner = nullptr;
+    bool ownerDisabled = false;
+    bool cancelled = false;
+    bool shown = false;
+    ULONGLONG started = 0;
+};
+
+FtpProgState g_ftpProg;
+
+void FtpProgLayout(HWND hwnd) {
+    RECT rc{};
+    GetClientRect(hwnd, &rc);
+    const int pad = 12, lineH = 20, barH = 18, btnW = 100, btnH = 26;
+    MoveWindow(g_ftpProg.text, pad, pad, rc.right - 2 * pad, lineH, TRUE);
+    MoveWindow(g_ftpProg.percent, pad, pad + lineH + 6, rc.right - 2 * pad, lineH, TRUE);
+    MoveWindow(g_ftpProg.bar, pad, pad + 2 * lineH + 14, rc.right - 2 * pad, barH, TRUE);
+    MoveWindow(g_ftpProg.cancel, rc.right - pad - btnW, rc.bottom - pad - btnH, btnW, btnH, TRUE);
+}
+
+LRESULT CALLBACK FtpProgProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    switch (msg) {
+        case WM_CREATE: {
+            g_ftpProg.hwnd = hwnd;
+            g_ftpProg.text = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_LEFT | SS_ENDELLIPSIS,
+                                             0, 0, 10, 10, hwnd, (HMENU)kFtpProgTextId, nullptr, nullptr);
+            g_ftpProg.percent = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_LEFT,
+                                                0, 0, 10, 10, hwnd, (HMENU)kFtpProgPercentId, nullptr, nullptr);
+            g_ftpProg.bar = CreateWindowExW(0, PROGRESS_CLASSW, nullptr, WS_CHILD | WS_VISIBLE | PBS_SMOOTH,
+                                            0, 0, 10, 10, hwnd, (HMENU)kFtpProgBarId, nullptr, nullptr);
+            g_ftpProg.cancel = CreateWindowExW(0, L"BUTTON", L"Отмена",
+                                               WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+                                               0, 0, 10, 10, hwnd, (HMENU)kFtpProgCancelId, nullptr, nullptr);
+            HFONT font = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+            const HWND kids[] = {g_ftpProg.text, g_ftpProg.percent, g_ftpProg.bar, g_ftpProg.cancel};
+            for (HWND k : kids) SendMessageW(k, WM_SETFONT, (WPARAM)font, TRUE);
+            SendMessageW(g_ftpProg.bar, PBM_SETRANGE32, 0, 1000);
+            FtpProgLayout(hwnd);
+            return 0;
+        }
+        case WM_SIZE:
+            FtpProgLayout(hwnd);
+            return 0;
+        case WM_COMMAND:
+            if (LOWORD(wp) == kFtpProgCancelId) {
+                g_ftpProg.cancelled = true;
+                EnableWindow(g_ftpProg.cancel, FALSE);
+                SetWindowTextW(g_ftpProg.percent, L"Отмена…");
+                return 0;
+            }
+            break;
+        case WM_CLOSE:
+            g_ftpProg.cancelled = true;
+            return 0;
+        case WM_DESTROY:
+            g_ftpProg.hwnd = nullptr;
+            return 0;
+        default:
+            break;
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+void FtpProgPump() {
+    MSG msg;
+    while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+}
+
+}  // namespace
+
+void FtpProgressOpen(HWND owner, const std::wstring& title) {
+    if (g_ftpProg.hwnd) FtpProgressClose();
+
+    static bool registered = false;
+    if (!registered) {
+        WNDCLASSEXW wc{};
+        wc.cbSize = sizeof(wc);
+        wc.lpfnWndProc = FtpProgProc;
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+        wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+        wc.lpszClassName = kFtpProgressClass;
+        RegisterClassExW(&wc);
+        registered = true;
+    }
+
+    g_ftpProg.cancelled = false;
+    g_ftpProg.shown = false;
+    g_ftpProg.started = GetTickCount64();
+    g_ftpProg.owner = owner;
+
+    const int w = 480, h = 166;
+    RECT orc{};
+    GetWindowRect(owner, &orc);
+    const int x = orc.left + ((orc.right - orc.left) - w) / 2;
+    const int y = orc.top + ((orc.bottom - orc.top) - h) / 2;
+
+    g_ftpProg.hwnd = CreateWindowExW(WS_EX_DLGMODALFRAME, kFtpProgressClass, title.c_str(),
+                                     WS_POPUP | WS_CAPTION | WS_SYSMENU, x, y, w, h,
+                                     owner, nullptr, GetModuleHandleW(nullptr), nullptr);
+    if (!g_ftpProg.hwnd) return;
+    EnableWindow(owner, FALSE);
+    g_ftpProg.ownerDisabled = true;
+    SetWindowTextW(g_ftpProg.text, L"Подготовка…");
+    SetWindowTextW(g_ftpProg.percent, L"");
+}
+
+bool FtpProgressUpdate(const std::wstring& file, ULONGLONG done, ULONGLONG total) {
+    FtpProgPump();
+
+    if (g_ftpProg.hwnd) {
+        if (!g_ftpProg.shown && GetTickCount64() - g_ftpProg.started > 250) {
+            ShowWindow(g_ftpProg.hwnd, SW_SHOW);
+            UpdateWindow(g_ftpProg.hwnd);
+            g_ftpProg.shown = true;
+        }
+        if (g_ftpProg.shown) {
+            SetWindowTextW(g_ftpProg.text, file.c_str());
+            std::wstring info;
+            if (total > 0) {
+                const ULONGLONG percent = done * 100 / total;
+                SendMessageW(g_ftpProg.bar, PBM_SETPOS, (WPARAM)(done * 1000 / total), 0);
+                info = FmtSize(done) + L" из " + FmtSize(total) + L" (" + std::to_wstring(percent) + L"%)";
+            } else {
+                SendMessageW(g_ftpProg.bar, PBM_SETPOS, 0, 0);
+                info = FmtSize(done);
+            }
+            SetWindowTextW(g_ftpProg.percent, info.c_str());
+        }
+    }
+    return !g_ftpProg.cancelled;
+}
+
+void FtpProgressClose() {
+    if (!g_ftpProg.hwnd) return;
+    HWND hwnd = g_ftpProg.hwnd;
+    g_ftpProg.hwnd = nullptr;
+    DestroyWindow(hwnd);
+    if (g_ftpProg.ownerDisabled && g_ftpProg.owner) {
+        EnableWindow(g_ftpProg.owner, TRUE);
+        SetActiveWindow(g_ftpProg.owner);
+    }
+    g_ftpProg.ownerDisabled = false;
+    g_ftpProg.cancelled = false;
+    g_ftpProg.shown = false;
+}

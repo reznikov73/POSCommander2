@@ -20,6 +20,7 @@ add_executable(POSCommander2 WIN32
   src/search.cpp
   src/archive.cpp
   src/sync.cpp
+  src/ftp.cpp
   src/plugins.cpp
   src/wcx.cpp
   res/app.rc
@@ -34,7 +35,7 @@ target_compile_definitions(POSCommander2 PRIVATE
 )
 
 target_link_libraries(POSCommander2 PRIVATE
-  comctl32 shell32 shlwapi ole32 uuid mpr iphlpapi user32 gdi32
+  comctl32 shell32 shlwapi ole32 uuid mpr iphlpapi user32 gdi32 ws2_32
 )
 
 if(MSVC)

@@ -9,6 +9,7 @@
 #include "search.h"
 #include "archive.h"
 #include "sync.h"
+#include "ftp.h"
 #include "plugins.h"
 #include "wcx.h"
 
@@ -22,6 +23,7 @@
 #include <cmath>
 #include <cstdio>
 #include <map>
+#include <memory>
 
 HINSTANCE g_inst = nullptr;
 
@@ -62,6 +64,8 @@ enum : int {
     IDM_TAB_NEW = 201,
     IDM_UNPACK = 197,
     IDM_SYNC = 198,
+    IDM_FTP_CONNECT = 199,
+    IDM_FTP_DISCONNECT = 200,
 
     IDM_SEL_ALL = 120,
     IDM_SEL_NONE,
@@ -160,6 +164,232 @@ const TbDef kToolbar[] = {
 };
 const int kToolbarCount = (int)(sizeof(kToolbar) / sizeof(kToolbar[0]));
 
+// ---------- FTP: общие помощники копирования ----------
+
+struct FtpCopyCtx {
+    HWND owner = nullptr;
+    FtpConnection* src = nullptr;       // null — локальный источник
+    FtpConnection* dst = nullptr;       // null — локальный приёмник
+    bool move = false;
+    bool overwriteAll = false;
+    std::vector<std::wstring> masks;
+    std::wstring error;
+    bool aborted = false;
+    int files = 0;
+};
+
+bool ConnectFtpForUrl(const std::wstring& url, std::unique_ptr<FtpConnection>& conn, FtpSite& site,
+                      std::wstring& remote, std::wstring& error) {
+    remote.clear();
+    if (!FtpParseUrl(url, site, remote)) {
+        error = L"Некорректный FTP-адрес: " + url;
+        return false;
+    }
+    if (!site.password.empty()) FtpRememberPassword(url, site.password);
+    if (!site.user.empty() && !FtpPasswordFor(url, site.password)) {
+        error = L"Нет пароля для " + site.user + L"@" + site.host + L".\n"
+                L"Подключитесь через меню «Сеть» → «FTP: подключиться…».";
+        return false;
+    }
+    return FtpConnect(site, conn, error);
+}
+
+bool RemotePathOfUrl(const std::wstring& url, std::wstring& remote) {
+    FtpSite site;
+    return FtpParseUrl(url, site, remote);
+}
+
+bool EnsureRemoteDir(FtpConnection& conn, const std::wstring& url, std::wstring& error) {
+    std::wstring remote;
+    if (!RemotePathOfUrl(url, remote)) {
+        error = L"Некорректный FTP-адрес: " + url;
+        return false;
+    }
+    std::wstring mkError;
+    if (FtpCreateDir(conn, remote, mkError)) return true;
+    std::vector<FtpEntryInfo> probe;
+    std::wstring listError;
+    if (FtpList(conn, remote, probe, listError)) return true;
+    error = L"Не удалось создать каталог на FTP:\n" + url + L"\n\n" + mkError;
+    return false;
+}
+
+bool EnsureLocalDir(const std::wstring& path, std::wstring& error) {
+    if (CreateDirectoryW(path.c_str(), nullptr)) return true;
+    const DWORD err = GetLastError();
+    if (err == ERROR_ALREADY_EXISTS && IsDirectory(path)) return true;
+    error = L"Не удалось создать каталог:\n" + path + L"\n\n" + ErrText(err);
+    return false;
+}
+
+bool CopyFtpItem(FtpCopyCtx& c, const std::wstring& srcPath, const std::wstring& dstPath,
+                 const std::wstring& name, bool isDir, bool topLevel) {
+    if (c.aborted) return false;
+
+    // Маска F5 ограничивает только выбранные файлы верхнего уровня; каталоги — целиком.
+    if (!isDir && topLevel && !c.masks.empty()) {
+        bool match = false;
+        const std::wstring lowName = Lower(name);
+        for (auto& mask : c.masks) {
+            if (MatchMask(lowName, Lower(mask))) {
+                match = true;
+                break;
+            }
+        }
+        if (!match) return true;
+    }
+
+    if (isDir) {
+        if (c.dst) {
+            if (!EnsureRemoteDir(*c.dst, dstPath, c.error)) return false;
+        } else if (!EnsureLocalDir(dstPath, c.error)) {
+            return false;
+        }
+
+        if (c.src) {
+            std::wstring remote;
+            if (!RemotePathOfUrl(srcPath, remote)) {
+                c.error = L"Некорректный FTP-адрес: " + srcPath;
+                return false;
+            }
+            std::vector<FtpEntryInfo> list;
+            if (!FtpList(*c.src, remote, list, c.error)) return false;
+            for (auto& e : list) {
+                const std::wstring childSrc = c.src ? FtpJoinUrl(srcPath, e.name) : JoinPath(srcPath, e.name);
+                const std::wstring childDst = c.dst ? FtpJoinUrl(dstPath, e.name) : JoinPath(dstPath, e.name);
+                if (!CopyFtpItem(c, childSrc, childDst, e.name, e.isDir, false)) return false;
+            }
+        } else {
+            std::vector<Entry> list;
+            DWORD listError = 0;
+            if (!ListDir(srcPath, true, list, listError)) {
+                c.error = L"Не удалось прочитать каталог:\n" + srcPath + L"\n\n" + ErrText(listError);
+                return false;
+            }
+            for (auto& e : list) {
+                if (e.isUp) continue;
+                if (!CopyFtpItem(c, JoinPath(srcPath, e.name), JoinPath(dstPath, e.name), e.name, e.isDir, false)) {
+                    return false;
+                }
+            }
+        }
+
+        if (c.move) {
+            if (c.src) {
+                std::wstring remote;
+                RemotePathOfUrl(srcPath, remote);
+                std::wstring ignore;
+                FtpRemoveDir(*c.src, remote, ignore);
+            } else {
+                RemoveDirectoryW(srcPath.c_str());
+            }
+        }
+        return true;
+    }
+
+    // Файл: проверка перезаписи.
+    bool exists = false;
+    if (c.dst) {
+        std::wstring remote;
+        if (!RemotePathOfUrl(dstPath, remote)) {
+            c.error = L"Некорректный FTP-адрес: " + dstPath;
+            return false;
+        }
+        ULONGLONG size = 0;
+        std::wstring ignore;
+        exists = FtpFileSize(*c.dst, remote, size, ignore);
+    } else {
+        exists = GetFileAttributesW(dstPath.c_str()) != INVALID_FILE_ATTRIBUTES;
+    }
+
+    if (exists && !c.overwriteAll) {
+        const int answer = MessageBoxW(c.owner, (L"Перезаписать «" + name + L"»?").c_str(), L"FTP",
+                                       MB_YESNOCANCEL | MB_ICONQUESTION);
+        if (answer == IDCANCEL) {
+            c.aborted = true;
+            c.error = L"Отменено";
+            return false;
+        }
+        if (answer == IDNO) return true;
+    }
+
+    auto progress = [&name](ULONGLONG done, ULONGLONG total) {
+        return FtpProgressUpdate(name, done, total);
+    };
+
+    if (c.src && c.dst) {
+        // FTP → FTP: через временный файл.
+        wchar_t tmp[MAX_PATH]{};
+        GetTempPathW(MAX_PATH, tmp);
+        std::wstring dir = std::wstring(tmp) + L"posc2-ftp-xfer";
+        CreateDirectoryW(dir.c_str(), nullptr);
+        const std::wstring temp = dir + L"\\" + std::to_wstring(GetCurrentProcessId()) + L"-" +
+                                  std::to_wstring(GetTickCount64()) + L"-" + std::to_wstring(c.files) + L".tmp";
+        std::wstring srcRemote, dstRemote;
+        RemotePathOfUrl(srcPath, srcRemote);
+        RemotePathOfUrl(dstPath, dstRemote);
+        if (!FtpDownloadFile(*c.src, srcRemote, temp, progress, c.error)) return false;
+        const bool uploaded = FtpUploadFile(*c.dst, temp, dstRemote, progress, c.error);
+        DeleteFileW(temp.c_str());
+        if (!uploaded) return false;
+    } else if (c.src) {
+        std::wstring srcRemote;
+        RemotePathOfUrl(srcPath, srcRemote);
+        if (!FtpDownloadFile(*c.src, srcRemote, dstPath, progress, c.error)) return false;
+    } else if (c.dst) {
+        std::wstring dstRemote;
+        RemotePathOfUrl(dstPath, dstRemote);
+        if (!FtpUploadFile(*c.dst, srcPath, dstRemote, progress, c.error)) return false;
+    }
+
+    ++c.files;
+    if (c.move) {
+        if (c.src) {
+            std::wstring remote;
+            RemotePathOfUrl(srcPath, remote);
+            std::wstring ignore;
+            FtpDeleteFile(*c.src, remote, ignore);
+        } else {
+            DeleteFileW(srcPath.c_str());
+        }
+    }
+    return true;
+}
+
+void DeleteFtpTree(FtpConnection& conn, const std::wstring& url, const std::wstring& name, std::wstring& error,
+                   bool& cancelled) {
+    if (cancelled) return;
+    FtpSite site;
+    std::wstring remote;
+    if (!FtpParseUrl(url, site, remote)) {
+        error = L"Некорректный FTP-адрес: " + url;
+        return;
+    }
+    if (!FtpProgressUpdate(name, 0, 0)) {
+        cancelled = true;
+        error = L"Отменено";
+        return;
+    }
+
+    // Пробуем как файл; если сервер ответил «not a file», идём как по каталогу.
+    std::wstring fileError;
+    if (FtpDeleteFile(conn, remote, fileError)) return;
+
+    std::vector<FtpEntryInfo> list;
+    std::wstring listError;
+    if (!FtpList(conn, remote, list, listError)) {
+        error = L"Не удалось удалить «" + name + L"»:\n" + fileError;
+        return;
+    }
+    for (auto& e : list) {
+        const std::wstring child = FtpJoinUrl(url, e.name);
+        DeleteFtpTree(conn, child, e.name, error, cancelled);
+        if (cancelled || !error.empty()) return;
+    }
+    std::wstring rmError;
+    if (!FtpRemoveDir(conn, remote, rmError)) error = rmError;
+}
+
 class App {
 public:
     bool Create(HINSTANCE inst);
@@ -184,6 +414,7 @@ private:
     void OpenCursor();
     void GoUpActive();
     void DoCopyMove(bool move);
+    void DoFtpCopyMove(bool move);
     void DoRename();
     void DoMkdir();
     void DoDelete();
@@ -211,6 +442,9 @@ private:
     void BrowseNetwork();
     void MapNetworkDrive();
     void UnmapNetworkDrive();
+    void FtpConnectDialog();
+    void FtpDisconnectActive();
+    std::wstring DownloadFtpToTemp(const std::wstring& url, const std::wstring& name);
     void OpenUncPath();
     void RebuildDriveBars();
     void ToggleQuickView();
@@ -353,6 +587,9 @@ void App::BuildMenu() {
     AppendMenuW(menu_, MF_POPUP, (UINT_PTR)nav, L"&Навигация");
 
     HMENU net = CreatePopupMenu();
+    AppendMenuW(net, MF_STRING, IDM_FTP_CONNECT, L"FTP: &подключиться…");
+    AppendMenuW(net, MF_STRING, IDM_FTP_DISCONNECT, L"FTP: о&тключиться");
+    AppendMenuW(net, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(net, MF_STRING, IDM_NET_BROWSE, L"&Обзор сети…");
     AppendMenuW(net, MF_STRING, IDM_NET_UNC, L"Перейти по &UNC-пути…");
     AppendMenuW(net, MF_SEPARATOR, 0, nullptr);
@@ -519,6 +756,11 @@ void App::LoadPanels() {
     left_.SetTabMeta(st.leftTabNames, st.leftTabLocks);
     right_.SetTabMeta(st.rightTabNames, st.rightTabLocks);
 
+    // Сохранённый FTP-каталог мог стать недоступен (нет пароля/сервера) —
+    // панель не должна остаться пустой.
+    if (left_.Path().empty()) left_.Navigate(cwd);
+    if (right_.Path().empty()) right_.Navigate(cwd);
+
     // Возвращаем курсор и активную панель.
     left_.SetCursorIndex(st.leftCursor);
     right_.SetCursorIndex(st.rightCursor);
@@ -665,7 +907,8 @@ static std::wstring CompactPathLeft(HDC dc, const std::wstring& text, int width)
 void App::UpdatePromptLabel() {
     if (!label_) return;
     std::wstring text = ActivePanel()->Path();
-    if (!text.empty() && text.back() != L'\\') text.push_back(L'\\');
+    const wchar_t sep = IsFtpUrl(text) ? L'/' : L'\\';
+    if (!text.empty() && text.back() != sep && text.back() != L'\\' && text.back() != L'/') text.push_back(sep);
     text += L">";
 
     // Длинный путь сокращаем слева с многоточием под ширину подписи (как в TC: «...\net10.0>»).
@@ -694,6 +937,24 @@ void App::OpenCursor() {
     Panel* panel = ActivePanel();
     Entry* e = panel->Cursor();
     if (!e) return;
+
+    // FTP: каталог — переход, файл — скачиваем во временный и открываем.
+    if (panel->InFtp()) {
+        if (e->isUp) {
+            panel->GoUp();
+            return;
+        }
+        if (e->isDir) {
+            const std::wstring target = FtpJoinUrl(panel->Path(), e->name);
+            if (!panel->Navigate(target)) ShowError(panel->NavigateError());
+            return;
+        }
+        const std::wstring temp = DownloadFtpToTemp(panel->FocusedPath(), e->name);
+        if (temp.empty()) return;
+        HINSTANCE hr = ShellExecuteW(hwnd_, L"open", temp.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        if ((INT_PTR)hr <= 32) ShowError(L"Не удалось открыть:\n" + temp);
+        return;
+    }
 
     if (e->isUp) {
         panel->GoUp();
@@ -736,6 +997,12 @@ void App::GoUpActive() {
 void App::DoCopyMove(bool move) {
     Panel* panel = ActivePanel();
     Panel* other = OtherPanel();
+
+    // Любая сторона на FTP — отдельный путь: оболочка с URL не работает.
+    if (panel->InFtp() || other->InFtp()) {
+        DoFtpCopyMove(move);
+        return;
+    }
 
     // Из архива — распаковка в каталог другой панели; в архив копировать нельзя.
     if (panel->InArchive()) {
@@ -829,6 +1096,93 @@ void App::DoCopyMove(bool move) {
     panel->ClearMarks();
 }
 
+void App::DoFtpCopyMove(bool move) {
+    Panel* panel = ActivePanel();
+    Panel* other = OtherPanel();
+
+    if (panel->InArchive() || other->InArchive()) {
+        ShowError(L"Копирование между архивом и FTP пока не поддерживается.");
+        return;
+    }
+
+    std::vector<std::wstring> names = panel->SelectedNames();
+    if (names.empty()) return;
+
+    CopyMoveOptions opts;
+    opts.target = other->Path();
+    if (!CopyMoveBox(hwnd_, move ? L"Перемещение по FTP" : L"Копирование по FTP",
+                     L"Копировать в каталог:", opts)) {
+        return;
+    }
+    const std::wstring target = Trim(opts.target);
+    if (target.empty()) return;
+    if (opts.background) {
+        MessageBoxW(hwnd_, L"Фоновая очередь для FTP пока не поддерживается:\nоперация выполняется сразу.",
+                    L"FTP", MB_ICONINFORMATION | MB_OK);
+    }
+
+    const bool targetRemote = IsFtpUrl(target);
+    FtpSite srcSite, dstSite;
+    std::wstring srcRemote, dstRemote, error;
+    std::unique_ptr<FtpConnection> srcConn, dstConn;
+
+    if (panel->InFtp()) {
+        if (!ConnectFtpForUrl(panel->Path(), srcConn, srcSite, srcRemote, error)) {
+            ShowError(error);
+            return;
+        }
+    }
+    if (targetRemote) {
+        if (!ConnectFtpForUrl(target, dstConn, dstSite, dstRemote, error)) {
+            ShowError(error);
+            return;
+        }
+        if (!EnsureRemoteDir(*dstConn, target, error)) {
+            ShowError(error);
+            return;
+        }
+    } else if (!IsDirectory(target)) {
+        if (!EnsureLocalDir(target, error)) {
+            ShowError(error);
+            return;
+        }
+    }
+
+    FtpCopyCtx ctx;
+    ctx.owner = hwnd_;
+    ctx.src = srcConn.get();
+    ctx.dst = dstConn.get();
+    ctx.move = move;
+    ctx.overwriteAll = opts.overwriteAll;
+    if (!Trim(opts.mask).empty()) ctx.masks = SplitMasks(opts.mask);
+
+    FtpProgressOpen(hwnd_, move ? L"FTP: перемещение" : L"FTP: копирование");
+    for (auto& name : names) {
+        const Entry* entry = nullptr;
+        for (auto& e : panel->Entries()) {
+            if (e.name == name) {
+                entry = &e;
+                break;
+            }
+        }
+        if (!entry || entry->isUp) continue;
+
+        const std::wstring srcPath = panel->InFtp() ? FtpJoinUrl(panel->Path(), name)
+                                                    : JoinPath(panel->Path(), name);
+        const std::wstring dstPath = targetRemote ? FtpJoinUrl(target, name) : JoinPath(target, name);
+        if (!CopyFtpItem(ctx, srcPath, dstPath, name, entry->isDir, true)) break;
+    }
+    FtpProgressClose();
+
+    if (!ctx.error.empty() && ctx.error != L"Отменено") ShowError(ctx.error);
+    panel->ClearMarks();
+    panel->Reload();
+    other->Reload();
+    UpdatePromptLabel();
+    LogDebug(L"FTP copy/move files=" + std::to_wstring(ctx.files) + L" move=" + std::to_wstring(move ? 1 : 0) +
+             L" error='" + ctx.error + L"'");
+}
+
 void App::DoRename() {
     Panel* panel = ActivePanel();
     Entry* e = panel->Cursor();
@@ -837,6 +1191,24 @@ void App::DoRename() {
     if (!InputBox(hwnd_, L"Переименование", L"Новое имя:", name, false)) return;
     name = Trim(name);
     if (name.empty() || SamePath(name, e->name)) return;
+
+    if (panel->InFtp()) {
+        FtpSite site;
+        std::wstring remoteDir;
+        std::unique_ptr<FtpConnection> conn;
+        std::wstring error;
+        if (!ConnectFtpForUrl(panel->Path(), conn, site, remoteDir, error)) {
+            ShowError(error);
+            return;
+        }
+        const std::wstring base = (remoteDir == L"/") ? L"" : remoteDir;
+        if (!FtpRename(*conn, base + L"/" + e->name, base + L"/" + name, error)) {
+            ShowError(L"Не удалось переименовать:\n" + error);
+            return;
+        }
+        panel->Reload();
+        return;
+    }
 
     std::wstring from = JoinPath(panel->Path(), e->name);
     std::wstring to = JoinPath(panel->Path(), name);
@@ -855,6 +1227,30 @@ void App::DoRename() {
 
 void App::DoMkdir() {
     Panel* panel = ActivePanel();
+
+    if (panel->InFtp()) {
+        std::wstring name;
+        if (!InputBox(hwnd_, L"Создать каталог", L"Имя каталога:", name, false)) return;
+        name = Trim(name);
+        if (name.empty()) return;
+
+        FtpSite site;
+        std::wstring remoteDir;
+        std::unique_ptr<FtpConnection> conn;
+        std::wstring error;
+        if (!ConnectFtpForUrl(panel->Path(), conn, site, remoteDir, error)) {
+            ShowError(error);
+            return;
+        }
+        const std::wstring base = (remoteDir == L"/") ? L"" : remoteDir;
+        if (!FtpCreateDir(*conn, base + L"/" + name, error)) {
+            ShowError(L"Не удалось создать каталог:\n" + error);
+            return;
+        }
+        panel->Reload();
+        return;
+    }
+
     std::wstring name;
     if (!InputBox(hwnd_, L"Создать каталог", L"Имя каталога:", name, false)) return;
     name = Trim(name);
@@ -879,6 +1275,41 @@ void App::DoMkdir() {
 void App::DoDelete() {
     LogDebug(L"DoDelete enter");
     Panel* panel = ActivePanel();
+
+    if (panel->InFtp()) {
+        std::vector<std::wstring> names = panel->SelectedNames();
+        if (names.empty()) return;
+        std::wstring question;
+        if (names.size() == 1) {
+            question = L"Удалить «" + names[0] + L"» на FTP без корзины?";
+        } else {
+            question = L"Удалить на FTP без корзины объектов: " + std::to_wstring(names.size()) + L"?";
+        }
+        if (MessageBoxW(hwnd_, question.c_str(), L"Удаление по FTP", MB_ICONQUESTION | MB_YESNO) != IDYES) return;
+
+        FtpSite site;
+        std::wstring remoteDir;
+        std::unique_ptr<FtpConnection> conn;
+        std::wstring error;
+        if (!ConnectFtpForUrl(panel->Path(), conn, site, remoteDir, error)) {
+            ShowError(error);
+            return;
+        }
+
+        FtpProgressOpen(hwnd_, L"FTP: удаление");
+        bool cancelled = false;
+        for (auto& name : names) {
+            DeleteFtpTree(*conn, FtpJoinUrl(panel->Path(), name), name, error, cancelled);
+            if (cancelled || !error.empty()) break;
+        }
+        FtpProgressClose();
+
+        if (!error.empty() && error != L"Отменено") ShowError(error);
+        panel->ClearMarks();
+        panel->Reload();
+        return;
+    }
+
     std::vector<std::wstring> targets = panel->SelectedPaths();
     if (targets.empty()) return;
 
@@ -901,6 +1332,17 @@ void App::DoDelete() {
 
 void App::DoProperties() {
     Panel* panel = ActivePanel();
+    if (panel->InFtp()) {
+        Entry* e = panel->Cursor();
+        if (!e || e->isUp) {
+            MessageBoxW(hwnd_, panel->Path().c_str(), L"FTP", MB_ICONINFORMATION | MB_OK);
+            return;
+        }
+        std::wstring text = panel->FullPathOf(*e) + L"\n\n";
+        text += e->isDir ? L"каталог" : (L"размер: " + FmtSize(e->size) + L"\nизменён: " + FmtDate(e->ft));
+        MessageBoxW(hwnd_, text.c_str(), L"FTP: свойства", MB_ICONINFORMATION | MB_OK);
+        return;
+    }
     std::wstring path = panel->FocusedPath();
     if (path.empty()) return;
     SHObjectProperties(hwnd_, SHOP_FILEPATH, path.c_str(), nullptr);
@@ -1185,6 +1627,10 @@ int App::FKeyCommand(int index, int kind) const {
 
 // Ctrl+Q — быстрый просмотр на неактивной панели, как в TC.
 void App::ToggleQuickView() {
+    if (ActivePanel()->InFtp() || OtherPanel()->InFtp()) {
+        MessageBoxW(hwnd_, L"Быстрый просмотр по FTP не поддерживается.", L"FTP", MB_ICONINFORMATION | MB_OK);
+        return;
+    }
     if (quickView_) {
         DestroyWindow(quickView_);
         quickView_ = nullptr;
@@ -1513,6 +1959,12 @@ void App::DropOnPanel(int fromSide, int toSide) {
     Panel* src = (fromSide == 0) ? &left_ : &right_;
     Panel* dst = (fromSide == 0) ? &right_ : &left_;
 
+    if (src->InFtp() || dst->InFtp()) {
+        MessageBoxW(hwnd_, L"Перетаскивание с FTP пока не поддерживается. Используйте F5/F6.", L"FTP",
+                    MB_ICONINFORMATION | MB_OK);
+        return;
+    }
+
     std::vector<std::wstring> items = src->SelectedPaths();
     LogDebug(L"drop items=" + std::to_wstring(items.size()) + L" target='" + dst->Path() + L"'");
     if (items.empty()) return;
@@ -1536,6 +1988,11 @@ void App::DropOnPanel(int fromSide, int toSide) {
 void App::DoUnpack() {
     Panel* panel = ActivePanel();
     Panel* other = OtherPanel();
+
+    if (panel->InFtp() || other->InFtp()) {
+        ShowError(L"Распаковка с FTP или на FTP пока не поддерживается.");
+        return;
+    }
 
     if (panel->InArchive()) {
         ShowError(L"Открыт архив. Выйдите в каталог: распаковка из просмотра — по F5.");
@@ -1593,6 +2050,12 @@ void App::DoUnpack() {
 void App::PackSelection() {
     Panel* panel = ActivePanel();
     if (!panel) return;
+
+    if (panel->InFtp()) {
+        MessageBoxW(hwnd_, L"Упаковка файлов на FTP не поддерживается: сначала скачайте их (F5).", L"FTP",
+                    MB_ICONINFORMATION | MB_OK);
+        return;
+    }
 
     if (panel->InArchive()) {
         MessageBoxW(hwnd_, L"Упаковка из архива не поддерживается.", kTitle, MB_ICONINFORMATION);
@@ -1672,6 +2135,12 @@ void App::RunNextJob() {
 void App::BatchRename() {
     Panel* panel = ActivePanel();
     if (!panel) return;
+
+    if (panel->InFtp()) {
+        MessageBoxW(hwnd_, L"Пакетное переименование по FTP не поддерживается: переименуйте по одному (F2).",
+                    L"FTP", MB_ICONINFORMATION | MB_OK);
+        return;
+    }
 
     if (panel->InArchive()) {
         MessageBoxW(hwnd_, L"Переименование внутри архива не поддерживается.", kTitle, MB_ICONINFORMATION);
@@ -1929,7 +2398,17 @@ void App::Dispatch(int id) {
         case IDM_NET_UNMAP:
             UnmapNetworkDrive();
             break;
+        case IDM_FTP_CONNECT:
+            FtpConnectDialog();
+            break;
+        case IDM_FTP_DISCONNECT:
+            FtpDisconnectActive();
+            break;
         case IDM_SEARCH: {
+            if (ActivePanel()->InFtp()) {
+                MessageBoxW(hwnd_, L"Поиск по FTP не поддерживается.", L"FTP", MB_ICONINFORMATION | MB_OK);
+                break;
+            }
             std::wstring found = SearchDialog(hwnd_, ActivePanel()->Path());
             LogDebug(L"search chosen='" + found + L"'");
             if (!found.empty()) {
@@ -1948,6 +2427,12 @@ void App::Dispatch(int id) {
         case IDM_NEWFILE: {
             if (panel->InArchive()) {
                 ShowError(L"В архиве новый файл не создать.");
+                break;
+            }
+            if (panel->InFtp()) {
+                MessageBoxW(hwnd_, L"Создание файлов по FTP пока не поддерживается.\n"
+                                    L"Создайте его локально и загрузите через F5.",
+                            L"FTP", MB_ICONINFORMATION | MB_OK);
                 break;
             }
             std::wstring name = L"новый файл.txt";
@@ -1973,6 +2458,11 @@ void App::Dispatch(int id) {
                 MessageBoxW(hwnd_, L"Просмотр доступен только для файлов.", kTitle, MB_ICONINFORMATION);
                 return;
             }
+            if (panel->InFtp()) {
+                const std::wstring temp = DownloadFtpToTemp(panel->FocusedPath(), e->name);
+                if (!temp.empty()) ShowLister(hwnd_, temp);
+                break;
+            }
             if (panel->InArchive()) {
                 std::wstring inner = panel->ArchiveInner().empty() ? e->name : panel->ArchiveInner() + L"\\" + e->name;
                 std::wstring temp = ExtractOneFromArchive(panel, inner);
@@ -1985,6 +2475,12 @@ void App::Dispatch(int id) {
         case IDM_EDIT: {
             Entry* e = panel->Cursor();
             if (!e || e->isUp || e->isDir) return;
+            if (panel->InFtp()) {
+                MessageBoxW(hwnd_, L"Правка файлов по FTP пока не поддерживается.\n"
+                                    L"Откройте файл через F3 (просмотр).",
+                            L"FTP", MB_ICONINFORMATION | MB_OK);
+                break;
+            }
             std::wstring path = panel->FocusedPath();
             std::wstring params = L"\"" + path + L"\"";
             ShellExecuteW(hwnd_, L"open", L"notepad.exe", params.c_str(), nullptr, SW_SHOWNORMAL);
@@ -2080,6 +2576,11 @@ void App::Dispatch(int id) {
             DoUnpack();
             break;
         case IDM_SYNC:
+            if (left_.InFtp() || right_.InFtp()) {
+                MessageBoxW(hwnd_, L"Синхронизация каталогов по FTP не поддерживается.", L"FTP",
+                            MB_ICONINFORMATION | MB_OK);
+                break;
+            }
             SyncDirectories(hwnd_, left_.Path(), right_.Path());
             break;
         case IDM_TREE:
@@ -2764,6 +3265,124 @@ LRESULT App::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
 
+// ---------- FTP ----------
+
+void App::FtpConnectDialog() {
+    FtpConnectOptions opts;
+    Panel* panel = ActivePanel();
+
+    // Если панель уже на FTP — предлагаем её сайт; иначе первый сохранённый.
+    if (panel->InFtp()) {
+        FtpSite site;
+        std::wstring remote;
+        if (FtpParseUrl(panel->Path(), site, remote)) {
+            opts.site = site;
+            opts.site.root = remote.empty() ? L"/" : remote;
+            FtpPasswordFor(panel->Path(), opts.site.password);
+        }
+    } else if (!GetSettings().ftpSites.empty()) {
+        opts.site = GetSettings().ftpSites[0];
+    }
+
+    if (!FtpConnectBox(hwnd_, opts, GetSettings().ftpSites)) return;
+
+    // Проверяем вход до сохранения и перехода: иначе ошибка всплывёт уже в панели.
+    std::unique_ptr<FtpConnection> probe;
+    std::wstring error;
+    if (!FtpConnect(opts.site, probe, error)) {
+        ShowError(L"Не удалось подключиться к " + opts.site.host + L":\n" + error);
+        return;
+    }
+    FtpDisconnect(probe);
+
+    const std::wstring url = FtpMakeUrl(opts.site, opts.site.root);
+    FtpRememberPassword(url, opts.site.password);
+
+    if (opts.saveSite) {
+        auto& sites = GetSettings().ftpSites;
+        bool updated = false;
+        for (auto& saved : sites) {
+            if (SamePath(saved.host, opts.site.host) && saved.port == opts.site.port &&
+                SamePath(saved.user, opts.site.user)) {
+                const std::wstring oldName = saved.name;
+                saved = opts.site;
+                if (saved.name.empty()) {
+                    saved.name = oldName.empty() ? (saved.user.empty() ? saved.host : (saved.user + L"@" + saved.host))
+                                                 : oldName;
+                }
+                updated = true;
+                break;
+            }
+        }
+        if (!updated) {
+            FtpSite saved = opts.site;
+            if (saved.name.empty()) saved.name = saved.user.empty() ? saved.host : (saved.user + L"@" + saved.host);
+            sites.push_back(saved);
+        }
+    }
+
+    LogDebug(L"FTP connect: " + url);
+    if (!panel->Navigate(url)) {
+        ShowError(panel->NavigateError());
+        return;
+    }
+    panel->FocusList();
+    UpdatePromptLabel();
+}
+
+void App::FtpDisconnectActive() {
+    Panel* panel = ActivePanel();
+    if (!panel->InFtp()) {
+        MessageBoxW(hwnd_, L"Активная панель не подключена к FTP.", L"FTP", MB_ICONINFORMATION | MB_OK);
+        return;
+    }
+    if (!panel->Navigate(ExeDir())) ShowError(panel->NavigateError());
+    UpdatePromptLabel();
+}
+
+// Скачать файл с FTP во временный каталог: просмотр, открытие, сравнение.
+std::wstring App::DownloadFtpToTemp(const std::wstring& url, const std::wstring& name) {
+    FtpSite site;
+    std::wstring remote;
+    if (!FtpParseUrl(url, site, remote)) {
+        ShowError(L"Некорректный FTP-адрес:\n" + url);
+        return {};
+    }
+    if (!site.user.empty() && !FtpPasswordFor(url, site.password)) {
+        ShowError(L"Нет пароля для " + site.user + L"@" + site.host + L".\n"
+                  L"Подключитесь через меню «Сеть» → «FTP: подключиться…».");
+        return {};
+    }
+
+    std::unique_ptr<FtpConnection> conn;
+    std::wstring error;
+    if (!FtpConnect(site, conn, error)) {
+        ShowError(L"Не удалось подключиться к " + site.host + L":\n" + error);
+        return {};
+    }
+
+    wchar_t tmp[MAX_PATH]{};
+    GetTempPathW(MAX_PATH, tmp);
+    std::wstring dir = std::wstring(tmp) + L"posc2-ftp";
+    CreateDirectoryW(dir.c_str(), nullptr);
+    dir += L"\\" + std::to_wstring(GetCurrentProcessId());
+    CreateDirectoryW(dir.c_str(), nullptr);
+
+    std::wstring safe = name.empty() ? L"file" : name;
+    for (auto& ch : safe) {
+        if (ch == L'\\' || ch == L'/' || ch == L':') ch = L'_';
+    }
+    const std::wstring local = dir + L"\\" + safe;
+
+    const bool ok = FtpDownloadFile(*conn, remote, local, nullptr, error);
+    FtpDisconnect(conn);
+    if (!ok) {
+        ShowError(L"Не удалось скачать файл:\n" + remote + L"\n\n" + error);
+        return {};
+    }
+    return local;
+}
+
 int App::Run() {
     MSG msg{};
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
@@ -2780,6 +3399,14 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR cmdLine, int) {
     g_inst = inst;
 
     if (cmdLine && wcsstr(cmdLine, L"--selftest")) return RunSelfTest();
+
+    // Сквозная проверка FTP: --ftp-test host:port:user:pass
+    if (cmdLine && wcsstr(cmdLine, L"--ftp-test")) {
+        std::wstring args = cmdLine;
+        const size_t pos = args.find(L"--ftp-test");
+        args = Trim(args.substr(pos + 10));
+        return RunFtpTest(args);
+    }
 
     // Диагностика wcx: --wcx-test <путь к .wcx> <путь к архиву>
     if (cmdLine && wcsstr(cmdLine, L"--wcx-test")) {

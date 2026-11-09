@@ -1,5 +1,6 @@
 #include "selftest.h"
 
+#include "ftp.h"
 #include "ops.h"
 #include "util.h"
 
@@ -34,6 +35,20 @@ std::string ReadText(const std::wstring& path) {
     ReadFile(h, buf, sizeof(buf) - 1, &read, nullptr);
     CloseHandle(h);
     return std::string(buf, read);
+}
+
+std::vector<char> ReadBytes(const std::wstring& path) {
+    std::vector<char> out;
+    HANDLE h = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                           FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return out;
+    char buf[65536];
+    DWORD read = 0;
+    while (ReadFile(h, buf, (DWORD)sizeof(buf), &read, nullptr) && read > 0) {
+        out.insert(out.end(), buf, buf + read);
+    }
+    CloseHandle(h);
+    return out;
 }
 
 std::wstring WithLongPrefix(const std::wstring& path) {
@@ -212,6 +227,56 @@ int RunSelfTest() {
         rep.Check(true, L"UNC: общий ресурс недоступен, проверка пропущена");
     }
 
+    // --- FTP: чистые функции и разбор листинга (без сети) ---
+    {
+        rep.Check(IsFtpUrl(L"ftp://user@host:2121/dir/файл.txt"), L"FTP: URL распознан");
+        rep.Check(!IsFtpUrl(L"E:\\work"), L"FTP: локальный путь не URL");
+
+        FtpSite site;
+        std::wstring path;
+        rep.Check(FtpParseUrl(L"ftp://user@host:2121/dir/файл.txt", site, path), L"FTP: URL разобран");
+        rep.Check(site.host == L"host" && site.port == 2121 && site.user == L"user" &&
+                      path == L"/dir/файл.txt",
+                  L"FTP: поля URL",
+                  site.host + L" " + std::to_wstring(site.port) + L" " + site.user + L" " + path);
+
+        const std::wstring made = FtpMakeUrl(site, path);
+        rep.Check(made == L"ftp://user@host:2121/dir/файл.txt", L"FTP: URL собран", made);
+        rep.Check(FtpJoinUrl(L"ftp://user@host:2121/dir", L"файл с пробелом.txt") ==
+                      L"ftp://user@host:2121/dir/файл с пробелом.txt",
+                  L"FTP: склейка URL");
+        rep.Check(FtpParentUrl(L"ftp://user@host:2121/dir/sub") == L"ftp://user@host:2121/dir",
+                  L"FTP: родительский URL");
+        rep.Check(FtpParentUrl(L"ftp://user@host:2121/") == L"ftp://user@host:2121/",
+                  L"FTP: родитель корня");
+        rep.Check(FtpRootUrl(L"ftp://user@host:2121/dir/sub") == L"ftp://user@host:2121/",
+                  L"FTP: корень URL");
+        rep.Check(FtpLeafName(L"ftp://user@host:2121/dir/sub") == L"sub", L"FTP: имя записи URL");
+        rep.Check(FtpLeafName(L"ftp://user@host:2121/") == L"host", L"FTP: имя корня — host");
+
+        const std::wstring secret = L"пароль-123";
+        const std::wstring obfuscated = FtpObfuscatePassword(secret);
+        rep.Check(!obfuscated.empty() && obfuscated != secret, L"FTP: пароль обфусцирован");
+        rep.Check(FtpDeobfuscatePassword(obfuscated) == secret, L"FTP: пароль восстановлен");
+        rep.Check(FtpObfuscatePassword(L"").empty() && FtpDeobfuscatePassword(L"").empty(),
+                  L"FTP: пустой пароль");
+
+        FtpEntryInfo entry;
+        bool skip = false;
+        rep.Check(FtpParseListLine(L"type=file;size=1234;modify=20261109190633; тест.txt", entry, skip) &&
+                      !skip && entry.name == L"тест.txt" && !entry.isDir && entry.size == 1234,
+                  L"FTP: разбор MLSD (файл)");
+        rep.Check(FtpParseListLine(L"-rw-r--r-- 1 owner group 1234 Nov  9 22:06 файл с пробелом.txt",
+                                  entry, skip) &&
+                      !skip && entry.name == L"файл с пробелом.txt" && entry.size == 1234,
+                  L"FTP: разбор Unix LIST", entry.name);
+        rep.Check(FtpParseListLine(L"11-09-26  10:06PM       <DIR>          папка", entry, skip) &&
+                      !skip && entry.isDir && entry.name == L"папка",
+                  L"FTP: разбор DOS LIST", entry.name);
+        rep.Check(FtpParseListLine(L"type=cdir;modify=20261109190633; .", entry, skip) && skip,
+                  L"FTP: MLSD служебная строка");
+    }
+
     std::wstring report = L"POS Commander - самопроверка\r\n";
     report += L"каталог: " + base + L"\r\n\r\n";
     for (auto& line : rep.lines) report += line + L"\r\n";
@@ -220,4 +285,142 @@ int RunSelfTest() {
     Emit(report, TempPath(L"posc2-selftest.txt"));
     RemoveTree(base);
     return rep.failed;
+}
+
+int RunFtpTest(const std::wstring& spec) {
+    Report rep;
+    const std::wstring base = TempPath(L"posc2-ftp-test");
+    RemoveTree(base);
+    MakeDir(base);
+
+    std::wstring host, user, password;
+    int port = 0;
+    const size_t p1 = spec.find(L':');
+    const size_t p2 = (p1 == std::wstring::npos) ? std::wstring::npos : spec.find(L':', p1 + 1);
+    const size_t p3 = (p2 == std::wstring::npos) ? std::wstring::npos : spec.find(L':', p2 + 1);
+    const bool parsed = (p1 != std::wstring::npos && p2 != std::wstring::npos && p3 != std::wstring::npos);
+    if (parsed) {
+        host = spec.substr(0, p1);
+        port = _wtoi(spec.substr(p1 + 1, p2 - p1 - 1).c_str());
+        user = spec.substr(p2 + 1, p3 - p2 - 1);
+        password = spec.substr(p3 + 1);
+    }
+
+    auto finish = [&]() {
+        std::wstring report = L"POS Commander - проверка FTP\r\n";
+        report += L"сервер: " + host + L":" + std::to_wstring(port) + L", пользователь: " + user + L"\r\n";
+        report += L"каталог: " + base + L"\r\n\r\n";
+        for (auto& line : rep.lines) report += line + L"\r\n";
+        report += L"\r\nпровалено: " + std::to_wstring(rep.failed) + L" из " +
+                  std::to_wstring((int)rep.lines.size()) + L"\r\n";
+        Emit(report, TempPath(L"posc2-ftp-test.txt"));
+        RemoveTree(base);
+        return rep.failed;
+    };
+
+    if (!parsed || host.empty() || port <= 0 || port > 65535) {
+        rep.Check(false, L"FTP: параметры --ftp-test", L"ожидается host:port:user:pass");
+        return finish();
+    }
+
+    FtpSite site;
+    site.host = host;
+    site.port = port;
+    site.user = user;
+    site.password = password;
+    site.passive = true;
+
+    std::unique_ptr<FtpConnection> conn;
+    std::wstring err;
+    bool ok = FtpConnect(site, conn, err);
+    rep.Check(ok, L"FTP: подключение", err);
+    if (!ok) return finish();
+
+    std::vector<FtpEntryInfo> root;
+    ok = FtpList(*conn, L"/", root, err);
+    rep.Check(ok, L"FTP: список корня",
+              err.empty() ? (L"записей " + std::to_wstring(root.size())) : err);
+
+    auto findEntry = [](const std::vector<FtpEntryInfo>& list, const std::wstring& name) -> const FtpEntryInfo* {
+        for (auto& e : list) {
+            if (e.name == name) return &e;
+        }
+        return nullptr;
+    };
+
+    const std::wstring remoteDir = L"/posc2-тест-" + std::to_wstring(GetCurrentProcessId()) + L"-" +
+                                   std::to_wstring(GetTickCount64());
+    rep.Check(FtpCreateDir(*conn, remoteDir, err), L"FTP: создание каталога", err);
+
+    const std::wstring localFile = base + L"\\файл-тест.bin";
+    std::string payload(256 * 1024, '\0');
+    for (size_t i = 0; i < payload.size(); ++i) payload[i] = (char)((i * 37 + 11) & 0xFF);
+    rep.Check(WriteText(localFile, payload), L"FTP: локальный файл создан",
+              std::to_wstring(payload.size()) + L" байт");
+
+    const std::wstring remoteFile = remoteDir + L"/файл-тест.bin";
+    int uploadCalls = 0;
+    ULONGLONG uploadDone = 0;
+    auto uploadProgress = [&](ULONGLONG done, ULONGLONG total) {
+        ++uploadCalls;
+        uploadDone = done;
+        (void)total;
+        return true;
+    };
+    rep.Check(FtpUploadFile(*conn, localFile, remoteFile, uploadProgress, err), L"FTP: загрузка файла", err);
+    rep.Check(uploadCalls > 0 && uploadDone == payload.size(), L"FTP: прогресс загрузки",
+              std::to_wstring(uploadDone) + L" байт");
+
+    std::vector<FtpEntryInfo> remote;
+    rep.Check(FtpList(*conn, remoteDir, remote, err), L"FTP: список после загрузки", err);
+    const FtpEntryInfo* uploaded = findEntry(remote, L"файл-тест.bin");
+    rep.Check(uploaded && !uploaded->isDir && uploaded->size == payload.size(),
+              L"FTP: имя и размер на сервере",
+              uploaded ? (uploaded->name + L", " + std::to_wstring(uploaded->size)) : L"не найдено");
+
+    const std::wstring downloaded = base + L"\\скачано.bin";
+    int downloadCalls = 0;
+    auto downloadProgress = [&](ULONGLONG done, ULONGLONG total) {
+        ++downloadCalls;
+        (void)done;
+        (void)total;
+        return true;
+    };
+    rep.Check(FtpDownloadFile(*conn, remoteFile, downloaded, downloadProgress, err), L"FTP: скачивание", err);
+    const std::vector<char> got = ReadBytes(downloaded);
+    rep.Check(got.size() == payload.size() && std::equal(payload.begin(), payload.end(), got.begin()),
+              L"FTP: содержимое совпадает",
+              std::to_wstring(got.size()) + L" байт" + (downloadCalls > 0 ? L", прогресс был" : L", прогресса не было"));
+
+    const std::wstring renamed = remoteDir + L"/переименован.bin";
+    rep.Check(FtpRename(*conn, remoteFile, renamed, err), L"FTP: переименование", err);
+    remote.clear();
+    rep.Check(FtpList(*conn, remoteDir, remote, err), L"FTP: список после переименования", err);
+    rep.Check(findEntry(remote, L"переименован.bin") != nullptr && findEntry(remote, L"файл-тест.bin") == nullptr,
+              L"FTP: новое имя есть, старое исчезло");
+
+    rep.Check(FtpDeleteFile(*conn, renamed, err), L"FTP: удаление файла", err);
+    remote.clear();
+    rep.Check(FtpList(*conn, remoteDir, remote, err), L"FTP: список после удаления", err);
+    rep.Check(findEntry(remote, L"переименован.bin") == nullptr, L"FTP: файл исчез из списка");
+
+    rep.Check(FtpRemoveDir(*conn, remoteDir, err), L"FTP: удаление каталога", err);
+    root.clear();
+    rep.Check(FtpList(*conn, L"/", root, err), L"FTP: список корня после уборки", err);
+    const std::wstring remoteLeaf = FtpLeafName(FtpMakeUrl(site, remoteDir));
+    rep.Check(findEntry(root, remoteLeaf) == nullptr, L"FTP: временный каталог убран", remoteLeaf);
+
+    FtpSite badSite = site;
+    badSite.password += L"-неверный";
+    std::unique_ptr<FtpConnection> bad;
+    std::wstring badError;
+    const bool badConnected = FtpConnect(badSite, bad, badError);
+    rep.Check(!badConnected, L"FTP: неверный пароль отклонён");
+    rep.Check(badError.find(badSite.password) == std::wstring::npos,
+              L"FTP: пароль не попал в текст ошибки", badError);
+
+    FtpDisconnect(conn);
+    rep.Check(conn == nullptr, L"FTP: соединение закрыто");
+
+    return finish();
 }

@@ -8,10 +8,12 @@
 #include <shlwapi.h>
 
 #include "archive.h"
+#include "ftp.h"
 #include "settings.h"
 #include "dialogs.h"
 
 #include <algorithm>
+#include <memory>
 #include <thread>
 
 namespace {
@@ -271,7 +273,7 @@ void Panel::DrawDriveButton(DRAWITEMSTRUCT* dis) {
     RECT rc = dis->rcItem;
 
     const wchar_t current = path_.empty() ? 0 : path_[0];
-    const bool isCurrent = towupper(current) == towupper(driveLetters_[index]);
+    const bool isCurrent = !ftp_ && towupper(current) == towupper(driveLetters_[index]);
     const bool pressed = (dis->itemState & ODS_SELECTED) != 0;
 
     HBRUSH fill = CreateSolidBrush(isCurrent ? RGB(204, 232, 255)
@@ -384,6 +386,7 @@ void Panel::RebuildTabBar() {
 std::wstring Panel::TabTitle(int index) const {
     if (index < 0 || index >= (int)tabs_.size()) return L"";
     if (index < (int)tabNames_.size() && !tabNames_[index].empty()) return tabNames_[index];
+    if (IsFtpUrl(tabs_[index])) return FtpLeafName(tabs_[index]);
     return LeafOf(tabs_[index]);
 }
 
@@ -888,7 +891,12 @@ std::wstring Panel::DisplayPath() const {
 void Panel::UpdateVolume() {
     if (!volume_) return;
     std::wstring text;
-    if (inArchive_) {
+    if (ftp_) {
+        FtpSite site;
+        std::wstring remote;
+        text = L"FTP";
+        if (FtpParseUrl(path_, site, remote)) text += L" · " + site.host;
+    } else if (inArchive_) {
         text = L"архив";
     } else if (path_.rfind(L"\\\\", 0) == 0) {
         // Сетевой путь (\\сервер\ресурс): объём есть не всегда.
@@ -946,7 +954,7 @@ std::wstring Panel::PathPartTarget(int charIndex) const {
 
     int end = -1;
     for (int i = 0; i < (int)text.size(); ++i) {
-        if (text[i] != L'\\\\') continue;
+        if (text[i] != L'\\') continue;
         end = i;
         if (charIndex < end) break;
         end = -1;
@@ -955,7 +963,7 @@ std::wstring Panel::PathPartTarget(int charIndex) const {
     if (end <= 0) return L"";
 
     std::wstring target = text.substr(0, end);
-    if (target.size() == 2 && target[1] == L':') target += L'\\\\';
+    if (target.size() == 2 && target[1] == L':') target += L'\\';
     return target;
 }
 
@@ -967,7 +975,7 @@ int Panel::PathPartStart(int charIndex) const {
     int start = 0;
     int end = -1;
     for (int i = 0; i < (int)text.size(); ++i) {
-        if (text[i] != L'\\\\') continue;
+        if (text[i] != L'\\') continue;
         end = i;
         if (charIndex < end) break;
         start = i + 1;
@@ -978,6 +986,10 @@ int Panel::PathPartStart(int charIndex) const {
 
 // Наведение на компонент пути: запоминаем и через паузу открываем первый уровень.
 void Panel::SchedulePathHover(int charIndex) {
+    if (ftp_) {
+        HidePathHover();
+        return;
+    }
     if (charIndex < 0) {
         HidePathHover();
         return;
@@ -1709,8 +1721,103 @@ bool Panel::LoadArchiveListing(const std::wstring& focus) {
     return true;
 }
 
+bool Panel::LoadFtpListing(const std::wstring& url, const std::wstring& focus) {
+    lastError_.clear();
+
+    FtpSite site;
+    std::wstring remote;
+    if (!FtpParseUrl(url, site, remote)) {
+        lastError_ = L"Некорректный FTP-адрес:\n" + url;
+        return false;
+    }
+    const std::wstring normalized = FtpMakeUrl(site, remote);
+    if (!site.password.empty()) FtpRememberPassword(normalized, site.password);
+
+    // Заблокированная вкладка держит свой каталог и для FTP.
+    if (!navigatingHistory_ && TabLocked(tab_) && tab_ < (int)tabs_.size() &&
+        !SamePath(normalized, tabs_[tab_])) {
+        lastError_ = L"Вкладка заблокирована: " + tabs_[tab_];
+        return false;
+    }
+
+    if (!site.user.empty() && !FtpPasswordFor(normalized, site.password)) {
+        lastError_ = L"Нет пароля для " + site.user + L"@" + site.host + L".\n"
+                     L"Подключитесь через меню «Сеть» → «FTP: подключиться…».";
+        return false;
+    }
+
+    std::unique_ptr<FtpConnection> conn;
+    std::wstring error;
+    if (!FtpConnect(site, conn, error)) {
+        lastError_ = L"Не удалось открыть FTP-каталог:\n" + normalized + L"\n\n" + error;
+        return false;
+    }
+
+    std::vector<FtpEntryInfo> listing;
+    const bool listed = FtpList(*conn, remote, listing, error);
+    FtpDisconnect(conn);
+    if (!listed) {
+        lastError_ = L"Не удалось прочитать FTP-каталог:\n" + normalized + L"\n\n" + error;
+        return false;
+    }
+
+    std::vector<Entry> loaded;
+    if (remote != L"/") {
+        Entry up;
+        up.name = L"..";
+        up.isDir = true;
+        up.isUp = true;
+        up.icon = IconForEntry(up, L"");
+        loaded.push_back(std::move(up));
+    }
+    for (auto& item : listing) {
+        Entry e;
+        e.name = item.name;
+        e.isDir = item.isDir;
+        e.size = item.size;
+        e.ft = item.ft;
+        e.attr = item.attr;
+        e.icon = IconForEntry(e, L"");
+        loaded.push_back(std::move(e));
+    }
+
+    path_ = normalized;
+    ftp_ = true;
+    inArchive_ = false;
+    archiveFile_.clear();
+    archiveInner_.clear();
+    entries_ = std::move(loaded);
+    FilterByMask();
+
+    std::sort(entries_.begin(), entries_.end(),
+              [this](const Entry& a, const Entry& b) { return CmpEntry(a, b, sortColumn_, sortReverse_); });
+
+    ApplyEntries(focus, 0);
+
+    if (tab_ >= 0 && tab_ < (int)tabs_.size() && !TabLocked(tab_)) {
+        if (tabs_[tab_] != path_) {
+            tabs_[tab_] = path_;
+            Layout();
+        }
+    }
+
+    UpdateHeader();
+    UpdateStatus();
+    PushHistoryPoint();
+    LogDebug(L"FTP: " + path_ + L", записей " + std::to_wstring(entries_.size()));
+    return true;
+}
+
 bool Panel::Navigate(const std::wstring& dir, const std::wstring& focus, bool keepCursor) {
     lastError_.clear();
+
+    // FTP-URL: отдельный источник списка, обычные пути к нему не применимы.
+    if (IsFtpUrl(dir)) {
+        inArchive_ = false;
+        archiveFile_.clear();
+        archiveInner_.clear();
+        return LoadFtpListing(dir, focus);
+    }
 
     // Внутри архива: переход по его каталогам или выход наружу.
     if (inArchive_) {
@@ -1769,6 +1876,7 @@ bool Panel::Navigate(const std::wstring& dir, const std::wstring& focus, bool ke
 
     std::wstring previousPath = path_;
     path_ = target;
+    ftp_ = false;
     entries_ = std::move(loaded);
     FilterByMask();                        // маска действует и при смене каталога
 
@@ -1802,17 +1910,17 @@ bool Panel::Navigate(const std::wstring& dir, const std::wstring& focus, bool ke
              L" ms, apply=" + std::to_wstring(t3 - t2) + L" ms, entries=" + std::to_wstring(entries_.size()));
 
     // История навигации: обычный переход добавляет точку, переход по истории — нет.
-    if (!navigatingHistory_) {
-        if (histPos_ >= 0 && histPos_ < (int)history_.size() && history_[histPos_] == path_) {
-            // тот же каталог — точку не дублируем
-        } else {
-            history_.resize(histPos_ + 1);
-            history_.push_back(path_);
-            histPos_ = (int)history_.size() - 1;
-        }
-    }
+    PushHistoryPoint();
     (void)previousPath;
     return true;
+}
+
+void Panel::PushHistoryPoint() {
+    if (navigatingHistory_) return;
+    if (histPos_ >= 0 && histPos_ < (int)history_.size() && history_[histPos_] == path_) return;
+    history_.resize(histPos_ + 1);
+    history_.push_back(path_);
+    histPos_ = (int)history_.size() - 1;
 }
 
 // Быстрый поиск: первая запись, начинающаяся с набранных букв.
@@ -1912,6 +2020,13 @@ void Panel::Reload() {
 }
 
 bool Panel::GoUp() {
+    if (ftp_) {
+        const std::wstring root = FtpRootUrl(path_);
+        if (SamePath(root, path_)) return false;
+        const std::wstring leaf = FtpLeafName(path_);
+        return Navigate(FtpParentUrl(path_), leaf);
+    }
+
     if (inArchive_) {
         if (archiveInner_.empty()) {
             // Выход из архива в его каталог
@@ -1936,6 +2051,12 @@ bool Panel::GoUp() {
 }
 
 bool Panel::GoRoot() {
+    if (ftp_) {
+        const std::wstring root = FtpRootUrl(path_);
+        if (SamePath(root, path_)) return false;
+        return Navigate(root);
+    }
+
     std::wstring root = DriveRootOf(path_);
     if (SamePath(root, path_)) return false;
     return Navigate(root);
@@ -1979,7 +2100,8 @@ Entry* Panel::Cursor() {
 }
 
 std::wstring Panel::FullPathOf(const Entry& e) const {
-    if (e.isUp) return ParentPath(path_);
+    if (e.isUp) return ftp_ ? FtpParentUrl(path_) : ParentPath(path_);
+    if (ftp_) return FtpJoinUrl(path_, e.name);
     return JoinPath(path_, e.name);
 }
 
@@ -2175,7 +2297,7 @@ void Panel::FillDispInfo(NMLVDISPINFO* info) {
         wcsncpy_s(info->item.pszText, info->item.cchTextMax, text.c_str(), _TRUNCATE);
     }
     if (info->item.mask & LVIF_IMAGE) {
-        info->item.iImage = IconForEntry(e, path_);
+        info->item.iImage = IconForEntry(e, ftp_ ? L"" : path_);
     }
 }
 
@@ -2373,7 +2495,7 @@ std::wstring Panel::TreePathOf(HTREEITEM item) const {
 
 // Раскрываем дерево до текущего каталога панели.
 void Panel::SyncTreeToPath() {
-    if (!tree_ || !treeVisible_ || path_.empty()) return;
+    if (ftp_ || !tree_ || !treeVisible_ || path_.empty()) return;
 
     std::wstring current = path_;
     std::vector<std::wstring> chain;
@@ -2419,6 +2541,11 @@ void Panel::ToggleTree() {
 
 // Контекстное меню Проводника для текущей записи (IContextMenu оболочки).
 void Panel::ShowShellContextMenu(int screenX, int screenY) {
+    if (ftp_) {
+        MessageBoxW(GetParent(hwnd_), L"Контекстное меню Проводника для FTP недоступно.", L"FTP",
+                    MB_ICONINFORMATION | MB_OK);
+        return;
+    }
     Entry* e = Cursor();
     if (!e || !list_) return;
 
@@ -2462,6 +2589,10 @@ void Panel::ShowShellContextMenu(int screenX, int screenY) {
 
 // Размер каталога считаем в фоне: рекурсия по большому дереву иначе подвесила бы окно.
 void Panel::CalculateDirSize(int index) {
+    if (ftp_) {
+        MessageBoxW(GetParent(hwnd_), L"Размер каталога по FTP не считается.", L"FTP", MB_ICONINFORMATION | MB_OK);
+        return;
+    }
     if (index < 0 || index >= (int)entries_.size()) return;
     Entry& e = entries_[index];
     if (!e.isDir || e.isUp) return;
@@ -2518,6 +2649,11 @@ LRESULT CALLBACK Panel::PathEditProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
 
         case WM_LBUTTONDOWN: {
             if (!self) break;
+            if (self->InFtp()) {
+                // URL-путь не разбирается по компонентам: клик сразу включает правку.
+                self->EnterPathEdit();
+                break;
+            }
             if (self->PathEditing()) break;          // в правке работает обычное поведение поля
             const int x = GET_X_LPARAM(lParam);
             const int y = GET_Y_LPARAM(lParam);

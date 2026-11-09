@@ -84,6 +84,8 @@ public:
     bool InArchive() const { return inArchive_; }
     const std::wstring& ArchiveFile() const { return archiveFile_; }
     const std::wstring& ArchiveInner() const { return archiveInner_; }
+    // FTP: путь панели — ftp://user@host[:port]/каталог.
+    bool InFtp() const { return ftp_; }
     std::wstring DisplayPath() const;
     bool LoadArchiveListing(const std::wstring& focus);
 
@@ -250,6 +252,9 @@ private:
     bool inArchive_ = false;
     std::wstring archiveFile_;
     std::wstring archiveInner_;     // пусто = корень архива
+    bool ftp_ = false;              // текущий каталог — FTP
+    bool LoadFtpListing(const std::wstring& url, const std::wstring& focus);
+    void PushHistoryPoint();
     std::vector<std::wstring> history_;
     int histPos_ = -1;
     bool navigatingHistory_ = false;

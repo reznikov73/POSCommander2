@@ -2,6 +2,7 @@
 #pragma once
 
 #include "common.h"
+#include "ftp.h"
 
 // Модальный ввод строки. Возвращает false при отмене.
 // Диалог распаковки: каталог назначения и пароль (пусто — без пароля).
@@ -19,6 +20,19 @@ struct CopyMoveOptions {
 };
 
 bool CopyMoveBox(HWND owner, const std::wstring& title, const std::wstring& prompt, CopyMoveOptions& options);
+
+// Подключение к FTP: сохранённые сайты, адрес, порт, логин, пароль, пассивный режим.
+struct FtpConnectOptions {
+    FtpSite site;
+    bool saveSite = false;
+};
+
+bool FtpConnectBox(HWND owner, FtpConnectOptions& options, const std::vector<FtpSite>& sites);
+
+// Окно прогресса FTP-передачи. Одно на приложение; Update возвращает false при отмене.
+void FtpProgressOpen(HWND owner, const std::wstring& title);
+bool FtpProgressUpdate(const std::wstring& file, ULONGLONG done, ULONGLONG total);
+void FtpProgressClose();
 
 // Просмотр файла (F3) в отдельном окне.
 void ShowLister(HWND owner, const std::wstring& path);

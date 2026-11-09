@@ -77,6 +77,30 @@ void WriteFlags(const wchar_t* section, const wchar_t* prefix, const std::vector
     }
 }
 
+std::wstring FtpKey(int index, const wchar_t* field) {
+    return std::to_wstring(index) + L"." + field;
+}
+
+std::wstring ReadFtpStr(int index, const wchar_t* field, const wchar_t* fallback = L"") {
+    const std::wstring key = FtpKey(index, field);
+    return ReadStr(L"FTP", key.c_str(), fallback);
+}
+
+int ReadFtpInt(int index, const wchar_t* field, int fallback) {
+    const std::wstring key = FtpKey(index, field);
+    return ReadInt(L"FTP", key.c_str(), fallback);
+}
+
+void WriteFtpStr(int index, const wchar_t* field, const std::wstring& value) {
+    const std::wstring key = FtpKey(index, field);
+    WriteStr(L"FTP", key.c_str(), value);
+}
+
+void WriteFtpInt(int index, const wchar_t* field, int value) {
+    const std::wstring key = FtpKey(index, field);
+    WriteInt(L"FTP", key.c_str(), value);
+}
+
 }  // namespace
 
 std::wstring SettingsFilePath() {
@@ -154,6 +178,28 @@ void LoadSettings() {
     s.commandHistory = ReadTabs(L"CommandLine", L"Hist");
     s.leftMask = ReadStr(L"Left", L"Mask", L"*.*");
     s.rightMask = ReadStr(L"Right", L"Mask", L"*.*");
+
+    // Сохранённые FTP-сайты. Пароль в INI обфусцирован, в памяти — обычный.
+    s.ftpSites.clear();
+    int ftpCount = ReadInt(L"FTP", L"Count", 0);
+    if (ftpCount < 0) ftpCount = 0;
+    if (ftpCount > 64) ftpCount = 64;
+    for (int i = 0; i < ftpCount; ++i) {
+        FtpSite site;
+        site.name = ReadFtpStr(i, L"Name");
+        site.host = ReadFtpStr(i, L"Host");
+        site.port = ReadFtpInt(i, L"Port", 21);
+        site.user = ReadFtpStr(i, L"User");
+        site.password = FtpDeobfuscatePassword(ReadFtpStr(i, L"Pass"));
+        site.root = ReadFtpStr(i, L"Root", L"/");
+        site.passive = ReadFtpInt(i, L"Passive", 1) != 0;
+        if (site.port <= 0 || site.port > 65535) site.port = 21;
+        if (site.root.empty()) site.root = L"/";
+        if (site.root[0] != L'/') site.root = L"/" + site.root;
+        if (site.host.empty()) continue;
+        s.ftpSites.push_back(site);
+        FtpRememberPassword(FtpMakeUrl(site, site.root), site.password);
+    }
 }
 
 void SaveSettings() {
@@ -198,4 +244,17 @@ void SaveSettings() {
     WriteTabs(L"CommandLine", L"Hist", s.commandHistory);
     WriteStr(L"Left", L"Mask", s.leftMask);
     WriteStr(L"Right", L"Mask", s.rightMask);
+
+    // FTP-сайты: пароль обфусцирован, чтобы не читался глазами (это не шифрование).
+    WriteInt(L"FTP", L"Count", (int)s.ftpSites.size());
+    for (size_t i = 0; i < s.ftpSites.size(); ++i) {
+        const FtpSite& site = s.ftpSites[i];
+        WriteFtpStr((int)i, L"Name", site.name);
+        WriteFtpStr((int)i, L"Host", site.host);
+        WriteFtpInt((int)i, L"Port", site.port);
+        WriteFtpStr((int)i, L"User", site.user);
+        WriteFtpStr((int)i, L"Pass", FtpObfuscatePassword(site.password));
+        WriteFtpStr((int)i, L"Root", site.root.empty() ? L"/" : site.root);
+        WriteFtpInt((int)i, L"Passive", site.passive ? 1 : 0);
+    }
 }
