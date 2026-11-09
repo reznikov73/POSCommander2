@@ -30,7 +30,7 @@ struct Settings {
     std::wstring leftMask = L"*.*", rightMask = L"*.*";      // текущие маски панелей
     std::vector<std::wstring> commandHistory;                // история командной строки (до 64)
 
-    // Сохранённые FTP-сайты (пароль в памяти, в INI — обфусцированный).
+    // Сохранённые FTP-профили (пароль в памяти, в INI — обфусцированный).
     std::vector<FtpSite> ftpSites;
 };
 

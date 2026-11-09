@@ -179,7 +179,7 @@ void LoadSettings() {
     s.leftMask = ReadStr(L"Left", L"Mask", L"*.*");
     s.rightMask = ReadStr(L"Right", L"Mask", L"*.*");
 
-    // Сохранённые FTP-сайты. Пароль в INI обфусцирован, в памяти — обычный.
+    // Сохранённые FTP-профили. Пароль в INI обфусцирован, в памяти — обычный.
     s.ftpSites.clear();
     int ftpCount = ReadInt(L"FTP", L"Count", 0);
     if (ftpCount < 0) ftpCount = 0;
@@ -245,7 +245,7 @@ void SaveSettings() {
     WriteStr(L"Left", L"Mask", s.leftMask);
     WriteStr(L"Right", L"Mask", s.rightMask);
 
-    // FTP-сайты: пароль обфусцирован, чтобы не читался глазами (это не шифрование).
+    // FTP-профили: пароль обфусцирован, чтобы не читался глазами (это не шифрование).
     WriteInt(L"FTP", L"Count", (int)s.ftpSites.size());
     for (size_t i = 0; i < s.ftpSites.size(); ++i) {
         const FtpSite& site = s.ftpSites[i];

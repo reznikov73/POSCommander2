@@ -3271,7 +3271,7 @@ void App::FtpConnectDialog() {
     FtpConnectOptions opts;
     Panel* panel = ActivePanel();
 
-    // Если панель уже на FTP — предлагаем её сайт; иначе первый сохранённый.
+    // Если панель уже на FTP — предлагаем её профиль; иначе первый сохранённый.
     if (panel->InFtp()) {
         FtpSite site;
         std::wstring remote;

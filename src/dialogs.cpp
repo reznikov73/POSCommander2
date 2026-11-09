@@ -640,6 +640,11 @@ struct FtpCtx {
     const std::vector<FtpSite>* sites = nullptr;
 };
 
+std::wstring FtpProfileName(const FtpSite& site) {
+    if (!site.name.empty()) return site.name;
+    return site.user.empty() ? site.host : (site.user + L"@" + site.host);
+}
+
 void FtpFill(HWND dlg, const FtpSite& site) {
     SetDlgItemTextW(dlg, kIdFtpHost, site.host.c_str());
     wchar_t port[16]{};
@@ -648,7 +653,7 @@ void FtpFill(HWND dlg, const FtpSite& site) {
     SetDlgItemTextW(dlg, kIdFtpUser, site.user.c_str());
     SetDlgItemTextW(dlg, kIdFtpPass, site.password.c_str());
     CheckDlgButton(dlg, kIdFtpPassive, site.passive ? BST_CHECKED : BST_UNCHECKED);
-    const bool anon = site.user.empty();
+    const bool anon = site.user.empty() && !site.host.empty();
     CheckDlgButton(dlg, kIdFtpAnon, anon ? BST_CHECKED : BST_UNCHECKED);
     EnableWindow(GetDlgItem(dlg, kIdFtpUser), !anon);
     EnableWindow(GetDlgItem(dlg, kIdFtpPass), !anon);
@@ -659,10 +664,12 @@ bool FtpRead(HWND dlg, FtpSite& site, std::wstring& error) {
     wchar_t port[32]{};
     wchar_t user[512]{};
     wchar_t pass[512]{};
+    wchar_t profile[512]{};
     GetDlgItemTextW(dlg, kIdFtpHost, host, 1024);
     GetDlgItemTextW(dlg, kIdFtpPort, port, 32);
     GetDlgItemTextW(dlg, kIdFtpUser, user, 512);
     GetDlgItemTextW(dlg, kIdFtpPass, pass, 512);
+    GetDlgItemTextW(dlg, kIdFtpSite, profile, 512);
 
     FtpServerField field;
     if (!FtpParseServerField(host, field, error)) return false;
@@ -683,6 +690,8 @@ bool FtpRead(HWND dlg, FtpSite& site, std::wstring& error) {
         site.user = !field.user.empty() ? field.user : Trim(user);
         site.password = !field.password.empty() ? field.password : pass;
     }
+    site.name = Trim(profile);
+    if (site.name.empty()) site.name = site.user.empty() ? site.host : (site.user + L"@" + site.host);
     site.passive = IsDlgButtonChecked(dlg, kIdFtpPassive) == BST_CHECKED;
     if (field.hasRoot) site.root = field.root;
     return true;
@@ -710,7 +719,8 @@ INT_PTR CALLBACK FtpProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM lParam) {
                 SendDlgItemMessageW(dlg, kIdFtpSite, CB_SETCURSEL, 0, 0);
             } else {
                 FtpFill(dlg, ctx->options->site);
-                // Если это уже сохранённый сайт — подсветить его в списке.
+                // Если это уже сохранённый профиль — подсветить его в списке.
+                bool matched = false;
                 if (ctx->sites) {
                     for (size_t i = 0; i < ctx->sites->size(); ++i) {
                         const FtpSite& saved = (*ctx->sites)[i];
@@ -718,9 +728,14 @@ INT_PTR CALLBACK FtpProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM lParam) {
                             saved.port == ctx->options->site.port &&
                             SamePath(saved.user, ctx->options->site.user)) {
                             SendDlgItemMessageW(dlg, kIdFtpSite, CB_SETCURSEL, i, 0);
+                            matched = true;
                             break;
                         }
                     }
+                }
+                if (!matched) {
+                    const std::wstring profile = FtpProfileName(ctx->options->site);
+                    if (!profile.empty()) SetDlgItemTextW(dlg, kIdFtpSite, profile.c_str());
                 }
             }
             SetFocus(GetDlgItem(dlg, kIdFtpHost));
@@ -785,9 +800,9 @@ INT_PTR CALLBACK FtpProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM lParam) {
 
 bool FtpConnectBox(HWND owner, FtpConnectOptions& options, const std::vector<FtpSite>& sites) {
     DlgBuilder builder(L"FTP: подключение", 380, 176);
-    builder.Add(L"Сохранённый сайт:", 0, kClsStatic, WS_CHILD | WS_VISIBLE | SS_LEFT, 10, 8, 120, 10);
+    builder.Add(L"Профиль:", 0, kClsStatic, WS_CHILD | WS_VISIBLE | SS_LEFT, 10, 8, 120, 10);
     builder.Add(L"", kIdFtpSite, 0x0085,
-                WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST, 10, 20, 360, 90);
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWN | CBS_AUTOHSCROLL, 10, 20, 360, 90);
     builder.Add(L"Сервер:", 0, kClsStatic, WS_CHILD | WS_VISIBLE | SS_LEFT, 10, 44, 50, 10);
     builder.Add(L"", kIdFtpHost, kClsEdit,
                 WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL, 62, 42, 210, 14);
@@ -804,7 +819,7 @@ bool FtpConnectBox(HWND owner, FtpConnectOptions& options, const std::vector<Ftp
                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX, 10, 88, 150, 12);
     builder.Add(L"Анонимно", kIdFtpAnon, kClsButton,
                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX, 170, 88, 100, 12);
-    builder.Add(L"Сохранить сайт", kIdFtpSave, kClsButton,
+    builder.Add(L"Сохранить профиль", kIdFtpSave, kClsButton,
                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX, 10, 106, 150, 12);
     builder.Add(L"Пароль пишется в INI в обфусцированном виде.", 0, kClsStatic,
                 WS_CHILD | WS_VISIBLE | SS_LEFT, 10, 126, 360, 10);

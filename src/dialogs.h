@@ -21,7 +21,7 @@ struct CopyMoveOptions {
 
 bool CopyMoveBox(HWND owner, const std::wstring& title, const std::wstring& prompt, CopyMoveOptions& options);
 
-// Подключение к FTP: сохранённые сайты, адрес, порт, логин, пароль, пассивный режим.
+// Подключение к FTP: сохранённые профили, адрес, порт, логин, пароль, пассивный режим.
 struct FtpConnectOptions {
     FtpSite site;
     bool saveSite = false;

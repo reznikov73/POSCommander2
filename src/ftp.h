@@ -9,7 +9,7 @@
 
 // Параметры подключения. Пароль в URL не попадает.
 struct FtpSite {
-    std::wstring name;                 // подпись сохранённого сайта
+    std::wstring name;                 // подпись профиля
     std::wstring host;
     int port = 21;
     std::wstring user;
