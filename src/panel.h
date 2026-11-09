@@ -4,6 +4,7 @@
 #include "common.h"
 
 #include <atomic>
+#include <mutex>
 #include "util.h"
 
 class Panel {
@@ -76,6 +77,8 @@ public:
     // Дерево каталогов (Ctrl+F8) слева от списка.
     // Размер каталога под курсором считается в фоне.
     void CalculateDirSize(int index);
+    // Запускает подсчёт для отмеченных папок (не более 4 одновременно).
+    void StartMarkedDirSizes();
 
     void ToggleTree();
     bool TreeVisible() const { return treeVisible_; }
@@ -235,6 +238,14 @@ private:
     HWND upBtn_ = nullptr;     // «..» — на уровень вверх
     std::atomic<ULONGLONG> dirSizeResult_{0};
     int dirSizeIndex_ = -1;
+    struct DirSizeResult {
+        std::wstring name;
+        std::wstring target;
+        ULONGLONG size = 0;
+    };
+    std::mutex dirSizeMutex_;
+    std::map<int, DirSizeResult> dirSizeFinished_;
+    int dirSizeActive_ = 0;
     HWND tree_ = nullptr;
     bool treeVisible_ = false;
     std::vector<std::wstring> treePaths_;   // lParam узла = индекс в этом векторе

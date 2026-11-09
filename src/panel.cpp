@@ -2148,6 +2148,7 @@ void Panel::ToggleMarkCursor() {
     RECT rc{};
     if (ListView_GetItemRect(list_, index, &rc, LVIR_BOUNDS)) InvalidateRect(list_, &rc, FALSE);
     UpdateStatus();
+    StartMarkedDirSizes();
 
     // Как в TC: после отметки курсор переходит на следующую строку.
     if (index + 1 < (int)entries_.size()) {
@@ -2169,6 +2170,7 @@ void Panel::MarkRange(int from, int to) {
     }
     InvalidateRect(list_, nullptr, FALSE);
     UpdateStatus();
+    StartMarkedDirSizes();
 }
 
 // Переключить отметку одной записи (Ctrl+клик).
@@ -2180,6 +2182,7 @@ void Panel::ToggleMarkAt(int index) {
     RECT rc{};
     if (ListView_GetItemRect(list_, index, &rc, LVIR_BOUNDS)) InvalidateRect(list_, &rc, FALSE);
     UpdateStatus();
+    StartMarkedDirSizes();
 }
 
 void Panel::MarkAll(bool mark, bool includingDirs) {
@@ -2190,6 +2193,7 @@ void Panel::MarkAll(bool mark, bool includingDirs) {
     }
     InvalidateRect(list_, nullptr, FALSE);
     UpdateStatus();
+    StartMarkedDirSizes();
 }
 
 void Panel::InvertMarks() {
@@ -2199,6 +2203,7 @@ void Panel::InvertMarks() {
     }
     InvalidateRect(list_, nullptr, FALSE);
     UpdateStatus();
+    StartMarkedDirSizes();
 }
 
 // Отметка по маске: «*.txt» или несколько через пробел/запятую.
@@ -2221,6 +2226,7 @@ size_t Panel::MarkByMask(const std::wstring& maskText, int mode) {
     }
     InvalidateRect(list_, nullptr, FALSE);
     UpdateStatus();
+    StartMarkedDirSizes();
     return hit;
 }
 
@@ -2256,22 +2262,29 @@ void Panel::UpdateStatus() {
     HFONT f = (HFONT)SendMessageW(status_, WM_GETFONT, 0, 0);
     SetWindowTextW(status_, CompactPathLeft(head, rc.right - rc.left - Scale(8, dpi_), f).c_str());
 
-    // Справа — сводка по отметкам, как в TC.
+    // Справа — сводка по отметкам, как в TC. Папки учитываем после подсчёта их размера.
     if (!statusInfo_) return;
     size_t marked = 0;
     ULONGLONG markedSize = 0;
+    int pendingDirs = 0;
     for (auto& e : entries_) {
         if (e.isUp) continue;
-        if (e.marked) {
-            marked++;
-            if (!e.isDir) markedSize += e.size;
+        if (!e.marked) continue;
+        ++marked;
+        if (e.isDir) {
+            if (ftp_ || inArchive_) continue;       // размер таких каталогов не считаем
+            if (e.dirSizeKnown) markedSize += e.dirSize;
+            else ++pendingDirs;
+        } else {
+            markedSize += e.size;
         }
     }
-    wchar_t info[96]{};
+    std::wstring info;
     if (marked) {
-        swprintf(info, 96, L"Отмечено: %zu · %ls", marked, FmtSize(markedSize).c_str());
+        info = L"Отмечено: " + std::to_wstring(marked) + L" · " + FmtSize(markedSize);
+        if (pendingDirs > 0) info += L" + …";
     }
-    SetWindowTextW(statusInfo_, info);
+    SetWindowTextW(statusInfo_, info.c_str());
 }
 
 void Panel::FillDispInfo(NMLVDISPINFO* info) {
@@ -2597,26 +2610,43 @@ void Panel::ShowShellContextMenu(int screenX, int screenY) {
 
 // Размер каталога считаем в фоне: рекурсия по большому дереву иначе подвесила бы окно.
 void Panel::CalculateDirSize(int index) {
-    if (ftp_) {
-        MessageBoxW(GetParent(hwnd_), L"Размер каталога по FTP не считается.", L"FTP", MB_ICONINFORMATION | MB_OK);
+    if (ftp_ || inArchive_) {
+        MessageBoxW(GetParent(hwnd_), L"Размер каталога здесь не считается.", L"Размер", MB_ICONINFORMATION | MB_OK);
         return;
     }
     if (index < 0 || index >= (int)entries_.size()) return;
     Entry& e = entries_[index];
-    if (!e.isDir || e.isUp) return;
+    if (!e.isDir || e.isUp || e.dirSizeKnown || e.dirSizeBusy) return;
 
     const std::wstring target = JoinPath(path_, e.name);
+    const std::wstring name = e.name;
     e.dirSizeBusy = true;
+    ++dirSizeActive_;
     InvalidateRect(list_, nullptr, FALSE);
 
     const int item = index;
     HWND self = hwnd_;
-    std::thread([this, target, item, self]() {
+    std::thread([this, target, name, item, self]() {
         const ULONGLONG size = DirectorySize(target);
-        dirSizeResult_.store(size);
-        dirSizeIndex_ = item;
-        PostMessageW(self, WM_APP + 500, 0, 0);
+        {
+            std::lock_guard<std::mutex> lock(dirSizeMutex_);
+            dirSizeFinished_[item] = DirSizeResult{name, target, size};
+        }
+        PostMessageW(self, WM_APP + 500, (WPARAM)item, 0);
     }).detach();
+}
+
+// Отмеченные папки считаем в фоне, но не больше четырёх одновременно:
+// иначе Ctrl+A на каталоге с сотнями папок поднял бы сотни потоков.
+void Panel::StartMarkedDirSizes() {
+    if (ftp_ || inArchive_) return;
+    const int kMaxActive = 4;
+    for (int i = 0; i < (int)entries_.size() && dirSizeActive_ < kMaxActive; ++i) {
+        Entry& e = entries_[i];
+        if (e.isUp || !e.isDir || !e.marked) continue;
+        if (e.dirSizeKnown || e.dirSizeBusy) continue;
+        CalculateDirSize(i);
+    }
 }
 
 // Клик по списку: запоминаем, был ли зажат Shift/Ctrl — по ним отмечаем диапазон или одну запись.
@@ -2847,16 +2877,50 @@ LRESULT Panel::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_APP + 500: {
-            const int index = dirSizeIndex_;
-            if (index >= 0 && index < (int)entries_.size()) {
-                Entry& e = entries_[index];
-                e.dirSizeBusy = false;
-                e.dirSizeKnown = true;
-                e.dirSize = dirSizeResult_.load();
-                LogDebug(L"dirsize '" + e.name + L"' = " + std::to_wstring(e.dirSize) + L" байт");
-                if (list_) ListView_RedrawItems(list_, index, index);
-                UpdateStatus();
+            const int index = (int)wParam;
+            DirSizeResult result;
+            bool have = false;
+            {
+                std::lock_guard<std::mutex> lock(dirSizeMutex_);
+                auto it = dirSizeFinished_.find(index);
+                if (it != dirSizeFinished_.end()) {
+                    result = it->second;
+                    dirSizeFinished_.erase(it);
+                    have = true;
+                }
             }
+            if (dirSizeActive_ > 0) --dirSizeActive_;
+
+            if (have) {
+                int targetIndex = -1;
+                if (index >= 0 && index < (int)entries_.size()) {
+                    const Entry& at = entries_[index];
+                    if (SamePath(at.name, result.name) && SamePath(result.target, JoinPath(path_, at.name))) {
+                        targetIndex = index;
+                    }
+                }
+                // Сортировка могла переставить строки — ищем папку по имени и полному пути.
+                if (targetIndex < 0) {
+                    for (int i = 0; i < (int)entries_.size(); ++i) {
+                        const Entry& candidate = entries_[i];
+                        if (SamePath(candidate.name, result.name) &&
+                            SamePath(result.target, JoinPath(path_, candidate.name))) {
+                            targetIndex = i;
+                            break;
+                        }
+                    }
+                }
+                if (targetIndex >= 0) {
+                    Entry& e = entries_[targetIndex];
+                    e.dirSizeBusy = false;
+                    e.dirSizeKnown = true;
+                    e.dirSize = result.size;
+                    LogDebug(L"dirsize '" + e.name + L"' = " + std::to_wstring(e.dirSize) + L" байт");
+                    if (list_) ListView_RedrawItems(list_, targetIndex, targetIndex);
+                    UpdateStatus();
+                }
+            }
+            StartMarkedDirSizes();
             return 0;
         }
 
