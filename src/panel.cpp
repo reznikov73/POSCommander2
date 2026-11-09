@@ -788,6 +788,12 @@ void Panel::SetActive(bool active) {
     if (active_ == active) return;
     active_ = active;
     UpdateHeader();
+    // Курсор: на активной панели — синяя заливка, на неактивной — пунктирная рамка.
+    // Смена LVIS_SELECTED сама перерисовывает строку, отдельная инвалидация не нужна.
+    const int index = CursorIndex();
+    if (index >= 0) {
+        ListView_SetItemState(list_, index, active ? LVIS_SELECTED : 0, LVIS_SELECTED);
+    }
 }
 
 // Строка под панелью дисков: сколько свободно на текущем томе.
@@ -1693,7 +1699,10 @@ void Panel::SetCursorIndex(int index) {
     if (!list_) return;
     if (index < 0 || index >= (int)entries_.size()) index = 0;
     ListView_SetItemState(list_, -1, 0, LVIS_SELECTED | LVIS_FOCUSED);
-    ListView_SetItemState(list_, index, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+    // Заливка строки курсора (LVIS_SELECTED) — только на активной панели;
+    // на неактивной курсор рисуем пунктирной рамкой (DrawCursorFrame).
+    ListView_SetItemState(list_, index, active_ ? (LVIS_SELECTED | LVIS_FOCUSED) : LVIS_FOCUSED,
+                          LVIS_SELECTED | LVIS_FOCUSED);
     ListView_EnsureVisible(list_, index, FALSE);
 }
 
@@ -1960,6 +1969,19 @@ void Panel::DrawRow(NMLVCUSTOMDRAW* cd) {
     }
 }
 
+// Пунктирная рамка вокруг строки курсора неактивной панели — как в TC
+// (вместо серой заливки невыделенного списка).
+void Panel::DrawCursorFrame(NMLVCUSTOMDRAW* cd) {
+    if (active_) return;
+    const int index = (int)cd->nmcd.dwItemSpec;
+    if (index < 0 || index >= (int)entries_.size()) return;
+    if (!(ListView_GetItemState(list_, index, LVIS_FOCUSED) & LVIS_FOCUSED)) return;
+    RECT rc{};
+    if (ListView_GetItemRect(list_, index, &rc, LVIR_BOUNDS)) {
+        DrawFocusRect(cd->nmcd.hdc, &rc);
+    }
+}
+
 // ---------- дерево каталогов ----------
 
 void Panel::CreateTree() {
@@ -2161,6 +2183,12 @@ LRESULT CALLBACK Panel::ListProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
         self->clickShift_ = (wParam & MK_SHIFT) != 0;
         self->clickCtrl_ = (wParam & MK_CONTROL) != 0;
     }
+    // Фокус пришёл списку неактивной панели (клик мышью) — активируем её,
+    // как в TC. Активацию согласовываем через главное окно (WM_APP+303),
+    // чтобы снялась активность другой панели.
+    if (self && msg == WM_SETFOCUS && !self->active_) {
+        PostMessageW(GetParent(self->hwnd_), WM_APP + 303, (WPARAM)self->side_, 0);
+    }
     return DefSubclassProc(hwnd, msg, wParam, lParam);
 }
 
@@ -2170,7 +2198,11 @@ LRESULT CALLBACK Panel::PathEditProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
     switch (msg) {
         case WM_SETFOCUS:
             // Важно: не возвращаем 0, иначе поле не получит фокус по-настоящему и не покажет каретку.
-            if (self) self->SetActive(true);
+            // Активацию панели делаем через главное окно (WM_APP+303): прямой SetActive(true)
+            // оставлял бы вторую панель тоже «активной» (заголовок и курсор).
+            if (self && !self->active_) {
+                PostMessageW(GetParent(self->hwnd_), WM_APP + 303, (WPARAM)self->side_, 0);
+            }
             break;
 
         case WM_LBUTTONDOWN: {
@@ -2525,6 +2557,8 @@ LRESULT Panel::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     if (cd->nmcd.dwDrawStage == CDDS_ITEMPOSTPAINT) {
                         // Имя в первой колонке ListView рисует своим цветом, поэтому перерисовываем его сами.
                         DrawRowName(cd);
+                        // Неактивная панель: пунктирная рамка вокруг строки курсора.
+                        DrawCursorFrame(cd);
                         return CDRF_DODEFAULT;
                     }
                     return CDRF_DODEFAULT;

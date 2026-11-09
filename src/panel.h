@@ -195,6 +195,7 @@ private:
 
     void DrawRowName(NMLVCUSTOMDRAW* cd);
     void DrawRow(NMLVCUSTOMDRAW* cd);
+    void DrawCursorFrame(NMLVCUSTOMDRAW* cd);
     void FillDispInfo(NMLVDISPINFO* info);
 
     int side_ = 0;

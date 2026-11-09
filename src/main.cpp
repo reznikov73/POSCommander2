@@ -2248,6 +2248,12 @@ LRESULT App::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             if (quickView_ && (int)wParam == activeSide_) RefreshQuickView();
             return 0;
 
+        case WM_APP + 303:
+            // Панель просит сделать её активной: фокус пришёл в её список (клик мышью)
+            // или поле пути. Синхронно снимаем активность с другой панели.
+            if ((int)wParam != activeSide_) SetActivePanel((int)wParam);
+            return 0;
+
         case WM_APP + 401:
             RunNextJob();
             return 0;
