@@ -838,10 +838,12 @@ void Panel::SetActive(bool active) {
     active_ = active;
     UpdateHeader();
     // Курсор: на активной панели — синяя заливка, на неактивной — пунктирная рамка.
-    // Смена LVIS_SELECTED сама перерисовывает строку, отдельная инвалидация не нужна.
+    // Смена LVIS_SELECTED не всегда перерисовывает строку в списке без фокуса —
+    // перерисовываем явно, чтобы заливка/рамка появлялись сразу.
     const int index = CursorIndex();
     if (index >= 0) {
         ListView_SetItemState(list_, index, active ? LVIS_SELECTED : 0, LVIS_SELECTED);
+        ListView_RedrawItems(list_, index, index);
     }
 }
 
@@ -1917,11 +1919,18 @@ int Panel::CursorIndex() const {
 void Panel::SetCursorIndex(int index) {
     if (!list_) return;
     if (index < 0 || index >= (int)entries_.size()) index = 0;
-    ListView_SetItemState(list_, -1, 0, LVIS_SELECTED | LVIS_FOCUSED);
+    const int old = CursorIndex();
     // Заливка строки курсора (LVIS_SELECTED) — только на активной панели;
     // на неактивной курсор рисуем пунктирной рамкой (DrawCursorFrame).
+    ListView_SetItemState(list_, -1, 0, LVIS_SELECTED | LVIS_FOCUSED);
     ListView_SetItemState(list_, index, active_ ? (LVIS_SELECTED | LVIS_FOCUSED) : LVIS_FOCUSED,
                           LVIS_SELECTED | LVIS_FOCUSED);
+    // Список без фокуса не всегда перерисовывает строки при смене LVIS_FOCUSED:
+    // рамка осталась бы на старой строке, на новой не появилась бы. Перерисовываем явно.
+    if (!active_) {
+        if (old >= 0 && old != index) ListView_RedrawItems(list_, old, old);
+        ListView_RedrawItems(list_, index, index);
+    }
     ListView_EnsureVisible(list_, index, FALSE);
 }
 
