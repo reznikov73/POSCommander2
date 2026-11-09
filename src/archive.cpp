@@ -363,6 +363,278 @@ bool ListArchive(const std::wstring& archive, std::vector<ArchiveEntry>& out) {
     return true;
 }
 
+namespace {
+
+// ---------- окно прогресса распаковки ----------
+const wchar_t* kUnpackClass = L"POSUnpackProgress2";
+const int kUnpTextId = 70;
+const int kUnpPercentId = 71;
+const int kUnpBarId = 72;
+const int kUnpCancelId = 73;
+
+struct UnpackProgress {
+    HWND hwnd = nullptr;
+    HWND text = nullptr;
+    HWND percent = nullptr;
+    HWND bar = nullptr;
+    HFONT font = nullptr;
+    HWND owner = nullptr;
+    bool ownerDisabled = false;
+    bool cancelled = false;
+    int value = -1;
+};
+
+UnpackProgress g_unp;
+
+void UnpLayout(HWND hwnd) {
+    RECT rc{};
+    GetClientRect(hwnd, &rc);
+    const int pad = 12, lineH = 20, barH = 18, btnW = 100, btnH = 26;
+    MoveWindow(g_unp.text, pad, pad, rc.right - 2 * pad, lineH, TRUE);
+    MoveWindow(g_unp.percent, pad, pad + lineH + 6, rc.right - 2 * pad, lineH, TRUE);
+    MoveWindow(g_unp.bar, pad, pad + 2 * lineH + 14, rc.right - 2 * pad, barH, TRUE);
+    MoveWindow(GetDlgItem(hwnd, kUnpCancelId), rc.right - pad - btnW, rc.bottom - pad - btnH, btnW, btnH, TRUE);
+}
+
+LRESULT CALLBACK UnpProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    switch (msg) {
+        case WM_CREATE: {
+            g_unp.hwnd = hwnd;
+            g_unp.text = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_LEFT | SS_ENDELLIPSIS,
+                                         0, 0, 10, 10, hwnd, (HMENU)kUnpTextId, nullptr, nullptr);
+            g_unp.percent = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_LEFT,
+                                            0, 0, 10, 10, hwnd, (HMENU)kUnpPercentId, nullptr, nullptr);
+            g_unp.bar = CreateWindowExW(0, PROGRESS_CLASSW, nullptr, WS_CHILD | WS_VISIBLE | PBS_SMOOTH,
+                                        0, 0, 10, 10, hwnd, (HMENU)kUnpBarId, nullptr, nullptr);
+            HWND cancel = CreateWindowExW(0, L"BUTTON", L"Отмена", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON | WS_TABSTOP,
+                                          0, 0, 10, 10, hwnd, (HMENU)kUnpCancelId, nullptr, nullptr);
+            g_unp.font = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+            const HWND kids[] = {g_unp.text, g_unp.percent, g_unp.bar, cancel};
+            for (HWND k : kids) SendMessageW(k, WM_SETFONT, (WPARAM)g_unp.font, TRUE);
+            SendMessageW(g_unp.bar, PBM_SETRANGE32, 0, 100);
+            UnpLayout(hwnd);
+            return 0;
+        }
+        case WM_SIZE:
+            UnpLayout(hwnd);
+            return 0;
+        case WM_COMMAND:
+            if (LOWORD(wp) == kUnpCancelId) {
+                g_unp.cancelled = true;
+                EnableWindow(GetDlgItem(hwnd, kUnpCancelId), FALSE);
+                SetWindowTextW(g_unp.percent, L"Отмена…");
+                return 0;
+            }
+            break;
+        case WM_CLOSE:              // крестик = отмена, окно закрывает код распаковки
+            g_unp.cancelled = true;
+            return 0;
+        default:
+            break;
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+void UnpShow(HWND owner, const std::wstring& archiveName) {
+    static bool registered = false;
+    if (!registered) {
+        WNDCLASSEXW wc{};
+        wc.cbSize = sizeof(wc);
+        wc.lpfnWndProc = UnpProc;
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+        wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+        wc.lpszClassName = kUnpackClass;
+        RegisterClassExW(&wc);
+        registered = true;
+    }
+
+    g_unp.cancelled = false;
+    g_unp.value = -1;
+    g_unp.owner = owner;
+
+    const int w = 460, h = 160;
+    RECT orc{};
+    GetWindowRect(owner, &orc);
+    const int x = orc.left + ((orc.right - orc.left) - w) / 2;
+    const int y = orc.top + ((orc.bottom - orc.top) - h) / 2;
+
+    HWND hwnd = CreateWindowExW(WS_EX_DLGMODALFRAME, kUnpackClass, L"Распаковка",
+                                WS_POPUP | WS_CAPTION | WS_SYSMENU, x, y, w, h,
+                                owner, nullptr, GetModuleHandleW(nullptr), nullptr);
+    if (!hwnd) return;
+    SetWindowTextW(g_unp.text, archiveName.c_str());
+    SetWindowTextW(g_unp.percent, L"0%");
+    EnableWindow(owner, FALSE);
+    g_unp.ownerDisabled = true;
+    ShowWindow(hwnd, SW_SHOW);
+    UpdateWindow(hwnd);
+    LogDebug(L"unpack: окно прогресса создано hwnd=" + std::to_wstring((unsigned long long)(uintptr_t)hwnd));
+}
+
+void UnpSetProgress(int percent) {
+    if (!g_unp.hwnd || percent == g_unp.value) return;
+    g_unp.value = percent;
+    SendMessageW(g_unp.bar, PBM_SETPOS, (WPARAM)percent, 0);
+    wchar_t buf[32]{};
+    swprintf(buf, 32, L"%d%%", percent);
+    SetWindowTextW(g_unp.percent, buf);
+}
+
+// «… 45% 12 - file.txt» → 45; заодно запоминаем последнюю строку для отчёта.
+void UnpParse(const std::string& chunk, std::wstring& status) {
+    if (chunk.empty()) return;
+    size_t start = 0;
+    while (start < chunk.size()) {
+        const size_t end = chunk.find_first_of("\r\n", start);
+        const std::string piece = chunk.substr(start, end == std::string::npos ? std::string::npos : end - start);
+        start = (end == std::string::npos) ? chunk.size() : end + 1;
+        if (piece.empty()) continue;
+
+        const size_t pct = piece.find('%');
+        if (pct != std::string::npos) {
+            size_t i = pct;
+            while (i > 0 && (piece[i - 1] == ' ')) --i;
+            size_t j = i;
+            while (j > 0 && piece[j - 1] >= '0' && piece[j - 1] <= '9') --j;
+            if (j < i) {
+                const int value = atoi(piece.substr(j, i - j).c_str());
+                UnpSetProgress(value < 0 ? 0 : (value > 100 ? 100 : value));
+            }
+        }
+        if (!status.empty() || pct != std::string::npos) {
+            // последняя содержательная строка — её покажем при ошибке
+        }
+    }
+    // хвост строки после последнего \r\n
+    const size_t nl = chunk.find_last_of("\r\n");
+    if (nl != std::string::npos && nl + 1 < chunk.size()) status = L"";
+}
+
+void UnpHide() {
+    LogDebug(L"unpack: окно прогресса закрывается, есть=" + std::to_wstring(g_unp.hwnd ? 1 : 0));
+    if (!g_unp.hwnd) return;
+    HWND hwnd = g_unp.hwnd;
+    g_unp.hwnd = nullptr;
+    DestroyWindow(hwnd);
+    if (g_unp.ownerDisabled && g_unp.owner) {
+        EnableWindow(g_unp.owner, TRUE);
+        SetActiveWindow(g_unp.owner);
+    }
+    g_unp.ownerDisabled = false;
+}
+
+void UnpPump() {
+    MSG msg;
+    while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+        if (g_unp.hwnd && IsDialogMessageW(g_unp.hwnd, &msg)) continue;
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+}
+
+}  // namespace
+
+bool ExtractArchiveWithProgress(HWND owner, const std::wstring& archive,
+                                const std::wstring& target, std::wstring& error) {
+    const std::wstring exe = Find7z();
+    if (exe.empty()) {
+        error = L"7z.exe не найден. Установите 7-Zip.";
+        return false;
+    }
+    CreateDirectoryW(target.c_str(), nullptr);
+
+    SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, TRUE};
+    HANDLE readPipe = nullptr, writePipe = nullptr;
+    if (!CreatePipe(&readPipe, &writePipe, &sa, 0)) {
+        error = L"Не удалось создать канал для вывода 7z.";
+        return false;
+    }
+    SetHandleInformation(readPipe, HANDLE_FLAG_INHERIT, 0);
+
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE;
+    si.hStdOutput = writePipe;
+    si.hStdError = writePipe;
+
+    std::wstring cmd = QuoteArg(exe) + L" x -y -bsp1 -bso1 -sccUTF-8 " +
+                       QuoteArg(archive) + L" -o" + QuoteArg(target);
+    PROCESS_INFORMATION pi{};
+    std::wstring mutableCmd = cmd;
+    if (!CreateProcessW(nullptr, mutableCmd.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+        CloseHandle(readPipe);
+        CloseHandle(writePipe);
+        error = L"Не удалось запустить 7z.exe";
+        return false;
+    }
+    CloseHandle(writePipe);
+
+    std::wstring archiveName = archive;
+    const size_t slash = archiveName.find_last_of(L'\\');
+    if (slash != std::wstring::npos) archiveName = archiveName.substr(slash + 1);
+
+    // Окно показываем не сразу: мелкий архив распаковывается за десятки мс и окно
+    // только мигало бы. Как в TC — прогресс появляется, если работа затянулась.
+    const ULONGLONG started = GetTickCount64();
+    bool windowShown = false;
+
+    std::string output;
+    std::wstring status;
+    char buffer[4096];
+    bool cancelled = false;
+    for (;;) {
+        DWORD available = 0;
+        if (PeekNamedPipe(readPipe, nullptr, 0, nullptr, &available, nullptr) && available > 0) {
+            DWORD got = 0;
+            const DWORD want = available < sizeof(buffer) ? available : (DWORD)sizeof(buffer);
+            if (ReadFile(readPipe, buffer, want, &got, nullptr) && got > 0) {
+                output.append(buffer, got);
+                if (output.size() > 8192) output.erase(0, output.size() - 8192);
+                UnpParse(std::string(buffer, got), status);
+            }
+        }
+
+        if (!windowShown && GetTickCount64() - started > 250) {
+            UnpShow(owner, archiveName);
+            windowShown = (g_unp.hwnd != nullptr);
+        }
+
+        UnpPump();
+
+        if (g_unp.cancelled) {
+            cancelled = true;
+            TerminateProcess(pi.hProcess, 1);
+        }
+        if (WaitForSingleObject(pi.hProcess, 30) == WAIT_OBJECT_0) {
+            // дочитать остаток канала
+            DWORD got = 0;
+            while (ReadFile(readPipe, buffer, sizeof(buffer), &got, nullptr) && got > 0) {
+                output.append(buffer, got);
+            }
+            break;
+        }
+    }
+
+    DWORD code = 0;
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(readPipe);
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+    if (windowShown) UnpHide();
+
+    if (cancelled) {
+        error = L"Распаковка отменена.";
+        return false;
+    }
+    if (code != 0) {
+        error = L"7z завершился с кодом " + std::to_wstring(code) + L".\\n\\n" + Utf8ToWide(output);
+        return false;
+    }
+    return true;
+}
+
 bool ExtractFromArchive(const std::wstring& archive, const std::vector<std::wstring>& innerPaths,
                         const std::wstring& target, std::wstring& error) {
     const std::wstring exe = Find7z();

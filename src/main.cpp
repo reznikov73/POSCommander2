@@ -191,6 +191,7 @@ private:
     void ShowDrivesMenu(int side);
     void AddBookmark();
     void PackSelection();
+    void DoUnpack();
     void BatchRename();
     void QueueCopyMove(const std::vector<std::wstring>& items, const std::wstring& target, bool move,
                        bool overwrite = false);
@@ -1530,6 +1531,64 @@ void App::DropOnPanel(int fromSide, int toSide) {
 }
 
 // Упаковка выделенного в архив: имя и формат задаются в диалоге.
+// Распаковка архивов в каталог другой панели (или указанный): с прогрессом.
+void App::DoUnpack() {
+    Panel* panel = ActivePanel();
+    Panel* other = OtherPanel();
+
+    if (panel->InArchive()) {
+        ShowError(L"Открыт архив. Выйдите в каталог: распаковка из просмотра — по F5.");
+        return;
+    }
+
+    // Сначала отмеченные архивы, иначе — тот, на котором стоит курсор.
+    std::vector<std::wstring> archives;
+    for (auto& e : panel->Entries()) {
+        if (e.marked && !e.isDir && !e.isUp && IsArchivePath(e.name)) {
+            archives.push_back(JoinPath(panel->Path(), e.name));
+        }
+    }
+    if (archives.empty()) {
+        Entry* cur = panel->Cursor();
+        if (cur && !cur->isDir && !cur->isUp && IsArchivePath(cur->name)) {
+            archives.push_back(JoinPath(panel->Path(), cur->name));
+        }
+    }
+    if (archives.empty()) {
+        ShowError(L"Курсор не на архиве.\n\nВстаньте на .zip/.7z/.rar/.tar или отметьте архивы.");
+        return;
+    }
+
+    std::wstring target = other->Path();
+    wchar_t prompt[512]{};
+    if (archives.size() == 1) {
+        std::wstring name = archives[0].substr(archives[0].find_last_of(L'\\') + 1);
+        swprintf(prompt, 512, L"Распаковать «%ls» в каталог:", name.c_str());
+    } else {
+        swprintf(prompt, 512, L"Распаковать архивов: %zu в каталог:", archives.size());
+    }
+    if (!InputBox(hwnd_, L"Распаковка", prompt, target, false)) return;
+    target = Trim(target);
+    if (target.empty()) return;
+
+    int done = 0;
+    for (auto& archive : archives) {
+        std::wstring error;
+        if (!ExtractArchiveWithProgress(hwnd_, archive, target, error)) {
+            ShowError(error);
+            break;
+        }
+        done++;
+    }
+
+    if (done > 0) {
+        panel->Reload();
+        other->Reload();
+        UpdatePromptLabel();
+        LogDebug(L"unpack: архивов " + std::to_wstring(done) + L" -> " + target);
+    }
+}
+
 void App::PackSelection() {
     Panel* panel = ActivePanel();
     if (!panel) return;
@@ -2017,8 +2076,7 @@ void App::Dispatch(int id) {
             PackSelection();
             break;
         case IDM_UNPACK:
-            MessageBoxW(hwnd_, L"Распаковка архивов будет добавлена в следующей вехе.",
-                        kTitle, MB_ICONINFORMATION);
+            DoUnpack();
             break;
         case IDM_SYNC:
             MessageBoxW(hwnd_, L"Синхронизация каталогов будет добавлена в следующей вехе.",

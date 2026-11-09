@@ -26,6 +26,10 @@ bool ExtractFromArchive(const std::wstring& archive, const std::vector<std::wstr
 bool CreateArchive(const std::wstring& archivePath, const std::vector<std::wstring>& items,
                    std::wstring& error);
 
+// Распаковка всего архива в каталог: окно прогресса, кнопка «Отмена».
+bool ExtractArchiveWithProgress(HWND owner, const std::wstring& archive,
+                                const std::wstring& target, std::wstring& error);
+
 // Временный каталог для просмотра файлов из архива.
 std::wstring ArchiveTempDir();
 
