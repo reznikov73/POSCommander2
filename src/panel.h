@@ -150,6 +150,18 @@ private:
     void HidePathHover();
     void FillPathHover(const std::wstring& dir);
     static LRESULT CALLBACK HoverProc(HWND, UINT, WPARAM, LPARAM);
+    // Каскад выпадающих списков папок: уровень 0 — от компонента пути, дальше — вложенные.
+    struct HoverLevel {
+        HWND win = nullptr;
+        HWND list = nullptr;
+        std::wstring dir;
+        std::vector<Entry> items;      // только каталоги
+        int hoverItem = -1;            // пункт под курсором
+    };
+    bool CreateLevelWindow(HoverLevel& lv);
+    void FillLevel(HoverLevel& lv);
+    int OpenLevel(const std::wstring& dir, int x, int y);
+    void CloseLevelsFrom(size_t index);
     static LRESULT CALLBACK HoverListProc(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
     int PathCharIndexAt(int x, int y) const;
     bool PathClickInEmptyArea(int x) const;
@@ -166,10 +178,11 @@ private:
     bool clickShift_ = false;      // Shift был зажат в момент клика
     bool clickCtrl_ = false;       // Ctrl был зажат в момент клика
 
-    HWND hoverWin_ = nullptr;      // всплывающий список содержимого каталога
-    HWND hoverList_ = nullptr;
-    std::wstring hoverDir_;
-    int hoverChars_ = -1;          // компонент пути под курсором
+    std::vector<HoverLevel> hover_;
+    int hoverChars_ = -1;              // компонент пути под курсором
+    int cascadePendingLevel_ = -1;     // уровень и пункт, на которых ждём открытия подуровня
+    int cascadePendingItem_ = -1;
+    bool closingHover_ = false;        // массовое закрытие уровней (защита от WM_DESTROY)
 
     HWND tip_ = nullptr;           // подсказка с полным путём
     std::wstring tipText_;         // текст подсказки (живёт до следующего запроса)
