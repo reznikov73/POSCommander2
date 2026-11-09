@@ -212,7 +212,7 @@ int RunSelfTest() {
         rep.Check(true, L"UNC: общий ресурс недоступен, проверка пропущена");
     }
 
-    std::wstring report = L"POSCommander 2 - самопроверка\r\n";
+    std::wstring report = L"POS Commander - самопроверка\r\n";
     report += L"каталог: " + base + L"\r\n\r\n";
     for (auto& line : rep.lines) report += line + L"\r\n";
     report += L"\r\nпровалено: " + std::to_wstring(rep.failed) + L" из " + std::to_wstring((int)rep.lines.size()) + L"\r\n";

@@ -55,4 +55,4 @@ set_source_files_properties(res/app.rc PROPERTIES OBJECT_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/res/app.ico;${CMAKE_CURRENT_SOURCE_DIR}/res/folder.ico;${CMAKE_CURRENT_SOURCE_DIR}/res/folder_hidden.ico;${CMAKE_CURRENT_SOURCE_DIR}/res/arrow_up.ico;${CMAKE_CURRENT_SOURCE_DIR}/res/app.manifest"
 )
 
-set_target_properties(POSCommander2 PROPERTIES OUTPUT_NAME "POSCommander2")
+set_target_properties(POSCommander2 PROPERTIES OUTPUT_NAME "POS Commander")

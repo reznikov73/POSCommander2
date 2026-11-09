@@ -1,4 +1,4 @@
-// Главное окно POSCommander 2: две панели, меню, командная строка, F-клавиши.
+// Главное окно POS Commander: две панели, меню, командная строка, F-клавиши.
 #include "common.h"
 #include "dialogs.h"
 #include "panel.h"
@@ -27,7 +27,7 @@ HINSTANCE g_inst = nullptr;
 namespace {
 
 const wchar_t* kMainClass = L"POSCommander2Main";
-const wchar_t* kTitle = L"POSCommander 2";
+const wchar_t* kTitle = L"POS Commander";
 
 enum : int {
     IDM_VIEW = 100,
@@ -2081,7 +2081,7 @@ void App::Dispatch(int id) {
             PostMessageW(hwnd_, WM_APP + 302, (WPARAM)panel->Side(), (LPARAM)panel->ActiveTab());
             break;
         case IDM_ABOUT:
-            MessageBoxW(hwnd_, L"POSCommander 2\nДвухпанельный файловый менеджер на Win32 API.\n\nC++ / MinGW · без внешних зависимостей",
+            MessageBoxW(hwnd_, L"POS Commander\nДвухпанельный файловый менеджер на Win32 API.\n\nC++ / MinGW · без внешних зависимостей",
                         L"О программе", MB_ICONINFORMATION | MB_OK);
             break;
         default:
@@ -2768,7 +2768,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR cmdLine, int) {
     if (app.Create(inst)) {
         code = app.Run();
     } else {
-        MessageBoxW(nullptr, L"Не удалось создать главное окно.", L"POSCommander 2", MB_ICONERROR);
+        MessageBoxW(nullptr, L"Не удалось создать главное окно.", L"POS Commander", MB_ICONERROR);
         code = 1;
     }
 
