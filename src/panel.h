@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <mutex>
+#include <set>
 #include "util.h"
 
 class Panel {
@@ -61,6 +62,8 @@ public:
     void ToggleMarkCursor();
     void MarkAll(bool mark, bool includingDirs = true);
     void InvertMarks();
+    // Shift+стрелки: диапазон от якоря до index, с корректным сокращением назад.
+    void ShiftMarkTo(int index);
     // Режим: 0 — отметить, 1 — снять, 2 — инвертировать (Num + / - / *).
     size_t MarkByMask(const std::wstring& maskText, int mode);
     void MarkRange(int from, int to);
@@ -135,6 +138,7 @@ private:
     LRESULT Proc(HWND, UINT, WPARAM, LPARAM);
 
     void ApplyEntries(const std::wstring& focus, int fallbackIndex);
+    void ResetShiftMark();
     void ShowShellContextMenu(int screenX, int screenY);
     void CreateTree();
     void FillTreeRoot();
@@ -201,6 +205,8 @@ private:
     int cursorRow_ = -1;           // строка курсора: рамка неактивной панели рисуется по ней — LVIS_FOCUSED в списке без фокуса ненадёжен
     bool clickShift_ = false;      // Shift был зажат в момент клика
     bool clickCtrl_ = false;       // Ctrl был зажат в момент клика
+    int shiftAnchor_ = -1;         // начало диапазона, отмеченного Shift+стрелками
+    std::set<int> shiftMarked_;    // индексы, отмеченные этим диапазоном
 
     std::vector<HoverLevel> hover_;
     int hoverChars_ = -1;              // компонент пути под курсором

@@ -617,6 +617,7 @@ private:
     std::wstring quickFilter_;          // буфер быстрого поиска по буквам
     bool dragging_ = false;             // внутреннее перетаскивание файлов
     int dragFromSide_ = 0;              // из какой панели тянут
+    bool shiftHeld_ = false;            // Shift по сообщениям окна
 
     // Очередь операций копирования/перемещения.
     struct CopyJob {
@@ -2928,6 +2929,14 @@ void App::Dispatch(int id) {
 // ---------- клавиатура ----------
 
 bool App::PreTranslate(const MSG& msg) {
+    // Держим Shift по сообщениям окна: GetKeyState в редких случаях не видит
+    // модификатор к моменту прихода стрелки (например, при синтетическом вводе).
+    if (msg.message == WM_KEYDOWN || msg.message == WM_SYSKEYDOWN) {
+        if (msg.wParam == VK_SHIFT || msg.wParam == VK_LSHIFT || msg.wParam == VK_RSHIFT) shiftHeld_ = true;
+    } else if (msg.message == WM_KEYUP || msg.message == WM_SYSKEYUP) {
+        if (msg.wParam == VK_SHIFT || msg.wParam == VK_LSHIFT || msg.wParam == VK_RSHIFT) shiftHeld_ = false;
+    }
+
     // Пока идёт правка пути, Enter и Esc работают на поле, даже если фокус успел уйти.
     if (msg.message == WM_KEYDOWN || msg.message == WM_SYSKEYDOWN) {
         if (msg.wParam == VK_ESCAPE) {
@@ -3065,9 +3074,35 @@ bool App::PreTranslate(const MSG& msg) {
     }
 
     bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
-    bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+    bool shift = ((GetKeyState(VK_SHIFT) & 0x8000) != 0) || ((GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0) || shiftHeld_;
     bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
     Panel* panel = ActivePanel();
+    // Shift+стрелки — отметка диапазона от якоря (как в TC), а не просто курсор.
+    if (inList && shift && !ctrl && !alt) {
+        const int count = (int)panel->Entries().size();
+        if (count > 0) {
+            const int cur = panel->CursorIndex();
+            int page = ListView_GetCountPerPage(panel->List());
+            if (page < 1) page = 1;
+            int next = cur;
+            switch (msg.wParam) {
+                case VK_UP: next = cur - 1; break;
+                case VK_DOWN: next = cur + 1; break;
+                case VK_HOME: next = 0; break;
+                case VK_END: next = count - 1; break;
+                case VK_PRIOR: next = cur - page; break;
+                case VK_NEXT: next = cur + page; break;
+                default: break;
+            }
+            if (next != cur) {
+                if (next < 0) next = 0;
+                if (next >= count) next = count - 1;
+                panel->ShiftMarkTo(next);
+                panel->FocusList();
+                return true;
+            }
+        }
+    }
 
     if (alt && msg.wParam == VK_LEFT) {
         panel->GoBack();
@@ -3362,6 +3397,10 @@ LRESULT App::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             mmi->ptMinTrackSize.y = Scale(360, dpi_);
             return 0;
         }
+
+        case WM_ACTIVATE:
+            if (LOWORD(wParam) == WA_INACTIVE) shiftHeld_ = false;
+            break;
 
         case WM_SETFOCUS:
             if (ActivePanel()) ActivePanel()->FocusList();

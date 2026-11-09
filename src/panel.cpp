@@ -1967,6 +1967,7 @@ bool Panel::GoForward() {
 }
 
 void Panel::ApplyEntries(const std::wstring& focus, int fallbackIndex) {
+    ResetShiftMark();
     UpdateDriveBar();
     SyncTreeToPath();
     UpdateVolume();
@@ -2144,6 +2145,7 @@ void Panel::ToggleMarkCursor() {
     if (index < 0 || index >= (int)entries_.size()) return;
     Entry& e = entries_[index];
     if (e.isUp) return;
+    ResetShiftMark();
     e.marked = !e.marked;
     RECT rc{};
     if (ListView_GetItemRect(list_, index, &rc, LVIR_BOUNDS)) InvalidateRect(list_, &rc, FALSE);
@@ -2161,6 +2163,7 @@ void Panel::ToggleMarkCursor() {
 
 // Отметить диапазон (Shift+клик).
 void Panel::MarkRange(int from, int to) {
+    ResetShiftMark();
     if (from > to) std::swap(from, to);
     if (from < 0) from = 0;
     if (to >= (int)entries_.size()) to = (int)entries_.size() - 1;
@@ -2173,11 +2176,51 @@ void Panel::MarkRange(int from, int to) {
     StartMarkedDirSizes();
 }
 
+
+// Shift+стрелки: якорь — строка, с которой начали; при движении назад
+// автоматически снятые этим диапазоном отметки убираются.
+void Panel::ShiftMarkTo(int index) {
+    if (index < 0 || index >= (int)entries_.size()) return;
+    if (shiftAnchor_ < 0 || shiftAnchor_ >= (int)entries_.size()) {
+        shiftAnchor_ = CursorIndex();
+    }
+    if (shiftAnchor_ < 0) return;
+
+    const int lo = std::min(shiftAnchor_, index);
+    const int hi = std::max(shiftAnchor_, index);
+    std::set<int> keep;
+    for (int i : shiftMarked_) {
+        if (i < lo || i > hi) {
+            if (i >= 0 && i < (int)entries_.size()) entries_[i].marked = false;
+        } else {
+            keep.insert(i);
+        }
+    }
+    shiftMarked_.swap(keep);
+
+    for (int i = lo; i <= hi; ++i) {
+        if (entries_[i].isUp) continue;
+        entries_[i].marked = true;
+        shiftMarked_.insert(i);
+    }
+
+    InvalidateRect(list_, nullptr, FALSE);
+    SetCursorIndex(index);
+    UpdateStatus();
+    StartMarkedDirSizes();
+}
+
+void Panel::ResetShiftMark() {
+    shiftAnchor_ = -1;
+    shiftMarked_.clear();
+}
+
 // Переключить отметку одной записи (Ctrl+клик).
 void Panel::ToggleMarkAt(int index) {
     if (index < 0 || index >= (int)entries_.size()) return;
     Entry& e = entries_[index];
     if (e.isUp) return;
+    ResetShiftMark();
     e.marked = !e.marked;
     RECT rc{};
     if (ListView_GetItemRect(list_, index, &rc, LVIR_BOUNDS)) InvalidateRect(list_, &rc, FALSE);
@@ -2186,6 +2229,7 @@ void Panel::ToggleMarkAt(int index) {
 }
 
 void Panel::MarkAll(bool mark, bool includingDirs) {
+    ResetShiftMark();
     for (auto& e : entries_) {
         if (e.isUp) continue;
         if (!includingDirs && e.isDir) continue;
@@ -2197,6 +2241,7 @@ void Panel::MarkAll(bool mark, bool includingDirs) {
 }
 
 void Panel::InvertMarks() {
+    ResetShiftMark();
     for (auto& e : entries_) {
         if (e.isUp) continue;
         e.marked = !e.marked;
@@ -2208,6 +2253,7 @@ void Panel::InvertMarks() {
 
 // Отметка по маске: «*.txt» или несколько через пробел/запятую.
 size_t Panel::MarkByMask(const std::wstring& maskText, int mode) {
+    ResetShiftMark();
     auto masks = SplitMasks(maskText);
     size_t hit = 0;
     for (auto& e : entries_) {
@@ -2231,6 +2277,7 @@ size_t Panel::MarkByMask(const std::wstring& maskText, int mode) {
 }
 
 void Panel::ClearMarks() {
+    ResetShiftMark();
     for (auto& e : entries_) e.marked = false;
     InvalidateRect(list_, nullptr, FALSE);
     UpdateStatus();
@@ -3126,6 +3173,7 @@ LRESULT Panel::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                         clickShift_ = clickCtrl_ = false;
                         lastCursor_ = info->iItem;
                     }
+                    if (!(GetKeyState(VK_SHIFT) & 0x8000)) ResetShiftMark();
                     UpdateStatus();
                     PostMessageW(GetParent(hwnd_), WM_APP + 301, (WPARAM)side_, 0);
                     return 0;

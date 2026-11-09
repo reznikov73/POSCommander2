@@ -62,6 +62,7 @@ python tools\ftp_test_server.py --port 2121 --user test --password test --root <
 | `F9` | меню (как в TC) |
 | `Insert`, `Space` | отметить файл и перейти на строку ниже |
 | `Shift`+клик | отметить диапазон от курсора до клика |
+| `Shift+↑/↓`, `Shift+Home/End`, `Shift+PgUp/PgDn` | отметить диапазон от курсора |
 | `Ctrl`+клик | переключить отметку одной записи |
 | `F2` / `Shift+F6` | переименовать |
 | `F3` | просмотр (ESC закрывает) |
