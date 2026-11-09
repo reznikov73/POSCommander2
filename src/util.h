@@ -80,6 +80,8 @@ void InitShellIcons();
 HIMAGELIST ShellSmallImageList();
 // dir — каталог панели, нужен для иконок конкретных папок и файлов.
 int IconForEntry(const Entry& e, const std::wstring& dir = L"");
+// FTP: без обращений к оболочке — только свои значки по расширению (быстро).
+int IconForFtpEntry(const Entry& e);
 
 // Значки тулбара: рисуем сами, в стиле Total Commander (см. ui-target.html).
 enum ToolIconKind {

@@ -1723,6 +1723,7 @@ bool Panel::LoadArchiveListing(const std::wstring& focus) {
 
 bool Panel::LoadFtpListing(const std::wstring& url, const std::wstring& focus) {
     lastError_.clear();
+    const ULONGLONG started = GetTickCount64();
 
     FtpSite site;
     std::wstring remote;
@@ -1752,6 +1753,7 @@ bool Panel::LoadFtpListing(const std::wstring& url, const std::wstring& focus) {
         lastError_ = L"Не удалось открыть FTP-каталог:\n" + normalized + L"\n\n" + error;
         return false;
     }
+    const ULONGLONG connectedAt = GetTickCount64();
 
     std::vector<FtpEntryInfo> listing;
     const bool listed = FtpList(*conn, remote, listing, error);
@@ -1760,6 +1762,7 @@ bool Panel::LoadFtpListing(const std::wstring& url, const std::wstring& focus) {
         lastError_ = L"Не удалось прочитать FTP-каталог:\n" + normalized + L"\n\n" + error;
         return false;
     }
+    const ULONGLONG listedAt = GetTickCount64();
 
     std::vector<Entry> loaded;
     if (remote != L"/") {
@@ -1767,7 +1770,7 @@ bool Panel::LoadFtpListing(const std::wstring& url, const std::wstring& focus) {
         up.name = L"..";
         up.isDir = true;
         up.isUp = true;
-        up.icon = IconForEntry(up, L"");
+        up.icon = IconForFtpEntry(up);
         loaded.push_back(std::move(up));
     }
     for (auto& item : listing) {
@@ -1777,9 +1780,10 @@ bool Panel::LoadFtpListing(const std::wstring& url, const std::wstring& focus) {
         e.size = item.size;
         e.ft = item.ft;
         e.attr = item.attr;
-        e.icon = IconForEntry(e, L"");
+        e.icon = IconForFtpEntry(e);
         loaded.push_back(std::move(e));
     }
+    const ULONGLONG builtAt = GetTickCount64();
 
     path_ = normalized;
     ftp_ = true;
@@ -1804,7 +1808,11 @@ bool Panel::LoadFtpListing(const std::wstring& url, const std::wstring& focus) {
     UpdateHeader();
     UpdateStatus();
     PushHistoryPoint();
-    LogDebug(L"FTP: " + path_ + L", записей " + std::to_wstring(entries_.size()));
+    LogDebug(L"FTP: " + path_ + L", записей " + std::to_wstring(entries_.size()) +
+             L", connect=" + std::to_wstring(connectedAt - started) +
+             L" list=" + std::to_wstring(listedAt - connectedAt) +
+             L" build=" + std::to_wstring(builtAt - listedAt) +
+             L" total=" + std::to_wstring(GetTickCount64() - started) + L" мс");
     return true;
 }
 
@@ -2297,7 +2305,7 @@ void Panel::FillDispInfo(NMLVDISPINFO* info) {
         wcsncpy_s(info->item.pszText, info->item.cchTextMax, text.c_str(), _TRUNCATE);
     }
     if (info->item.mask & LVIF_IMAGE) {
-        info->item.iImage = IconForEntry(e, ftp_ ? L"" : path_);
+        info->item.iImage = ftp_ ? IconForFtpEntry(e) : IconForEntry(e, path_);
     }
 }
 

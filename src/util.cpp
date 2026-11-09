@@ -1179,6 +1179,22 @@ int IconForEntry(const Entry& e, const std::wstring& dir) {
     return TypeIconIndex(kind, e.hidden());
 }
 
+int IconForFtpEntry(const Entry& e) {
+    InitShellIcons();
+    if (e.isUp) return g_iconUp >= 0 ? g_iconUp : g_iconFolder;
+    if (e.isDir) return e.hidden() ? g_iconFolderHidden : g_iconFolder;
+
+    const std::wstring ext = Lower(e.ext());
+    int kind = kTkFile;
+    if (ext == L".txt" || ext == L".log" || ext == L".ini") kind = kTkText;
+    else if (ext == L".cpp" || ext == L".h" || ext == L".c" || ext == L".py") kind = kTkCode;
+    else if (ext == L".zip" || ext == L".rar" || ext == L".7z") kind = kTkArchive;
+    else if (ext == L".jpg" || ext == L".png" || ext == L".bmp") kind = kTkImage;
+    else if (ext == L".exe" || ext == L".dll") kind = kTkApp;
+    else if (ext == L".lnk") kind = kTkLink;
+    return TypeIconIndex(kind, e.hidden());
+}
+
 UINT WindowDpi(HWND hwnd) {
     using Fn = UINT(WINAPI*)(HWND);
     static Fn fn = nullptr;

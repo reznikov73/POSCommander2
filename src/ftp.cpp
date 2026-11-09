@@ -882,6 +882,9 @@ struct FtpSession {
     bool utf8 = true;
     bool mlsd = false;
     bool passive = true;
+    // PASV часто отдаёт внутренний IP (10.x/192.168.x) — по умолчанию берём
+    // адрес управляющего соединения, иначе каждая команда ждёт таймаут.
+    bool trustPasvIp = false;
     FtpSite site;
     std::wstring peerHost;
 
@@ -1059,7 +1062,7 @@ bool PrepareData(FtpSession& s, DataChannel& ch, std::wstring& error) {
             }
             host = s.peerHost;
         }
-        if (host == L"0.0.0.0" || host.empty()) host = s.peerHost;
+        if (!s.trustPasvIp || host == L"0.0.0.0" || host.empty()) host = s.peerHost;
         SOCKET data = INVALID_SOCKET;
         std::wstring connectError;
         if (!ConnectTcp(host, port, kConnectTimeoutMs, data, connectError)) {
