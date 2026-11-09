@@ -2165,9 +2165,15 @@ void Panel::DrawRowName(NMLVCUSTOMDRAW* cd) {
     if (!ListView_GetItemRect(list_, index, &label, LVIR_LABEL)) return;
 
     // Стираем исходную чёрную надпись с запасом, иначе будут видны остатки.
+    // Слева запас ограничен правым краем значка: иначе затирается половина иконки
+    // у скрытых и отмеченных строк (значок идёт сразу перед текстом).
     RECT erase = label;
     erase.left -= Scale(6, dpi_);
     erase.right += Scale(6, dpi_);
+    RECT iconRect{};
+    if (ListView_GetItemRect(list_, index, &iconRect, LVIR_ICON) && iconRect.right > erase.left) {
+        erase.left = iconRect.right;
+    }
     HBRUSH bg = CreateSolidBrush(GetSysColor(COLOR_WINDOW));
     FillRect(cd->nmcd.hdc, &erase, bg);
     DeleteObject(bg);
