@@ -443,7 +443,7 @@ static HIMAGELIST g_images = nullptr;          // наш список: сюда 
 const int kResAppIcon = 101;
 const int kResFolder = 102;
 const int kResFolderHidden = 103;
-const int kResFolderUp = 104;
+const int kResArrowUp = 104;
 
 static int g_iconFolder = -1;
 static int g_iconFile = -1;
@@ -1101,7 +1101,7 @@ void InitShellIcons() {
     // Панельные значки — из ресурсов (стиль Total Commander): жёлтая папка,
     // скрытая папка с красным пунктиром, «..» серой папкой с двумя точками.
     // Если ресурс не загрузился — откат на прежнюю отрисовку кодом.
-    if (HICON up = LoadUiIcon(kResFolderUp, size)) g_iconUp = AddIcon(up);
+    if (HICON up = LoadUiIcon(kResArrowUp, size)) g_iconUp = AddIcon(up);
     if (g_iconUp < 0) g_iconUp = AddIcon(MakeUpArrowIcon(size));
 
     if (HICON folder = LoadUiIcon(kResFolder, size)) g_iconFolder = AddIcon(folder);

@@ -52,7 +52,7 @@ endif()
 # Ресурсы ссылаются на .ico/.manifest по имени — добавляем их в зависимости,
 # иначе после перерисовки иконок ninja не пересобирает .rc.
 set_source_files_properties(res/app.rc PROPERTIES OBJECT_DEPENDS
-    "${CMAKE_CURRENT_SOURCE_DIR}/res/app.ico;${CMAKE_CURRENT_SOURCE_DIR}/res/folder.ico;${CMAKE_CURRENT_SOURCE_DIR}/res/folder_hidden.ico;${CMAKE_CURRENT_SOURCE_DIR}/res/folder_up.ico;${CMAKE_CURRENT_SOURCE_DIR}/res/app.manifest"
+    "${CMAKE_CURRENT_SOURCE_DIR}/res/app.ico;${CMAKE_CURRENT_SOURCE_DIR}/res/folder.ico;${CMAKE_CURRENT_SOURCE_DIR}/res/folder_hidden.ico;${CMAKE_CURRENT_SOURCE_DIR}/res/arrow_up.ico;${CMAKE_CURRENT_SOURCE_DIR}/res/app.manifest"
 )
 
 set_target_properties(POSCommander2 PROPERTIES OUTPUT_NAME "POSCommander2")
