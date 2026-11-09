@@ -180,68 +180,91 @@ def arrow_image(size):
     return img.resize((size, size), Image.LANCZOS)
 
 
-# ---------- иконка приложения ----------
+# ---------- иконка приложения: дискета ----------
+# Все доли сняты с эталона (2048x2048) построчным разбором:
+#   корпус  x 0.124..0.881, y 0.078..0.890
+#   шторка  x 0.265..0.699, y 0.078..0.388
+#   окно    x 0.509..0.631, y 0.139..0.360 (оранжевая рамка)
+#   створка x 0.551..0.631, y 0.161..0.354
+#   наклейка x 0.251..0.753, y 0.478..0.891
+#   полоски x 0.307..0.699, высота 0.022, шаг 0.069
 def app_image(size):
-    img, d, s = new_canvas(size)
-    k = s / 256.0
-
-    def S(v):
-        return v * k
-
-    box = [S(6), S(6), S(250), S(250)]
-    mask = Image.new('L', (s, s), 0)
-    ImageDraw.Draw(mask).rounded_rectangle(box, radius=S(40), fill=255)
-    grad = Image.new('RGBA', (s, s), (0, 0, 0, 0))
-    vgrad(ImageDraw.Draw(grad), [0, S(6), s, S(250)], (0x2A, 0x63, 0xA8), (0x10, 0x2B, 0x55))
-    img.paste(grad, (0, 0), mask)
+    img = Image.new('RGBA', (size, size), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
-    d.rounded_rectangle(box, radius=S(40), outline=(0x08, 0x1B, 0x36, 255), width=max(1, int(S(6))))
+    S = size
 
-    for x0, x1 in ((44, 118), (138, 212)):
-        d.rounded_rectangle([S(x0), S(58), S(x1), S(178)], radius=S(8), fill=(255, 255, 255, 255),
-                            outline=(0x93, 0xB4, 0xD8, 255), width=max(1, int(S(4))))
-        for i, y in enumerate(range(78, 168, 22)):
-            d.rectangle([S(x0 + 10), S(y), S(x1 - 12), S(y + 8)],
-                        fill=(0x9A, 0xB6, 0xD2, 255) if i % 2 == 0 else (0xC2, 0xD4, 0xE6, 255))
+    def R(v):
+        return v * S
 
-    fbox = [S(84), S(150), S(196), S(226)]
-    d.rounded_rectangle([fbox[0], fbox[1] - S(20), fbox[0] + S(52), fbox[1] + S(6)], radius=S(7),
-                        fill=(0xF3, 0xC4, 0x45, 255), outline=(0x7A, 0x5A, 0x0A, 255), width=max(1, int(S(4))))
-    d.rounded_rectangle(fbox, radius=S(8), fill=(0xFF, 0xDD, 0x77, 255), outline=(0x7A, 0x5A, 0x0A, 255),
-                        width=max(1, int(S(4))))
-    d.line([S(fbox[0] + 10), S(fbox[1] + 8), S(fbox[2] - 10), S(fbox[1] + 8)],
-           fill=(0xFF, 0xF3, 0xC9, 255), width=max(1, int(S(5))))
-    return img.resize((size, size), Image.LANCZOS)
+    body = (0xFC, 0x7C, 0x16)
+    shutter = (0x16, 0x29, 0x4E)
+    shutter_dark = (0x0D, 0x1E, 0x3D)
+    shutter_right = (0x0C, 0x1C, 0x38)
+    slide = (0x0A, 0x17, 0x31)
+    label = (0xF1, 0xF3, 0xF5)
+    ink = (0x11, 0x27, 0x4B)
+
+    detailed = size >= 32
+    mid = 20 <= size < 32
+
+    # корпус: закруглённые углы, верхний правый срезан по диагонали
+    d.rounded_rectangle([R(0.124), R(0.078), R(0.881), R(0.890)], radius=R(0.075), fill=body)
+    d.polygon([(R(0.760), R(0.072)), (R(0.886), R(0.072)), (R(0.886), R(0.198))], fill=(0, 0, 0, 0))
+
+    # шторка
+    d.rounded_rectangle([R(0.265), R(0.078), R(0.699), R(0.388)], radius=R(0.028), fill=shutter)
+    d.rectangle([R(0.265), R(0.078), R(0.320), R(0.360)], fill=shutter_dark)
+    d.rectangle([R(0.560), R(0.078), R(0.699), R(0.360)], fill=shutter_right)
+
+    if detailed or mid:
+        # окно с оранжевой рамкой и металлическая створка внутри
+        d.rounded_rectangle([R(0.509), R(0.139), R(0.631), R(0.360)], radius=R(0.012), fill=body)
+        d.rectangle([R(0.551), R(0.161), R(0.631), R(0.354)], fill=slide)
+
+    # наклейка до нижней кромки корпуса
+    d.rounded_rectangle([R(0.251), R(0.478), R(0.753), R(0.891)], radius=R(0.020), fill=label)
+
+    # полоски: 4 на 24+, 3 на 18-23, 2 на 16 — иначе сливаются в одно пятно
+    if size >= 24:
+        ys, h = (0.551, 0.620, 0.689, 0.758), 0.022
+    elif size >= 18:
+        ys, h = (0.560, 0.660, 0.760), 0.030
+    else:
+        ys, h = (0.580, 0.760), 0.060
+    x0 = int(round(R(0.307)))
+    x1 = int(round(R(0.699)))
+    hh = max(1, int(round(R(h))))
+    for y in ys:
+        y0 = int(round(R(y)))
+        d.rectangle([x0, y0, x1, y0 + hh - 1], fill=ink)
+
+    return img
 
 
 def app_image_small(size):
-    """16-24 px: только две панели (на 20-24 ещё и папка), иначе детали сливаются."""
-    img, d, s = new_canvas(size)
-    k = s / 16.0
-
-    def S(v):
-        return v * k
-
-    box = [S(0.4), S(0.4), S(15.6), S(15.6)]
-    mask = Image.new('L', (s, s), 0)
-    ImageDraw.Draw(mask).rounded_rectangle(box, radius=S(2.6), fill=255)
-    grad = Image.new('RGBA', (s, s), (0, 0, 0, 0))
-    vgrad(ImageDraw.Draw(grad), [0, S(0.4), s, S(15.6)], (0x2A, 0x63, 0xA8), (0x0E, 0x27, 0x4E))
-    img.paste(grad, (0, 0), mask)
+    """16-24 px: та же дискета, но по целой сетке 16 — иначе полоски сливаются."""
+    img = Image.new('RGBA', (size, size), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
-    d.rounded_rectangle(box, radius=S(2.6), outline=(0x07, 0x18, 0x30, 255), width=max(1, int(S(0.5))))
+    k = size / 16.0
 
-    with_folder = size >= 20
-    bottom = 8.6 if with_folder else 13.2
-    for x0, x1 in ((2.6, 6.8), (9.2, 13.4)):
-        d.rectangle([S(x0), S(2.4), S(x1), S(bottom)], fill=(0xF7, 0xFB, 0xFF, 255))
-    if with_folder:
-        d.rounded_rectangle([S(3.4), S(8.2), S(9.4), S(10.0)], radius=S(0.5), fill=(0xF3, 0xC0, 0x3C, 255),
-                            outline=(0x6E, 0x50, 0x06, 255), width=max(1, int(S(0.35))))
-        d.rounded_rectangle([S(3.0), S(9.4), S(13.0), S(13.4)], radius=S(0.8), fill=(0xFF, 0xDD, 0x77, 255),
-                            outline=(0x6E, 0x50, 0x06, 255), width=max(1, int(S(0.4))))
-        d.line([S(4.2), S(10.3), S(11.8), S(10.3)], fill=(0xFF, 0xF4, 0xCE, 255), width=max(1, int(S(0.4))))
-    return img.resize((size, size), Image.LANCZOS)
+    def R(v):
+        return int(round(v * k))
+
+    body = (0xFC, 0x7C, 0x16)
+    shutter = (0x16, 0x29, 0x4E)
+    label = (0xF1, 0xF3, 0xF5)
+    ink = (0x11, 0x27, 0x4B)
+
+    # корпус 2..14, шторка 4..11 сверху, наклейка 4..12 до низа
+    d.rounded_rectangle([R(1.5), R(1.5), R(14.5), R(14.5)], radius=max(1, R(2.0)), fill=body)
+    d.rectangle([R(4.2), R(1.5), R(11.0), R(6.0)], fill=shutter)
+    d.rectangle([R(4.2), R(7.8), R(12.0), R(14.5)], fill=label)
+
+    ys = (9.2, 11.4) if size < 20 else (9.0, 11.2, 13.2)
+    for y in ys:
+        d.rectangle([R(5.2), R(y), R(11.0), R(y) + max(1, R(0.9)) - 1], fill=ink)
+
+    return img
 
 
 # ---------- ICO ----------
