@@ -1,0 +1,594 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>POSCommander 2 — макет целевого интерфейса (Total Commander style)</title>
+<style>
+  :root{
+    --chrome:#f0f0f0;          /* фон окна (GetSysColor(COLOR_BTNFACE)) */
+    --line:#c9c9c9;            /* тонкие границы */
+    --hoverbg:#cce8ff;          /* hover: как kActiveHeaderBg в panel.cpp */
+    --hoverbr:#7ab8f4;
+    --mark:#c80000;             /* kMarkedText — помеченные файлы */
+    --hidden:#808080;           /* kHiddenText — скрытые файлы */
+    --cursor:#0000d8;           /* курсор активной панели */
+    --tabact:#ffffff; --tabin:#e2dfda;   /* цвета вкладок из panel.cpp */
+  }
+  *{box-sizing:border-box; margin:0; padding:0}
+  body{
+    font-family:'Segoe UI','Noto Sans','DejaVu Sans',Tahoma,Arial,sans-serif;
+    background:#cfd4da; color:#111; padding:26px 16px 40px;
+  }
+  .wrap{width:1024px; margin:0 auto}
+  .pagehead{margin:0 0 18px}
+  .pagehead h1{font-size:21px; letter-spacing:.2px}
+  .pagehead p{font-size:13px; color:#3c4650; margin-top:5px; line-height:1.5}
+
+  /* ── окно ─────────────────────────────────────────── */
+  .window{background:var(--chrome); border:1px solid #8f8f8f; box-shadow:0 10px 34px rgba(0,0,0,.28)}
+  .titlebar{height:30px; display:flex; align-items:center; border-bottom:1px solid #d9d9d9; background:#f6f6f6}
+  .titlebar .t{flex:1; text-align:center; font-size:12.5px; color:#333; white-space:nowrap; overflow:hidden; padding:0 8px}
+  .wbtns{display:flex; height:100%}
+  .wbtns span{width:44px; display:grid; place-items:center; font-size:11px; color:#555; border-left:1px solid transparent}
+  .wbtns span:hover{background:#e5f1fb; border-left:1px solid #cbe4f7}
+  .wbtns .x:hover{background:#e81123; color:#fff}
+
+  .menubar{display:flex; padding:1px 4px; font-size:12.5px; position:relative}
+  .menubar .m{padding:4px 9px; border:1px solid transparent; border-radius:2px}
+  .menubar .m:hover, .menubar .m.hover{background:var(--hoverbg); border-color:var(--hoverbr)}
+
+  .toolbar{display:flex; align-items:center; gap:3px; padding:4px 6px; position:relative; border-top:1px solid #e3e3e3}
+  .tb{width:24px; height:24px; display:grid; place-items:center; border:1px solid transparent; border-radius:2px; position:relative}
+  .tb:hover{background:var(--hoverbg); border-color:var(--hoverbr)}
+  .tb.hot{background:var(--hoverbg); border-color:var(--hoverbr)}   /* показан пример hover */
+  .tsep{width:1px; height:17px; background:#d2d2d2; margin:0 3px}
+  .tip{position:absolute; top:30px; left:6px; background:#ffffe1; border:1px solid #888; font-size:11.5px;
+       padding:3px 7px; border-radius:2px; box-shadow:2px 2px 4px rgba(0,0,0,.2); white-space:nowrap; z-index:5}
+
+  .drivebar{display:flex; align-items:center; gap:2px; padding:3px 6px; position:relative; border-top:1px solid #e3e3e3}
+  .db{display:flex; align-items:center; gap:4px; height:22px; padding:0 7px; font-size:12.5px;
+      border:1px solid transparent; border-radius:2px}
+  .db:hover{background:var(--hoverbg); border-color:var(--hoverbr)}
+  .db.on{background:var(--hoverbg); border-color:#8cc3ea}
+  .dfree{margin-left:auto; font-size:11.5px; color:#666; display:flex; align-items:center}
+
+  .panels{display:flex; gap:5px; padding:5px 6px; background:#d7d7d7}
+  .panel{flex:1; display:flex; flex-direction:column; min-width:0; background:#fff; border:1px solid #9a9a9a}
+  .panel.inactive{background:#fbfbfb}
+  .tabs{display:flex; align-items:flex-end; gap:2px; padding:3px 4px 0; background:#dcdcdc; position:relative}
+  .tab{font-size:11.5px; padding:3px 9px; background:var(--tabin); border:1px solid #a6a29c; border-bottom:none;
+       border-radius:3px 3px 0 0; color:#464646; display:flex; align-items:center; gap:6px}
+  .tab.on{background:var(--tabact); border-color:#5a5a5a; color:#000; font-weight:600}
+  .tab .x{font-size:10px; color:#777}
+  .tab.new{padding:3px 7px; background:#e8e8e8; border-color:#bcbcbc; color:#555; font-weight:700}
+
+  .phead{display:flex; align-items:center; gap:5px; padding:3px 4px; border-top:1px solid #9a9a9a; position:relative}
+  .panel.active .phead{background:#cce8ff}     /* kActiveHeaderBg */
+  .panel.inactive .phead{background:#f0f0f0}   /* kInactiveHeaderBg */
+  .ppath{flex:1; min-width:0; background:#fff; border:1px solid #8f8f8f; height:19px; display:flex;
+         align-items:center; padding:0 5px; font-size:11.5px; white-space:nowrap; overflow:hidden}
+  .ppath b{font-weight:600}
+  .ppath .caret, .pmask .caret{margin-left:auto; color:#555; font-size:9px}
+  .pmask{width:58px; background:#fff; border:1px solid #8f8f8f; height:19px; display:flex; align-items:center;
+         justify-content:space-between; padding:0 4px 0 7px; font-size:11.5px}
+
+  .cols{display:grid; grid-template-columns:minmax(0,1fr) 48px 96px 108px; background:#ececec;
+        border-top:1px solid #cfcfcf; border-bottom:1px solid #cfcfcf; font-size:11px; color:#555}
+  .cols span{padding:2px 4px}
+  .cols .r{text-align:right; padding-right:8px}
+  .cols .name{display:flex; gap:4px; align-items:center}
+  .cols .arrow{color:#1e6fc0; font-size:9px}
+
+  .rows{height:270px; overflow:hidden}
+  .row{display:grid; grid-template-columns:minmax(0,1fr) 48px 96px 108px; height:19px; align-items:center;
+       font-size:12.5px; position:relative}
+  .row .nm{display:flex; align-items:center; gap:5px; padding-left:4px; min-width:0; white-space:nowrap; overflow:hidden}
+  .row .nm .fn{overflow:hidden; text-overflow:ellipsis}
+  .row .ty{padding-left:5px; color:#444; font-size:11.5px}
+  .row .sz{text-align:right; padding-right:8px; font-size:11.5px}
+  .row .dt{padding-left:5px; color:#333; font-size:11.5px}
+  .row.dir .nm .fn{font-weight:700}
+  .row.mark .nm .fn, .row.mark .ty, .row.mark .sz, .row.mark .dt{color:var(--mark)}
+  .row.hidden .nm .fn, .row.hidden .ty,.row.hidden .sz,.row.hidden .dt{color:var(--hidden)}
+  .row.cur{background:var(--cursor)} .row.cur .nm .fn,.row.cur .ty,.row.cur .sz,.row.cur .dt{color:#fff}
+  .row.cur .nm .fn{font-weight:700}
+  .row.curdot{outline:2px dotted #3a3a3a; outline-offset:-2px}
+
+  .pfoot{border-top:1px solid #cfcfcf; background:#ececec; font-size:11px; color:#333; padding:2px 6px;
+         white-space:nowrap; overflow:hidden; position:relative}
+
+  .cmdrow{display:flex; gap:5px; padding:4px 6px; position:relative; border-top:1px solid #e3e3e3}
+  .cmd{flex:1; background:#fff; border:1px solid #8f8f8f; height:22px; display:flex; align-items:center;
+       padding:0 7px; font:12px/1 Consolas,'DejaVu Sans Mono',monospace; white-space:nowrap; overflow:hidden}
+  .cmd .caret{margin-left:4px; color:#555; font-size:9px}
+  .cmdbtn{width:26px; height:22px; display:grid; place-items:center; border:1px solid #c9c9c9; background:#f4f4f4; border-radius:2px}
+  .cmdbtn:hover{background:var(--hoverbg); border-color:var(--hoverbr)}
+
+  .fbar{display:flex; gap:4px; padding:4px 6px 6px; position:relative}
+  .fbtn{flex:1; height:25px; display:flex; align-items:center; justify-content:center; gap:7px;
+        font-size:12px; background:#f4f4f4; border:1px solid #d5d5d5; border-radius:2px; color:#222}
+  .fbtn:hover{background:var(--hoverbg); border-color:var(--hoverbr)}
+  .fbtn b{font-weight:700}
+
+  /* ── нумерация-легенда ─────────────────────────────── */
+  .zone{position:relative}
+  .b{position:absolute; width:17px; height:17px; border-radius:50%; background:#e53935; color:#fff;
+     font-size:11px; font-weight:700; display:grid; place-items:center; box-shadow:0 1px 3px rgba(0,0,0,.4); z-index:4}
+  .b.tl{top:-8px; left:-8px} .b.tr{top:-8px; right:-8px} .b.br{bottom:-8px; right:-8px}
+  .b.bl{bottom:-8px; left:-8px} .b.in{top:1px; right:4px; width:15px; height:15px; font-size:10px}
+  /* встроенный бейдж — внутри текста, ничего не перекрывает */
+  .bi{display:inline-grid; place-items:center; width:15px; height:15px; border-radius:50%; background:#e53935;
+      color:#fff; font-size:10px; font-weight:700; font-style:normal; flex:none; margin-left:7px;
+      box-shadow:0 1px 2px rgba(0,0,0,.35); vertical-align:-3px}
+
+  .legend{margin-top:22px}
+  .legend h2{font-size:15px; margin-bottom:10px}
+  .lgrid{display:grid; grid-template-columns:1fr 1fr; gap:6px 26px}
+  .li{display:flex; gap:10px; font-size:12.5px; line-height:1.45; align-items:flex-start}
+  .li .n{flex:none; width:18px; height:18px; border-radius:50%; background:#e53935; color:#fff; font-size:11px;
+         font-weight:700; display:grid; place-items:center; margin-top:1px}
+  .li b{font-weight:600}
+  .st{flex:none; margin-left:auto; font-size:10.5px; padding:2px 7px; border-radius:9px; white-space:nowrap}
+  .st1{background:#dceaf7; color:#1b5fa8} .st2{background:#ddf0dd; color:#237023}
+  .st3{background:#fdeccd; color:#946a12} .st4{background:#f6dfdc; color:#a33}
+  .st5{background:#e4def3; color:#5b3e9e} .st6{background:#d8eef0; color:#20707a}
+  .stok{background:#e4e4e4; color:#555}
+
+  /* ── спецификация иконок ────────────────────────────── */
+  .spec{margin-top:30px}
+  .spec h2{font-size:15px; margin-bottom:6px}
+  .spec .sub{font-size:12.5px; color:#3c4650; line-height:1.5; margin-bottom:14px}
+  .sgroup{background:#f7f8fa; border:1px solid #d9dde3; border-radius:6px; padding:12px 14px; margin-bottom:14px}
+  .sgroup h3{font-size:13px; color:#333; margin-bottom:10px}
+  .sgrid{display:flex; flex-wrap:wrap; gap:8px 14px}
+  .si{width:84px; text-align:center}
+  .si .box{width:52px; height:52px; margin:0 auto 4px; background:#fff; border:1px solid #dfe3e8; border-radius:4px;
+           display:grid; place-items:center}
+  .si .nm{font-size:10.5px; color:#333; line-height:1.3}
+  .si .hint{font-size:9.5px; color:#8a93a0}
+  .pal{display:flex; flex-wrap:wrap; gap:6px 10px; margin-top:4px}
+  .chip{display:flex; align-items:center; gap:6px; font-size:11px; color:#333;
+        background:#fff; border:1px solid #dfe3e8; border-radius:12px; padding:3px 10px 3px 4px}
+  .chip i{width:16px; height:16px; border-radius:50%; border:1px solid rgba(0,0,0,.25)}
+  .foot{margin-top:18px; font-size:11.5px; color:#5a646e; line-height:1.55}
+</style>
+</head>
+<body>
+
+<!-- Библиотека иконок 16×16: всё рисуется кодом через PixelCanvas, см. спецификацию ниже -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-up" viewBox="0 0 16 16">
+      <path d="M8 1.8 L13 7.4 H10 V13.8 H6 V7.4 H3 Z" fill="#141414"/>
+    </symbol>
+
+    <symbol id="i-folder" viewBox="0 0 16 16">
+      <path d="M1.6 5.6 V4.3 q0-1.1 1.1-1.1 h3.3 l1.7 1.9 h5.7 q1.1 0 1.1 1.1 v1.4 Z" fill="#c89a30"/>
+      <rect x="1.6" y="6.2" width="12.9" height="6.6" fill="#ffd061" stroke="#c89a30" stroke-width="1"/>
+      <rect x="1.6" y="6.2" width="12.9" height="1.6" fill="#ffe9a8"/>
+      <rect x="2.6" y="10.2" width="10.9" height="1.1" fill="#fff3c9" opacity=".8"/>
+    </symbol>
+
+    <symbol id="i-folder-h" viewBox="0 0 16 16">
+      <path d="M1.6 5.6 V4.3 q0-1.1 1.1-1.1 h3.3 l1.7 1.9 h5.7 q1.1 0 1.1 1.1 v1.4 Z" fill="#c89a30"/>
+      <rect x="1.6" y="6.2" width="12.9" height="6.6" fill="#ffd061" stroke="#c89a30" stroke-width="1"/>
+      <rect x="1.6" y="6.2" width="12.9" height="1.6" fill="#ffe9a8"/>
+      <path d="M1.2 3 h3.1 l1.7 1.9 v8 H1.2 Z" fill="#d03030" opacity=".88"/>
+    </symbol>
+
+    <symbol id="i-file" viewBox="0 0 16 16">
+      <path d="M3.2 1.5 H9.6 L12.8 4.7 V14.5 H3.2 Z" fill="#ffffff" stroke="#7e8794" stroke-width="1"/>
+      <path d="M9.6 1.5 V4.7 H12.8" fill="#d9dee7" stroke="#7e8794" stroke-width="1"/>
+    </symbol>
+
+    <symbol id="i-txt" viewBox="0 0 16 16">
+      <path d="M3.2 1.5 H9.6 L12.8 4.7 V14.5 H3.2 Z" fill="#ffffff" stroke="#7e8794" stroke-width="1"/>
+      <path d="M9.6 1.5 V4.7 H12.8" fill="#d9dee7" stroke="#7e8794" stroke-width="1"/>
+      <g stroke="#6b7280" stroke-width="1"><line x1="5" y1="7" x2="11" y2="7"/><line x1="5" y1="9.2" x2="11" y2="9.2"/><line x1="5" y1="11.4" x2="9.6" y2="11.4"/></g>
+    </symbol>
+
+    <symbol id="i-code" viewBox="0 0 16 16">
+      <path d="M3.2 1.5 H9.6 L12.8 4.7 V14.5 H3.2 Z" fill="#ffffff" stroke="#7e8794" stroke-width="1"/>
+      <path d="M9.6 1.5 V4.7 H12.8" fill="#d9dee7" stroke="#7e8794" stroke-width="1"/>
+      <line x1="5" y1="7" x2="11.2" y2="7" stroke="#1e5fa8" stroke-width="1.2"/>
+      <line x1="5" y1="9.4" x2="10.2" y2="9.4" stroke="#2a7a2a" stroke-width="1.2"/>
+      <line x1="5" y1="11.8" x2="11.2" y2="11.8" stroke="#6b7280" stroke-width="1.2"/>
+    </symbol>
+
+    <symbol id="i-exe" viewBox="0 0 16 16">
+      <rect x="2.2" y="2.8" width="11.6" height="10.4" rx="1" fill="#f2f3f7" stroke="#4a5568" stroke-width="1"/>
+      <path d="M2.2 3.8 q0-1 1-1 h9.6 q1 0 1 1 v1.8 h-11.6 Z" fill="#2a5aaa"/>
+      <circle cx="4" cy="4.2" r="0.55" fill="#fff"/><circle cx="5.7" cy="4.2" r="0.55" fill="#fff"/>
+      <rect x="3.5" y="7" width="9.2" height="1.2" fill="#c7d2e4"/>
+      <rect x="3.5" y="9.1" width="6.2" height="1.2" fill="#c7d2e4"/>
+      <rect x="3.5" y="11.2" width="7.8" height="1.2" fill="#c7d2e4"/>
+    </symbol>
+
+    <symbol id="i-zip" viewBox="0 0 16 16">
+      <rect x="2.6" y="3.4" width="10.8" height="10" rx="0.8" fill="#e8b95c" stroke="#9c6b1e" stroke-width="1"/>
+      <rect x="6.4" y="3.4" width="3.2" height="10" fill="#b8862f"/>
+      <rect x="5.5" y="6.4" width="5" height="3.2" fill="#ececec" stroke="#7a7a7a" stroke-width="0.9"/>
+      <rect x="7.1" y="7.2" width="1.8" height="1.6" fill="#4d4d4d"/>
+    </symbol>
+
+    <symbol id="i-img" viewBox="0 0 16 16">
+      <path d="M3.2 1.5 H9.6 L12.8 4.7 V14.5 H3.2 Z" fill="#ffffff" stroke="#7e8794" stroke-width="1"/>
+      <path d="M9.6 1.5 V4.7 H12.8" fill="#d9dee7" stroke="#7e8794" stroke-width="1"/>
+      <circle cx="6.1" cy="7" r="1.5" fill="#ffd34d" stroke="#d99e1b" stroke-width="0.6"/>
+      <path d="M4 12.6 L7 8.9 L9.2 11.1 L10.6 9.7 L12.4 12.6 Z" fill="#3e9e4f"/>
+    </symbol>
+
+    <symbol id="i-lnk" viewBox="0 0 16 16">
+      <rect x="3.6" y="1.6" width="10.6" height="12.8" fill="#f2f3f7" stroke="#4a5568" stroke-width="1"/>
+      <path d="M4.6 2.6 h7.4 l1.2 1.2 v1.2 h-8.6 Z" fill="#2a5aaa"/>
+      <rect x="5" y="7" width="7.6" height="1.1" fill="#c7d2e4"/>
+      <rect x="5" y="9.2" width="5" height="1.1" fill="#c7d2e4"/>
+      <rect x="0.8" y="9.2" width="6" height="6" fill="#ffffff" stroke="#7e8794" stroke-width="0.9"/>
+      <path d="M1.9 13.9 L5.6 10.2 M5.6 10.2 H3.5 M5.6 10.2 V12.3" stroke="#1257c1" stroke-width="1.3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+
+    <symbol id="i-back" viewBox="0 0 16 16">
+      <path d="M6.6 3 L2.4 7.4 L6.6 11.8" fill="none" stroke="#2a7a2a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M2.4 7.4 H9.6 q4 0 4 4 v1.6" fill="none" stroke="#2a7a2a" stroke-width="2" stroke-linecap="round"/>
+    </symbol>
+
+    <symbol id="i-fwd" viewBox="0 0 16 16">
+      <path d="M9.4 3 L13.6 7.4 L9.4 11.8" fill="none" stroke="#2a7a2a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M13.6 7.4 H6.4 q-4 0 -4 4 v1.6" fill="none" stroke="#2a7a2a" stroke-width="2" stroke-linecap="round"/>
+    </symbol>
+
+    <symbol id="i-upnav" viewBox="0 0 16 16">
+      <path d="M8 1.6 L12.4 6.4 H9.8 V11.4 H6.2 V6.4 H3.6 Z" fill="#2a7a2a"/>
+      <rect x="2.4" y="12.6" width="11.2" height="1.5" fill="#8a8a8a"/>
+    </symbol>
+
+    <symbol id="i-tree" viewBox="0 0 16 16">
+      <path d="M8 1.4 L11.6 6 H9.7 L12.2 9.2 H3.8 L6.3 6 H4.4 Z" fill="#2e7d32" stroke="#1b5e20" stroke-width="0.7"/>
+      <rect x="7.3" y="9.2" width="1.5" height="4.2" fill="#7a4a21"/>
+      <rect x="4.4" y="13.2" width="7.2" height="1.3" fill="#8a8a8a"/>
+    </symbol>
+
+    <symbol id="i-view" viewBox="0 0 16 16">
+      <circle cx="6.5" cy="6.5" r="4.2" fill="#bfe0ff" stroke="#1e5fa8" stroke-width="1.6"/>
+      <circle cx="6.5" cy="6.5" r="2.1" fill="#eaf5ff"/>
+      <line x1="9.7" y1="9.7" x2="13.6" y2="13.6" stroke="#1e5fa8" stroke-width="2.3" stroke-linecap="round"/>
+    </symbol>
+
+    <symbol id="i-edit" viewBox="0 0 16 16">
+      <path d="M10.7 1.7 L14.3 5.3 L6.1 13.5 L2.3 14 l0.5 -3.8 Z" fill="#f5a623" stroke="#b9791b" stroke-width="0.9" stroke-linejoin="round"/>
+      <path d="M2.3 14 l0.5 -3.8 l1.7 1.7 Z" fill="#3b3b3b"/>
+      <path d="M10 1 L12.9 3.9 L14.9 5.9 l-0.2 -2.4 L12.4 1.2 Z" fill="#e88a8a" stroke="#b9791b" stroke-width="0.6"/>
+    </symbol>
+
+    <symbol id="i-copy" viewBox="0 0 16 16">
+      <rect x="2.6" y="4.4" width="6.6" height="9.2" fill="#e8edf4" stroke="#7e8794" stroke-width="1"/>
+      <rect x="6.2" y="1.8" width="7.2" height="10.2" fill="#ffffff" stroke="#7e8794" stroke-width="1"/>
+      <g stroke="#9aa5b1" stroke-width="0.9"><line x1="7.6" y1="4.4" x2="12" y2="4.4"/><line x1="7.6" y1="6.6" x2="12" y2="6.6"/><line x1="7.6" y1="8.8" x2="10.6" y2="8.8"/></g>
+    </symbol>
+
+    <symbol id="i-move" viewBox="0 0 16 16">
+      <rect x="2.2" y="1.8" width="7" height="9.8" fill="#ffffff" stroke="#7e8794" stroke-width="1"/>
+      <g stroke="#9aa5b1" stroke-width="0.9"><line x1="3.6" y1="4.2" x2="7.8" y2="4.2"/><line x1="3.6" y1="6.4" x2="7.8" y2="6.4"/></g>
+      <path d="M7.4 11.8 H13.4 M11.4 9.4 L13.8 11.8 L11.4 14.2" fill="none" stroke="#2a7a2a" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+
+    <symbol id="i-mkdir" viewBox="0 0 16 16">
+      <path d="M1.4 5.4 V4.2 q0-1 1-1 h3.2 l1.6 1.8 h5.4 q1 0 1 1 v1.3 Z" fill="#c89a30"/>
+      <rect x="1.4" y="6" width="12.2" height="6.4" fill="#ffd061" stroke="#c89a30" stroke-width="1"/>
+      <rect x="1.4" y="6" width="12.2" height="1.5" fill="#ffe9a8"/>
+      <circle cx="11.8" cy="11.4" r="3.7" fill="#ffffff" stroke="#2a7a2a" stroke-width="1.1"/>
+      <path d="M11.8 9.5 v3.8 M9.9 11.4 h3.8" stroke="#2a7a2a" stroke-width="1.5" stroke-linecap="round"/>
+    </symbol>
+
+    <symbol id="i-del" viewBox="0 0 16 16">
+      <circle cx="8" cy="8" r="6.7" fill="#fdecec" stroke="#e0a4a4" stroke-width="0.9"/>
+      <path d="M5 5 L11 11 M11 5 L5 11" stroke="#d03030" stroke-width="2.5" stroke-linecap="round"/>
+    </symbol>
+
+    <symbol id="i-pack" viewBox="0 0 16 16">
+      <rect x="2.4" y="5.2" width="11.2" height="8.2" fill="#e8b95c" stroke="#9c6b1e" stroke-width="1"/>
+      <rect x="2" y="3" width="12" height="2.4" fill="#d9a244" stroke="#9c6b1e" stroke-width="1"/>
+      <rect x="6.9" y="3" width="2.2" height="10.4" fill="#b8862f"/>
+    </symbol>
+
+    <symbol id="i-unpack" viewBox="0 0 16 16">
+      <path d="M1.8 5.6 L3.4 3.2 h9.2 l1.6 2.4 Z" fill="#d9a244" stroke="#9c6b1e" stroke-width="0.9" stroke-linejoin="round"/>
+      <rect x="2.6" y="6.4" width="10.8" height="7" fill="#e8b95c" stroke="#9c6b1e" stroke-width="1"/>
+      <path d="M8 10.8 V4.6 M5.8 6.6 L8 4.4 L10.2 6.6" stroke="#2a7a2a" stroke-width="1.7" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+
+    <symbol id="i-renm" viewBox="0 0 16 16">
+      <rect x="1.8" y="1.6" width="8.8" height="12.8" fill="#ffffff" stroke="#7e8794" stroke-width="1"/>
+      <g stroke="#9aa5b1" stroke-width="0.9"><line x1="3.2" y1="4.4" x2="8.4" y2="4.4"/><line x1="3.2" y1="6.6" x2="8.4" y2="6.6"/><line x1="3.2" y1="8.8" x2="8.4" y2="8.8"/></g>
+      <path d="M9.6 10 l3.6 3.6 -1.7 1.7 -3.9 0.7 0.7 -3.9 Z" fill="#f5a623" stroke="#b9791b" stroke-width="0.7" stroke-linejoin="round"/>
+    </symbol>
+
+    <symbol id="i-find" viewBox="0 0 16 16">
+      <rect x="6.9" y="6.8" width="2.2" height="1.8" fill="#39506e"/>
+      <circle cx="4.7" cy="8.2" r="3.2" fill="#d7e3f4" stroke="#39506e" stroke-width="1.4"/>
+      <circle cx="11.3" cy="8.2" r="3.2" fill="#d7e3f4" stroke="#39506e" stroke-width="1.4"/>
+      <rect x="3.5" y="3.2" width="2.4" height="2.2" fill="#39506e"/>
+      <rect x="10.1" y="3.2" width="2.4" height="2.2" fill="#39506e"/>
+      <path d="M4.7 12.4 V14 M11.3 12.4 V14" stroke="#39506e" stroke-width="1.2"/>
+    </symbol>
+
+    <symbol id="i-sync" viewBox="0 0 16 16">
+      <path d="M3 5.4 H11.4 M9.4 3.2 L12.2 5.4 L9.4 7.6" fill="none" stroke="#2a5aaa" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M13 11 H4.6 M6.6 8.8 L3.8 11 L6.6 13.2" fill="none" stroke="#2a5aaa" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+
+    <symbol id="i-refresh" viewBox="0 0 16 16">
+      <path d="M13.2 8.6 a5.2 5.2 0 1 1 -1.5 -4.4" fill="none" stroke="#1e6fc0" stroke-width="1.9" stroke-linecap="round"/>
+      <path d="M13.6 1.6 V5.4 H9.8" fill="none" stroke="#1e6fc0" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+
+    <symbol id="i-props" viewBox="0 0 16 16">
+      <rect x="2.6" y="1.6" width="10.8" height="12.8" fill="#ffffff" stroke="#7e8794" stroke-width="1"/>
+      <path d="M4 5.4 l1.4 1.4 2.6 -2.8" stroke="#2a7a2a" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+      <line x1="9.4" y1="5.2" x2="12" y2="5.2" stroke="#6b7280" stroke-width="1"/>
+      <path d="M4 9.6 l1.4 1.4 2.6 -2.8" stroke="#2a7a2a" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+      <line x1="9.4" y1="9.4" x2="12" y2="9.4" stroke="#6b7280" stroke-width="1"/>
+      <line x1="4" y1="12.8" x2="12" y2="12.8" stroke="#6b7280" stroke-width="1"/>
+    </symbol>
+
+    <symbol id="i-term" viewBox="0 0 16 16">
+      <rect x="1.6" y="2.4" width="12.8" height="11.2" rx="1" fill="#1e1e1e" stroke="#4a4a4a" stroke-width="1"/>
+      <path d="M3.6 5.8 L5.8 8 L3.6 10.2" stroke="#4ce44c" stroke-width="1.3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+      <rect x="7.2" y="10.4" width="4.2" height="1.2" fill="#4ce44c"/>
+    </symbol>
+
+    <symbol id="i-disk" viewBox="0 0 16 16">
+      <rect x="2" y="2.4" width="12" height="6.6" rx="0.8" fill="#e9eff7" stroke="#5b6b80" stroke-width="1"/>
+      <rect x="2" y="9.8" width="12" height="3.8" rx="0.8" fill="#c9d4e2" stroke="#5b6b80" stroke-width="1"/>
+      <circle cx="12" cy="11.7" r="0.8" fill="#4ce44c"/>
+    </symbol>
+
+    <symbol id="i-cd" viewBox="0 0 16 16">
+      <circle cx="8" cy="8" r="6.2" fill="#e3e8ee" stroke="#8090a4" stroke-width="1"/>
+      <path d="M8 1.8 A6.2 6.2 0 0 1 14.2 8 L8 8 Z" fill="#b9c6d6"/>
+      <circle cx="8" cy="8" r="1.9" fill="#ffffff" stroke="#8090a4" stroke-width="1"/>
+    </symbol>
+  </defs>
+</svg>
+
+<div class="wrap">
+
+  <div class="pagehead">
+    <h1>POSCommander 2 · макет целевого интерфейса</h1>
+    <p>Цель — максимальная схожесть с Total Commander 9 (эталон: <b>docs/tc-ui-reference.md</b>, скриншоты TCUP 9.0a).
+       Красные цифры — легенда ниже, у каждой указан этап плана работ. Файл интерактивный: hover-эффекты работают.</p>
+  </div>
+
+  <!-- ═══════════ ОКНО ═══════════ -->
+  <div class="window">
+
+    <div class="titlebar">
+      <span style="width:44px"></span>
+      <span class="t">POSCommander 2 — C:\Projects\POSCommander2\src &nbsp;·&nbsp; *.*</span>
+      <span class="wbtns"><span>&#8211;</span><span>&#9633;</span><span class="x">&#10005;</span></span>
+    </div>
+
+    <!-- 1. Меню: 10 пунктов, как в TCUP 9.0a -->
+    <div class="menubar zone">
+      <span class="b in" style="right:12px; top:3px">1</span>
+      <span class="m">Файл</span><span class="m">Выделение</span><span class="m">Навигация</span><span class="m">Сеть</span>
+      <span class="m hover">Вид</span><span class="m">Вкладки</span><span class="m">Конфигурация</span>
+      <span class="m">Инструменты</span><span class="m">Запуск</span><span class="m">Помощь</span>
+    </div>
+
+    <!-- 2. Тулбар: 17 кнопок 24×24, группы с сепараторами, дублируют F3–F8 -->
+    <div class="toolbar zone">
+      <span class="b in" style="right:12px; top:4px">2</span>
+      <div class="tb" title="Назад (Alt+Left)"><svg width="16" height="16"><use href="#i-back"/></svg></div>
+      <div class="tb" title="Вперёд (Alt+Right)"><svg width="16" height="16"><use href="#i-fwd"/></svg></div>
+      <div class="tb" title="Вверх (Backspace)"><svg width="16" height="16"><use href="#i-upnav"/></svg></div>
+      <div class="tb" title="Дерево (Alt+F8)"><svg width="16" height="16"><use href="#i-tree"/></svg></div>
+      <span class="tsep"></span>
+      <div class="tb" title="Просмотр (F3)"><svg width="16" height="16"><use href="#i-view"/></svg></div>
+      <div class="tb" title="Правка (F4)"><svg width="16" height="16"><use href="#i-edit"/></svg></div>
+      <div class="tb hot" title="Копирование (F5)"><svg width="16" height="16"><use href="#i-copy"/></svg></div>
+      <div class="tb" title="Перемещение (F6)"><svg width="16" height="16"><use href="#i-move"/></svg></div>
+      <div class="tb" title="Каталог (F7)"><svg width="16" height="16"><use href="#i-mkdir"/></svg></div>
+      <div class="tb" title="Удаление (F8)"><svg width="16" height="16"><use href="#i-del"/></svg></div>
+      <span class="tsep"></span>
+      <div class="tb" title="Упаковать (Alt+F5)"><svg width="16" height="16"><use href="#i-pack"/></svg></div>
+      <div class="tb" title="Распаковать (Alt+F9)"><svg width="16" height="16"><use href="#i-unpack"/></svg></div>
+      <div class="tb" title="Мультипереименование (Ctrl+M)"><svg width="16" height="16"><use href="#i-renm"/></svg></div>
+      <div class="tb" title="Поиск (Alt+F7)"><svg width="16" height="16"><use href="#i-find"/></svg></div>
+      <div class="tb" title="Синхронизация каталогов"><svg width="16" height="16"><use href="#i-sync"/></svg></div>
+      <span class="tsep"></span>
+      <div class="tb" title="Обновить (Ctrl+R)"><svg width="16" height="16"><use href="#i-refresh"/></svg></div>
+      <div class="tb" title="Свойства (Alt+Enter)"><svg width="16" height="16"><use href="#i-props"/></svg></div>
+      <div class="tip">Копирование&nbsp;&nbsp;F5</div>
+    </div>
+
+    <!-- 4. Панель дисков: \ и .. перенесены сюда из заголовка панели -->
+    <div class="drivebar zone">
+      <span class="b tl">4</span>
+      <span class="db on"><svg width="14" height="14"><use href="#i-disk"/></svg>C:</span>
+      <span class="db"><svg width="14" height="14"><use href="#i-disk"/></svg>D:</span>
+      <span class="db"><svg width="14" height="14"><use href="#i-cd"/></svg>E:</span>
+      <span class="db" title="В корень диска">\</span>
+      <span class="db" title="На уровень вверх">..</span>
+      <span class="dfree"><i class="bi" style="margin:0 8px 0 0">4</i>[рабочий] 1 253,4 ГБ из 3 726,0 ГБ свободно</span>
+    </div>
+
+    <!-- ═══ ПАНЕЛИ ═══ -->
+    <div class="panels">
+
+      <!-- левая (активная) -->
+      <div class="panel active">
+        <div class="tabs zone">
+          <span class="b in" style="right:8px; top:auto; bottom:2px">5</span>
+          <span class="tab on">src <span class="x">&#10005;</span></span>
+          <span class="tab">POSCommander2</span>
+          <span class="tab new">+</span>
+        </div>
+        <div class="phead zone">
+          <span class="b" style="right:96px; top:-11px">6</span>
+          <span class="ppath"><b>C:\Projects\POSCommander2\src</b><span class="caret">&#9660;</span></span>
+          <span class="pmask">*.* <span class="caret">&#9660;</span></span>
+        </div>
+        <div class="cols">
+          <span class="name">Имя <span class="arrow">&#9650;</span></span><span>Тип</span><span class="r">Размер</span><span>Дата</span>
+        </div>
+        <div class="rows zone">
+          <div class="row"><span class="nm"><svg width="15" height="15"><use href="#i-up"/></svg><span class="fn">..</span><i class="bi">3</i></span><span class="ty"></span><span class="sz">&lt;DIR&gt;</span><span class="dt">09.11.2026 13:04</span></div>
+          <div class="row"><span class="nm"><svg width="15" height="15"><use href="#i-code"/></svg><span class="fn">archive</span></span><span class="ty">.cpp</span><span class="sz">18 054</span><span class="dt">07.11.2026 19:31</span></div>
+          <div class="row"><span class="nm"><svg width="15" height="15"><use href="#i-code"/></svg><span class="fn">common</span></span><span class="ty">.h</span><span class="sz">4 132</span><span class="dt">04.11.2026 12:30</span></div>
+          <div class="row mark"><span class="nm"><svg width="15" height="15"><use href="#i-code"/></svg><span class="fn">dialogs</span></span><span class="ty">.cpp</span><span class="sz">20 884</span><span class="dt">08.11.2026 20:55</span></div>
+          <div class="row cur"><span class="nm"><svg width="15" height="15"><use href="#i-code"/></svg><span class="fn">main</span><i class="bi">7</i></span><span class="ty">.cpp</span><span class="sz">98 884</span><span class="dt">09.11.2026 13:12</span></div>
+          <div class="row"><span class="nm"><svg width="15" height="15"><use href="#i-code"/></svg><span class="fn">ops</span></span><span class="ty">.cpp</span><span class="sz">6 658</span><span class="dt">05.11.2026 20:12</span></div>
+          <div class="row"><span class="nm"><svg width="15" height="15"><use href="#i-code"/></svg><span class="fn">panel</span></span><span class="ty">.cpp</span><span class="sz">90 979</span><span class="dt">09.11.2026 13:12</span></div>
+          <div class="row"><span class="nm"><svg width="15" height="15"><use href="#i-code"/></svg><span class="fn">plugins</span></span><span class="ty">.cpp</span><span class="sz">9 980</span><span class="dt">06.11.2026 22:14</span></div>
+          <div class="row"><span class="nm"><svg width="15" height="15"><use href="#i-code"/></svg><span class="fn">search</span></span><span class="ty">.cpp</span><span class="sz">17 728</span><span class="dt">07.11.2026 19:30</span></div>
+          <div class="row"><span class="nm"><svg width="15" height="15"><use href="#i-code"/></svg><span class="fn">selftest</span></span><span class="ty">.cpp</span><span class="sz">9 895</span><span class="dt">06.11.2026 18:02</span></div>
+          <div class="row"><span class="nm"><svg width="15" height="15"><use href="#i-code"/></svg><span class="fn">settings</span></span><span class="ty">.cpp</span><span class="sz">6 794</span><span class="dt">05.11.2026 21:16</span></div>
+          <div class="row mark"><span class="nm"><svg width="15" height="15"><use href="#i-code"/></svg><span class="fn">util</span></span><span class="ty">.cpp</span><span class="sz">32 640</span><span class="dt">08.11.2026 21:07</span></div>
+          <div class="row"><span class="nm"><svg width="15" height="15"><use href="#i-code"/></svg><span class="fn">util</span></span><span class="ty">.h</span><span class="sz">3 918</span><span class="dt">04.11.2026 12:28</span></div>
+          <div class="row"><span class="nm"><svg width="15" height="15"><use href="#i-code"/></svg><span class="fn">wcx</span></span><span class="ty">.cpp</span><span class="sz">7 697</span><span class="dt">05.11.2026 23:48</span></div>
+        </div>
+        <div class="pfoot zone">C:\Projects\POSCommander2\src\main.cpp <i class="bi">9</i></div>
+      </div>
+
+      <!-- правая (неактивная) -->
+      <div class="panel inactive">
+        <div class="tabs">
+          <span class="tab on">C:\ <span class="x">&#10005;</span></span>
+          <span class="tab">Windows</span>
+          <span class="tab new">+</span>
+        </div>
+        <div class="phead">
+          <span class="ppath">C:\ <span class="caret">&#9660;</span></span>
+          <span class="pmask">*.* <span class="caret">&#9660;</span></span>
+        </div>
+        <div class="cols">
+          <span class="name">Имя <span class="arrow">&#9650;</span></span><span>Тип</span><span class="r">Размер</span><span>Дата</span>
+        </div>
+        <div class="rows">
+          <div class="row"><span class="nm"><svg width="15" height="15"><use href="#i-up"/></svg><span class="fn">..</span></span><span class="ty"></span><span class="sz">&lt;DIR&gt;</span><span class="dt">09.11.2026 10:00</span></div>
+          <div class="row dir"><span class="nm"><svg width="15" height="15"><use href="#i-folder"/></svg><span class="fn">Games</span></span><span class="ty"></span><span class="sz">&lt;DIR&gt;</span><span class="dt">02.11.2026 18:12</span></div>
+          <div class="row dir"><span class="nm"><svg width="15" height="15"><use href="#i-folder"/></svg><span class="fn">PerfLogs</span></span><span class="ty"></span><span class="sz">&lt;DIR&gt;</span><span class="dt">07.11.2026 09:14</span></div>
+          <div class="row dir"><span class="nm"><svg width="15" height="15"><use href="#i-folder"/></svg><span class="fn">Program Files</span></span><span class="ty"></span><span class="sz">&lt;DIR&gt;</span><span class="dt">08.11.2026 22:31</span></div>
+          <div class="row dir"><span class="nm"><svg width="15" height="15"><use href="#i-folder"/></svg><span class="fn">Program Files (x86)</span></span><span class="ty"></span><span class="sz">&lt;DIR&gt;</span><span class="dt">08.11.2026 22:31</span></div>
+          <div class="row dir curdot"><span class="nm"><svg width="15" height="15"><use href="#i-folder"/></svg><span class="fn">Users</span><i class="bi">8</i></span><span class="ty"></span><span class="sz">&lt;DIR&gt;</span><span class="dt">09.11.2026 11:26</span></div>
+          <div class="row dir"><span class="nm"><svg width="15" height="15"><use href="#i-folder"/></svg><span class="fn">Windows</span></span><span class="ty"></span><span class="sz">&lt;DIR&gt;</span><span class="dt">08.11.2026 23:44</span></div>
+          <div class="row hidden"><span class="nm"><svg width="15" height="15"><use href="#i-file"/></svg><span class="fn">bootmgr</span></span><span class="ty"></span><span class="sz">383 786</span><span class="dt">07.11.2026 09:14</span></div>
+          <div class="row hidden"><span class="nm"><svg width="15" height="15"><use href="#i-file"/></svg><span class="fn">pagefile</span><i class="bi">12</i></span><span class="ty">.sys</span><span class="sz">2 147 483 648</span><span class="dt">09.11.2026 11:26</span></div>
+          <div class="row hidden"><span class="nm"><svg width="15" height="15"><use href="#i-file"/></svg><span class="fn">swapfile</span></span><span class="ty">.sys</span><span class="sz">33 554 432</span><span class="dt">09.11.2026 11:26</span></div>
+        </div>
+        <div class="pfoot">C:\Users</div>
+      </div>
+    </div>
+
+    <!-- 10. Командная строка -->
+    <div class="cmdrow zone">
+      <span class="b in" style="left:-7px; right:auto; top:3px">10</span>
+      <div class="cmd">C:\Projects\POSCommander2\src&gt;<span class="caret">&#9660;</span></div>
+      <div class="cmdbtn" title="Открыть командную строку"><svg width="15" height="15"><use href="#i-term"/></svg></div>
+    </div>
+
+    <!-- 11. F-клавиши: жирная клавиша + подпись (как в kFKeys) -->
+    <div class="fbar zone">
+      <span class="b in" style="left:-7px; right:auto; top:4px">11</span>
+      <div class="fbtn"><b>F3</b> Просмотр</div>
+      <div class="fbtn"><b>F4</b> Правка</div>
+      <div class="fbtn"><b>F5</b> Копирование</div>
+      <div class="fbtn"><b>F6</b> Перемещение</div>
+      <div class="fbtn"><b>F7</b> Каталог</div>
+      <div class="fbtn"><b>F8</b> Удаление</div>
+      <div class="fbtn"><b>Alt+F4</b> Выход</div>
+    </div>
+  </div>
+
+  <!-- ═══════════ ЛЕГЕНДА ═══════════ -->
+  <div class="legend">
+    <h2>Легенда: 12 изменений и этапы плана (всего ~12–15 часов)</h2>
+    <div class="lgrid">
+      <div class="li"><span class="n">1</span><span><b>Меню из 10 пунктов</b> — как в TCUP 9.0a: +Навигация, Вкладки, Конфигурация, Инструменты, Запуск (сейчас 6).</span><span class="st st6">этап 6</span></div>
+      <div class="li"><span class="n">2</span><span><b>Тулбар 17 кнопок 24×24</b> — группы разделены сепараторами, F3–F8 дублируются иконками (сейчас 9 кнопок, F-операций нет). Hover: TrackMouseEvent + подсветка #CCE8FF.</span><span class="st st1">этап 1 · ~1 ч</span></div>
+      <div class="li"><span class="n">3</span><span><b>Цветные иконки 16×16</b> в списке файлов — жёлтые папки, типы файлов по расширению (монохром сейчас). Спецификация ниже.</span><span class="st st2">этап 2 · 3–4 ч</span></div>
+      <div class="li"><span class="n">4</span><span><b>Панель дисков</b>: активный диск подсвечен, `\` и `..` переехали сюда из заголовка панели, справа — свободное место.</span><span class="st st3">этап 3 · 30 мин</span></div>
+      <div class="li"><span class="n">5</span><span><b>Вкладки</b> — уже как в TC (белая активная, × для закрытия, + новая), оставить.</span><span class="st stok">готово</span></div>
+      <div class="li"><span class="n">6</span><span><b>Заголовок панели</b>: путь с выпадающей историей + поле маски `*.*` справа (история масок, MatchMask).</span><span class="st st5">этап 5 · 2–3 ч</span></div>
+      <div class="li"><span class="n">7</span><span><b>Курсор активной панели</b> — синяя заливка #0000D8, белый текст; помеченные файлы красным #C80000 (уже как в TC).</span><span class="st stok">готово</span></div>
+      <div class="li"><span class="n">8</span><span><b>Курсор неактивной панели</b> — пунктирная рамка вместо серой заливки (DrawFocusRect).</span><span class="st st4">этап 4 · 1–2 ч</span></div>
+      <div class="li"><span class="n">9</span><span><b>Строка статуса панели</b> — путь под курсором, как в TC (`…\src\main.cpp`).</span><span class="st st5">этап 5</span></div>
+      <div class="li"><span class="n">10</span><span><b>Командная строка</b> — выпадающая история, длинный путь сокращается слева («…\net10.0&gt;»), кнопка терминала.</span><span class="st st6">этап 6</span></div>
+      <div class="li"><span class="n">11</span><span><b>F-кнопки</b> — клавиша жирным, подпись обычным; состав как в kFKeys (F3…F8, Alt+F4).</span><span class="st st6">этап 6</span></div>
+      <div class="li"><span class="n">12</span><span><b>Скрытые файлы</b> — серым #808080, у скрытых папок красная полоса на левом крае иконки (как в TC).</span><span class="st st2">этап 2</span></div>
+    </div>
+  </div>
+
+  <!-- ═══════════ СПЕЦИФИКАЦИЯ ИКОНОК ═══════════ -->
+  <div class="spec">
+    <h2>Спецификация иконок 16×16</h2>
+    <p class="sub">Все иконки рисуются кодом в <b>PixelCanvas</b> (util.cpp) — без внешних ресурсов. Кэш: <b>std::map&lt;int,&nbsp;HICON&gt;</b>,
+       вывод <b>DrawIconEx 16×16</b>. Панельные иконки выбираются по атрибуту (папка/скрытая) и расширению.</p>
+
+    <div class="sgroup">
+      <h3>Панельные (список файлов)</h3>
+      <div class="sgrid">
+        <div class="si"><div class="box"><svg width="40" height="40"><use href="#i-up"/></svg></div><div class="nm">«..» вверх</div><div class="hint">#141414</div></div>
+        <div class="si"><div class="box"><svg width="40" height="40"><use href="#i-folder"/></svg></div><div class="nm">Каталог</div><div class="hint">#FFD061 + #FFE9A8</div></div>
+        <div class="si"><div class="box"><svg width="40" height="40"><use href="#i-folder-h"/></svg></div><div class="nm">Каталог скрытый</div><div class="hint">+ полоса #D03030</div></div>
+        <div class="si"><div class="box"><svg width="40" height="40"><use href="#i-file"/></svg></div><div class="nm">Файл</div><div class="hint">#FFF / #7E8794</div></div>
+        <div class="si"><div class="box"><svg width="40" height="40"><use href="#i-txt"/></svg></div><div class="nm">Текст</div><div class="hint">.txt .log .ini</div></div>
+        <div class="si"><div class="box"><svg width="40" height="40"><use href="#i-code"/></svg></div><div class="nm">Код</div><div class="hint">.cpp .h .c .py</div></div>
+        <div class="si"><div class="box"><svg width="40" height="40"><use href="#i-exe"/></svg></div><div class="nm">Приложение</div><div class="hint">.exe .dll</div></div>
+        <div class="si"><div class="box"><svg width="40" height="40"><use href="#i-zip"/></svg></div><div class="nm">Архив</div><div class="hint">.zip .rar .7z</div></div>
+        <div class="si"><div class="box"><svg width="40" height="40"><use href="#i-img"/></svg></div><div class="nm">Изображение</div><div class="hint">.jpg .png .bmp</div></div>
+        <div class="si"><div class="box"><svg width="40" height="40"><use href="#i-lnk"/></svg></div><div class="nm">Ярлык</div><div class="hint">.lnk, стрелка</div></div>
+      </div>
+    </div>
+
+    <div class="sgroup">
+      <h3>Тулбар (17 кнопок, 24×24)</h3>
+      <div class="sgrid">
+        <div class="si"><div class="box"><svg width="40" height="40"><use href="#i-back"/></svg></div><div class="nm">Назад</div><div class="hint">#2A7A2A</div></div>
+        <div class="si"><div class="box"><svg width="40" height="40"><use href="#i-fwd"/></svg></div><div class="nm">Вперёд</div><div class="hint">#2A7A2A</div></div>
+        <div class="si"><div class="box"><svg width="40" height="40"><use href="#i-upnav"/></svg></div><div class="nm">Вверх</div><div class="hint">#2A7A2A</div></div>
+        <div class="si"><div class="box"><svg width="40" height="40"><use href="#i-tree"/></svg></div><div class="nm">Дерево</div><div class="hint">#2E7D32</div></div>
+        <div class="si"><div class="box"><svg width="40" height="40"><use href="#i-view"/></svg></div><div class="nm">Просмотр F3</div><div class="hint">#1E5FA8</div></div>
+        <div class="si"><div class="box"><svg width="40" height="40"><use href="#i-edit"/></svg></div><div class="nm">Правка F4</div><div class="hint">#F5A623</div></div>
+        <div class="si"><div class="box"><svg width="40" height="40"><use href="#i-copy"/></svg></div><div class="nm">Копир. F5</div><div class="hint">#FFF / #7E8794</div></div>
+        <div class="si"><div class="box"><svg width="40" height="40"><use href="#i-move"/></svg></div><div class="nm">Перенос F6</div><div class="hint">+ #2A7A2A</div></div>
+        <div class="si"><div class="box"><svg width="40" height="40"><use href="#i-mkdir"/></svg></div><div class="nm">Каталог F7</div><div class="hint">#FFD061 + #2A7A2A</div></div>
+        <div class="si"><div class="box"><svg width="40" height="40"><use href="#i-del"/></svg></div><div class="nm">Удаление F8</div><div class="hint">#D03030</div></div>
+        <div class="si"><div class="box"><svg width="40" height="40"><use href="#i-pack"/></svg></div><div class="nm">Упаковать</div><div class="hint">#E8B95C</div></div>
+        <div class="si"><div class="box"><svg width="40" height="40"><use href="#i-unpack"/></svg></div><div class="nm">Распаковать</div><div class="hint">+ #2A7A2A</div></div>
+        <div class="si"><div class="box"><svg width="40" height="40"><use href="#i-renm"/></svg></div><div class="nm">Мультипереим.</div><div class="hint">лист + #F5A623</div></div>
+        <div class="si"><div class="box"><svg width="40" height="40"><use href="#i-find"/></svg></div><div class="nm">Поиск</div><div class="hint">бинокль #39506E</div></div>
+        <div class="si"><div class="box"><svg width="40" height="40"><use href="#i-sync"/></svg></div><div class="nm">Синхронизация</div><div class="hint">#2A5AAA</div></div>
+        <div class="si"><div class="box"><svg width="40" height="40"><use href="#i-refresh"/></svg></div><div class="nm">Обновить</div><div class="hint">#1E6FC0</div></div>
+        <div class="si"><div class="box"><svg width="40" height="40"><use href="#i-props"/></svg></div><div class="nm">Свойства</div><div class="hint">✓ #2A7A2A</div></div>
+        <div class="si"><div class="box"><svg width="40" height="40"><use href="#i-term"/></svg></div><div class="nm">Терминал</div><div class="hint">#4CE44C</div></div>
+      </div>
+    </div>
+
+    <div class="sgroup">
+      <h3>Палитра</h3>
+      <div class="pal">
+        <span class="chip"><i style="background:#ffd061"></i>#FFD061 папка</span>
+        <span class="chip"><i style="background:#ffe9a8"></i>#FFE9A8 перед</span>
+        <span class="chip"><i style="background:#fff3c9"></i>#FFF3C9 блик</span>
+        <span class="chip"><i style="background:#c89a30"></i>#C89A30 контур</span>
+        <span class="chip"><i style="background:#d03030"></i>#D03030 крест/полоса</span>
+        <span class="chip"><i style="background:#c80000"></i>#C80000 помеченные</span>
+        <span class="chip"><i style="background:#2a7a2a"></i>#2A7A2A зелёный</span>
+        <span class="chip"><i style="background:#1e5fa8"></i>#1E5FA8 синий</span>
+        <span class="chip"><i style="background:#2a5aaa"></i>#2A5AAA стрелки</span>
+        <span class="chip"><i style="background:#f5a623"></i>#F5A623 карандаш</span>
+        <span class="chip"><i style="background:#e8b95c"></i>#E8B95C коробка</span>
+        <span class="chip"><i style="background:#6b7280"></i>#6B7280 линии</span>
+      </div>
+    </div>
+
+    <p class="foot">Макет статичный (HTML+SVG, один файл, без зависимостей), составлен 09.11.2026 по docs/tc-ui-reference.md
+       и коду src/main.cpp (kFKeys, kToolbar), src/panel.cpp (цвета), src/util.cpp (PixelCanvas). Размеры окон и подписи
+       соответствуют эталону TCUP 9.0a; размеры файлов в левой панели — реальные из src/.</p>
+  </div>
+</div>
+</body>
+</html>
