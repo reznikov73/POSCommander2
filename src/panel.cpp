@@ -883,9 +883,11 @@ bool Panel::CreateLevelWindow(HoverLevel& lv) {
                              0, 0, 10, 10, hwnd_, nullptr, g_inst, this);
     if (!lv.win) return false;
 
+    // LVS_SHAREIMAGELISTS обязателен: иначе при закрытии уровня уничтожается ОБЩИЙ
+    // список значков и иконки пропадают во всех панелях.
     lv.list = CreateWindowExW(0, WC_LISTVIEWW, L"",
                               WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL | LVS_NOCOLUMNHEADER |
-                                  LVS_SHOWSELALWAYS | WS_VSCROLL,
+                                  LVS_SHOWSELALWAYS | LVS_SHAREIMAGELISTS | WS_VSCROLL,
                               0, 0, 10, 10, lv.win, (HMENU)(INT_PTR)1, g_inst, nullptr);
     if (lv.list) {
         SetWindowSubclass(lv.list, HoverListProc, 4, (DWORD_PTR)this);
