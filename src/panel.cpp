@@ -1912,14 +1912,22 @@ bool Panel::GoRoot() {
 }
 
 int Panel::CursorIndex() const {
-    if (!list_) return -1;
-    return ListView_GetNextItem(list_, -1, LVNI_FOCUSED);
+    if (list_) {
+        int focused = ListView_GetNextItem(list_, -1, LVNI_FOCUSED);
+        if (focused >= 0) return focused;
+    }
+    // Запасной путь: в списке без фокуса LVIS_FOCUSED может не стоять
+    // (или сниматься, например кликом по пустому месту) — используем
+    // сохранённую строку курсора. Нужен неактивной панели (рамка курсора).
+    if (cursorRow_ >= 0 && cursorRow_ < (int)entries_.size()) return cursorRow_;
+    return -1;
 }
 
 void Panel::SetCursorIndex(int index) {
     if (!list_) return;
     if (index < 0 || index >= (int)entries_.size()) index = 0;
     const int old = CursorIndex();
+    cursorRow_ = index;   // рамка неактивной панели рисуется по этому индексу
     // Заливка строки курсора (LVIS_SELECTED) — только на активной панели;
     // на неактивной курсор рисуем пунктирной рамкой (DrawCursorFrame).
     ListView_SetItemState(list_, -1, 0, LVIS_SELECTED | LVIS_FOCUSED);
@@ -2189,11 +2197,23 @@ void Panel::DrawCursorFrame(NMLVCUSTOMDRAW* cd) {
     if (active_) return;
     const int index = (int)cd->nmcd.dwItemSpec;
     if (index < 0 || index >= (int)entries_.size()) return;
-    if (!(ListView_GetItemState(list_, index, LVIS_FOCUSED) & LVIS_FOCUSED)) return;
+    // Строка курсора — по CursorIndex(): LVNI_FOCUSED, а если фокус в списке
+    // не стоял — сохранённый cursorRow_. На LVIS_FOCUSED напрямую не полагаемся.
+    if (index != CursorIndex()) return;
     RECT rc{};
-    if (ListView_GetItemRect(list_, index, &rc, LVIR_BOUNDS)) {
-        DrawFocusRect(cd->nmcd.hdc, &rc);
-    }
+    if (!ListView_GetItemRect(list_, index, &rc, LVIR_BOUNDS)) return;
+    InflateRect(&rc, -1, -1);   // линия рисуется по центру пера — не залезаем на соседние строки
+    // Пунктир обычным пером, а не DrawFocusRect: тот рисует в XOR, и при
+    // повторной отрисовке строки за один цикл рамка бы стёрлась.
+    HPEN pen = CreatePen(PS_DOT, 1, GetSysColor(COLOR_WINDOWTEXT));
+    HGDIOBJ old = SelectObject(cd->nmcd.hdc, pen);
+    MoveToEx(cd->nmcd.hdc, rc.left, rc.top, nullptr);
+    LineTo(cd->nmcd.hdc, rc.right, rc.top);
+    LineTo(cd->nmcd.hdc, rc.right, rc.bottom);
+    LineTo(cd->nmcd.hdc, rc.left, rc.bottom);
+    LineTo(cd->nmcd.hdc, rc.left, rc.top);
+    SelectObject(cd->nmcd.hdc, old);
+    DeleteObject(pen);
 }
 
 // ---------- дерево каталогов ----------
@@ -2785,7 +2805,9 @@ LRESULT Panel::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                         DrawRow(cd);
                         return CDRF_NEWFONT;
                     }
-                    if (cd->nmcd.dwDrawStage == CDDS_ITEMPOSTPAINT) {
+                    if ((cd->nmcd.dwDrawStage & CDDS_ITEMPOSTPAINT) == CDDS_ITEMPOSTPAINT) {
+                        // Пост-отрисовка строки. Сравнение по маске: при включённых
+                        // subitem-уведомлениях стадия может прийти с флагом CDDS_SUBITEM.
                         // Имя в первой колонке ListView рисует своим цветом, поэтому перерисовываем его сами.
                         DrawRowName(cd);
                         // Неактивная панель: пунктирная рамка вокруг строки курсора.

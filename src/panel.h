@@ -192,6 +192,7 @@ private:
 
     int lastCursor_ = 0;           // прошлая позиция курсора (для Shift+клик)
     bool programmaticCursor_ = false;   // курсор двигаем сами, а не мышью
+    int cursorRow_ = -1;           // строка курсора: рамка неактивной панели рисуется по ней — LVIS_FOCUSED в списке без фокуса ненадёжен
     bool clickShift_ = false;      // Shift был зажат в момент клика
     bool clickCtrl_ = false;       // Ctrl был зажат в момент клика
 
