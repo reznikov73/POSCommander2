@@ -81,6 +81,15 @@ HIMAGELIST ShellSmallImageList();
 // dir — каталог панели, нужен для иконок конкретных папок и файлов.
 int IconForEntry(const Entry& e, const std::wstring& dir = L"");
 
+// Значки тулбара: рисуем сами, в стиле Total Commander (см. ui-target.html).
+enum ToolIconKind {
+    TIK_BACK, TIK_FWD, TIK_UP, TIK_TREE,
+    TIK_VIEW, TIK_EDIT, TIK_COPY, TIK_MOVE, TIK_MKDIR, TIK_DEL,
+    TIK_PACK, TIK_UNPACK, TIK_RENM,
+    TIK_FIND, TIK_SYNC, TIK_REFRESH, TIK_PROPS,
+};
+HICON MakeToolIcon(int kind, int size);
+
 UINT WindowDpi(HWND hwnd);
 // Естественная сортировка: "файл2" раньше "файл10".
 int CompareNatural(const std::wstring& a, const std::wstring& b);

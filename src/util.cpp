@@ -1,6 +1,7 @@
 // Реализация утилит: пути, форматирование, перечисление каталогов, иконки.
 #include "util.h"
 
+#include <cmath>
 #include <cstring>
 #include <vector>
 
@@ -625,6 +626,230 @@ HICON MakeUpArrowIcon(int size) {
     if (mask) DeleteObject(mask);
     ReleaseDC(nullptr, screen);
     return icon;
+}
+
+// ─── значки тулбара 16×16: пиксель-арт в стиле Total Commander ───────
+// Рисуется в координатах 16×16; при другом размере масштабируется
+// ближайшим соседом (dpi 125% -> 20, 150% -> 24).
+// Пиксель-арт проверен по макету ui-target.html (см. scripts/icon_preview.cpp).
+void ToolIconPixels(int kind, PixelCanvas& c) {
+    const unsigned kGreen   = 0xFF2A7A2A;
+    const unsigned kTree     = 0xFF2E7D32;
+    const unsigned kBlue     = 0xFF1E5FA8;
+    const unsigned kPupil    = 0xFF0E2A50;
+    const unsigned kAmber    = 0xFFF5A623;
+    const unsigned kPencilEdge = 0xFF8A5A12;
+    const unsigned kWood     = 0xFFC8A050;
+    const unsigned kLead     = 0xFF3A3A3A;
+    const unsigned kEraser   = 0xFFD06060;
+    const unsigned kGray     = 0xFF7E8794;
+    const unsigned kPaper    = 0xFFFFFFFF;
+    const unsigned kPaper2   = 0xFFE6E6E6;
+    const unsigned kEdge     = 0xFF8A8A8A;
+    const unsigned kText     = 0xFF9A9A9A;
+    const unsigned kRed      = 0xFFD03030;
+    const unsigned kBox      = 0xFFE8B95C;
+    const unsigned kBoxEdge  = 0xFFB08234;
+    const unsigned kBoxLid   = 0xFFF0DCA8;
+    const unsigned kBinoc    = 0xFF39506E;
+    const unsigned kGear     = 0xFF6B7280;
+    const unsigned kSync     = 0xFF2A5AAA;
+    const unsigned kRefresh  = 0xFF1E6FC0;
+    const unsigned kFEdge    = 0xFFB8860B;
+    const unsigned kFBody    = 0xFFFFE9A8;
+    const unsigned kFDark    = 0xFFFFD061;
+
+    switch (kind) {
+        case TIK_BACK:                                  // назад: зелёная стрелка влево
+            for (int k = 0; k < 5; ++k) c.VLine(3 + k, 7 - k, 8 + k, kGreen);
+            c.Fill(8, 7, 13, 8, kGreen);
+            break;
+        case TIK_FWD:                                   // вперёд
+            for (int k = 0; k < 5; ++k) c.VLine(12 - k, 7 - k, 8 + k, kGreen);
+            c.Fill(2, 7, 7, 8, kGreen);
+            break;
+        case TIK_UP:                                    // вверх
+            for (int k = 0; k < 5; ++k) c.HLine(7 - k, 8 + k, 3 + k, kGreen);
+            c.Fill(7, 8, 8, 13, kGreen);
+            break;
+        case TIK_TREE: {                                  // дерево каталогов: ствол + ветви + узлы
+            auto node = [&c](int x0, int y0) {
+                c.HLine(x0, x0 + 4, y0, kTree);
+                c.HLine(x0, x0 + 4, y0 + 4, kTree);
+                c.VLine(x0, y0, y0 + 4, kTree);
+                c.VLine(x0 + 4, y0, y0 + 4, kTree);
+            };
+            c.Fill(2, 2, 3, 13, kTree);                   // ствол 2px
+            c.Fill(4, 4, 7, 5, kTree);                    // ветвь 1
+            c.Fill(4, 9, 7, 10, kTree);                   // ветвь 2
+            node(8, 2);
+            node(8, 9);
+            break;
+        }
+        case TIK_VIEW: {                                // просмотр: глаз
+            c.HLine(5, 10, 3, kBlue);
+            c.Set(3, 4, kBlue); c.Set(4, 4, kBlue); c.Set(11, 4, kBlue); c.Set(12, 4, kBlue);
+            c.Set(2, 5, kBlue); c.Set(13, 5, kBlue);
+            c.Set(1, 6, kBlue); c.Set(14, 6, kBlue);
+            c.Set(1, 7, kBlue); c.Set(14, 7, kBlue);
+            c.Set(2, 8, kBlue); c.Set(13, 8, kBlue);
+            c.Set(3, 9, kBlue); c.Set(4, 9, kBlue); c.Set(11, 9, kBlue); c.Set(12, 9, kBlue);
+            c.HLine(5, 10, 10, kBlue);
+            c.Fill(6, 5, 9, 8, kPupil);
+            c.Set(6, 5, kPaper); c.Set(9, 5, kPaper);      // белые уголки зрачка
+            c.Set(6, 8, kPaper); c.Set(9, 8, kPaper);
+            break;
+        }
+        case TIK_EDIT: {                                // правка: толстый карандаш по диагонали
+            c.Fill(11, 0, 13, 1, kEraser);                // ластик
+            c.HLine(11, 13, 2, kPencilEdge);
+            for (int k = 0; k <= 6; ++k) c.Fill(10 - k, 3 + k, 12 - k, 3 + k, kAmber);
+            c.Fill(3, 10, 5, 10, kWood);                  // деревянное остриё
+            c.Fill(2, 11, 3, 11, kWood);
+            c.Fill(1, 12, 2, 12, kLead);                  // грифель
+            break;
+        }
+        case TIK_COPY: {                                // копирование: два листа
+            auto sheet = [&c](int x0, int y0, unsigned paper, unsigned edge) {
+                c.Fill(x0, y0, x0 + 7, y0 + 10, paper);
+                c.HLine(x0, x0 + 7, y0, edge);
+                c.HLine(x0, x0 + 7, y0 + 10, edge);
+                c.VLine(x0, y0, y0 + 10, edge);
+                c.VLine(x0 + 7, y0, y0 + 10, edge);
+                for (int y = y0 + 3; y <= y0 + 8; y += 3) c.HLine(x0 + 2, x0 + 5, y, 0xFF9A9A9A);
+            };
+            sheet(4, 4, kPaper2, kEdge);
+            sheet(1, 1, kPaper, kGray);
+            break;
+        }
+        case TIK_MOVE: {                                // перемещение: лист + стрелка
+            c.Fill(1, 1, 7, 10, kPaper);
+            c.HLine(1, 7, 1, kEdge); c.HLine(1, 7, 10, kEdge);
+            c.VLine(1, 1, 10, kEdge); c.VLine(7, 1, 10, kEdge);
+            c.HLine(3, 5, 4, kText); c.HLine(3, 5, 7, kText);
+            for (int k = 0; k < 4; ++k) c.VLine(13 - k, 10 - k, 11 + k, kGreen);
+            c.Fill(8, 10, 12, 11, kGreen);
+            break;
+        }
+        case TIK_MKDIR: {                               // новый каталог: папка + плюс
+            c.Fill(4, 0, 5, 5, kGreen);                   // вертикаль плюса
+            c.Fill(1, 2, 8, 3, kGreen);                   // горизонталь плюса
+            c.HLine(1, 6, 5, kFEdge);                     // верх язычка
+            c.Fill(1, 6, 6, 7, kFDark);                   // язычок
+            c.VLine(1, 5, 7, kFEdge);
+            c.HLine(1, 6, 7, kFEdge);
+            c.HLine(1, 14, 8, kFEdge);                    // верх корпуса
+            c.Fill(1, 9, 14, 11, kFBody);                 // корпус
+            c.Fill(1, 12, 14, 13, kFDark);                // низ темнее
+            c.HLine(1, 14, 14, kFEdge);
+            c.VLine(1, 8, 14, kFEdge);
+            c.VLine(14, 8, 14, kFEdge);
+            break;
+        }
+        case TIK_DEL:                                   // удаление: красный крест
+            for (int i = 0; i <= 9; ++i) {
+                c.Set(3 + i, 3 + i, kRed); c.Set(4 + i, 3 + i, kRed);
+                c.Set(12 - i, 3 + i, kRed); c.Set(13 - i, 3 + i, kRed);
+            }
+            break;
+        case TIK_PACK: {                                 // упаковать: посылка, лента крест-накрест
+            c.Fill(2, 5, 13, 14, kBox);                   // корпус
+            c.HLine(2, 13, 5, kBoxEdge); c.HLine(2, 13, 14, kBoxEdge);
+            c.VLine(2, 5, 14, kBoxEdge); c.VLine(13, 5, 14, kBoxEdge);
+            c.Fill(1, 2, 14, 4, kBoxLid);                 // крышка шире корпуса
+            c.HLine(1, 14, 2, kBoxEdge);
+            c.VLine(1, 2, 4, kBoxEdge); c.VLine(14, 2, 4, kBoxEdge);
+            c.HLine(1, 14, 4, kBoxEdge);
+            c.Fill(7, 2, 8, 14, kPaper);                  // лента: вертикаль
+            c.Fill(2, 9, 13, 10, kPaper);                 // лента: горизонталь
+            break;
+        }
+        case TIK_UNPACK: {                              // распаковать: открытая коробка + стрелка
+            for (int k = 0; k < 3; ++k) c.HLine(7 - k, 8 + k, k, kGreen);   // головка
+            c.Fill(7, 3, 8, 6, kGreen);                                        // вал
+            c.HLine(1, 4, 6, kBoxLid);                    // отогнутые клапаны
+            c.HLine(0, 3, 7, kBoxEdge);
+            c.HLine(11, 14, 6, kBoxLid);
+            c.HLine(12, 15, 7, kBoxEdge);
+            c.Fill(2, 8, 13, 14, kBox);                   // корпус
+            c.HLine(2, 13, 8, kBoxEdge); c.HLine(2, 13, 14, kBoxEdge);
+            c.VLine(2, 8, 14, kBoxEdge); c.VLine(13, 8, 14, kBoxEdge);
+            c.Fill(7, 8, 8, 14, kPaper);                  // лента
+            break;
+        }
+        case TIK_RENM: {                                // мультипереименование: лист + карандаш
+            c.Fill(1, 1, 6, 9, kPaper);
+            c.HLine(1, 6, 1, kEdge); c.HLine(1, 6, 9, kEdge);
+            c.VLine(1, 1, 9, kEdge); c.VLine(6, 1, 9, kEdge);
+            c.HLine(3, 4, 4, kText); c.HLine(3, 4, 7, kText);
+            for (int k = 0; k <= 6; ++k) c.Fill(10 - k, 5 + k, 12 - k, 5 + k, kAmber);
+            c.Fill(3, 12, 5, 12, kWood);
+            c.Fill(2, 13, 3, 13, kLead);
+            break;
+        }
+        case TIK_FIND: {                                // поиск: бинокль
+            auto lens = [&c](int cx, int cy) {
+                c.HLine(cx - 2, cx + 2, cy - 3, kBinoc);
+                for (int dy = -2; dy <= 2; ++dy) c.HLine(cx - 3, cx + 3, cy + dy, kBinoc);
+                c.HLine(cx - 2, cx + 2, cy + 3, kBinoc);
+            };
+            c.HLine(2, 13, 4, kBinoc);                    // верхняя планка
+            c.VLine(4, 4, 7, kBinoc); c.VLine(12, 4, 7, kBinoc);
+            c.HLine(7, 9, 10, kBinoc);                    // перемычка
+            lens(4, 10); lens(12, 10);
+            break;
+        }
+        case TIK_SYNC:                                  // синхронизация: встречные стрелки
+            for (int k = 0; k < 3; ++k) c.VLine(11 - k, 4 - k, 5 + k, kSync);
+            c.Fill(3, 4, 10, 5, kSync);
+            for (int k = 0; k < 3; ++k) c.VLine(4 + k, 10 - k, 11 + k, kSync);
+            c.Fill(5, 10, 12, 11, kSync);
+            break;
+        case TIK_REFRESH: {                             // обновить: круговая стрелка ↻
+            for (int i = 0; i <= 50; ++i) {
+                const double rad = (75.0 - i * 300.0 / 50.0) * 3.14159265358979 / 180.0;
+                const int x5 = 8 + (int)(5.0 * cos(rad) + 0.5);
+                const int y5 = 8 - (int)(5.0 * sin(rad) + 0.5);
+                const int x4 = 8 + (int)(4.0 * cos(rad) + 0.5);
+                const int y4 = 8 - (int)(4.0 * sin(rad) + 0.5);
+                c.Set(x5, y5, kRefresh);
+                c.Set(x4, y4, kRefresh);
+            }
+            c.HLine(9, 11, 2, kRefresh);                 // наконечник у начала дуги
+            c.HLine(9, 12, 3, kRefresh);
+            c.HLine(9, 12, 4, kRefresh);
+            c.HLine(9, 11, 5, kRefresh);
+            break;
+        }
+        case TIK_PROPS: {                               // свойства: шестерёнка с зубцами
+            c.HLine(6, 9, 5, kGear);
+            c.HLine(6, 9, 11, kGear);
+            c.VLine(5, 6, 9, kGear); c.VLine(10, 6, 9, kGear);
+            c.Fill(7, 2, 8, 4, kGear);                                  // зуб N
+            c.Fill(7, 12, 8, 14, kGear);                                 // зуб S
+            c.Fill(2, 7, 4, 8, kGear);                                   // зуб W
+            c.Fill(11, 7, 13, 8, kGear);                                 // зуб E
+            c.Fill(11, 3, 12, 4, kGear);                                 // зуб NE
+            c.Fill(11, 11, 12, 12, kGear);                                // зуб SE
+            c.Fill(3, 11, 4, 12, kGear);                                 // зуб SW
+            c.Fill(3, 3, 4, 4, kGear);                                   // зуб NW
+            break;
+        }
+        default:
+            break;
+    }
+}
+
+// Значок тулбара по виду: 16×16, при большем размере — масштабирование.
+HICON MakeToolIcon(int kind, int size) {
+    PixelCanvas small(16);
+    ToolIconPixels(kind, small);
+    if (size <= 16) return small.ToIcon();
+    PixelCanvas big(size);
+    for (int y = 0; y < size; ++y)
+        for (int x = 0; x < size; ++x)
+            big.Set(x, y, small.px[(size_t)(y * 16 / size) * 16 + (x * 16 / size)]);
+    return big.ToIcon();
 }
 
 // Добавляет значок в наш список и возвращает его индекс.

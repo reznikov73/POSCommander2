@@ -20,6 +20,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <map>
 
 HINSTANCE g_inst = nullptr;
 
@@ -53,6 +54,8 @@ enum : int {
     IDM_NET_MAP = 194,
     IDM_NET_UNMAP = 195,
     IDM_NET_UNC = 196,
+    IDM_UNPACK = 197,
+    IDM_SYNC = 198,
 
     IDM_SEL_ALL = 120,
     IDM_SEL_NONE,
@@ -121,12 +124,32 @@ static_assert(sizeof(kFKeyLabels) / sizeof(kFKeyLabels[0]) == sizeof(kFKeys) / s
 const UINT_PTR kTitleTimer = 10;      // обновление заголовка окна
 
 const int ID_TB_FIRST = 1100;
-struct TbDef { const wchar_t* text; int command; };
-// Тулбар: только то, чего нет на F-клавишах (копирование/перенос/каталог/удаление — там).
+// Сепаратор в тулбаре: не кнопка, команда 0.
+struct TbDef { const wchar_t* text; int command; bool separator; };
+// Тулбар как в TC: 17 кнопок 24x24 в группах с вертикальными сепараторами.
+// F3-F8 продублированы иконками — как в Total Commander.
 const TbDef kToolbar[] = {
-    {L"Обновить", IDM_REFRESH}, {L"Назад", IDM_NAV_BACK},     {L"Вперёд", IDM_NAV_FORWARD},
-    {L"Вверх", IDM_NAV_UP},     {L"Просмотр", IDM_VIEW},      {L"Поиск", IDM_SEARCH},
-    {L"Дерево", IDM_TREE},      {L"Очередь", IDM_QUEUE},      {L"Свойства", IDM_PROPERTIES},
+    {L"Назад",                       IDM_NAV_BACK,      false},
+    {L"Вперёд",                      IDM_NAV_FORWARD,   false},
+    {L"Вверх",                       IDM_NAV_UP,        false},
+    {L"Дерево каталогов",             IDM_TREE,           false},
+    {L"",                            0,                 true},
+    {L"Просмотр (F3)",                IDM_VIEW,           false},
+    {L"Правка (F4)",                  IDM_EDIT,           false},
+    {L"Копирование (F5)",            IDM_COPY,           false},
+    {L"Перемещение (F6)",            IDM_MOVE,           false},
+    {L"Новый каталог (F7)",          IDM_MKDIR,          false},
+    {L"Удаление (F8)",               IDM_DELETE,         false},
+    {L"",                            0,                 true},
+    {L"Упаковать (Alt+F5)",          IDM_PACK,           false},
+    {L"Распаковать",                 IDM_UNPACK,         false},
+    {L"Пакетное переименование (Ctrl+M)", IDM_BATCH_RENAME, false},
+    {L"",                            0,                 true},
+    {L"Поиск файлов",                IDM_SEARCH,         false},
+    {L"Синхронизация каталогов",      IDM_SYNC,           false},
+    {L"Обновить (Ctrl+R)",           IDM_REFRESH,        false},
+    {L"",                            0,                 true},
+    {L"Свойства (Alt+Enter)",        IDM_PROPERTIES,     false},
 };
 const int kToolbarCount = (int)(sizeof(kToolbar) / sizeof(kToolbar[0]));
 
@@ -184,8 +207,8 @@ private:
     void RebuildDriveBars();
     void ToggleQuickView();
     void DrawFlatButton(DRAWITEMSTRUCT* dis);
-    void DrawToolGlyph(HDC dc, const RECT& rc, int command);
-    const wchar_t* ToolGlyph(int command) const;
+    static LRESULT CALLBACK TbBtnProc(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
+    HICON ToolIcon(int command);
     void UpdateFKeyLabels(int kind);
     int FKeyCommand(int index, int kind) const;
     void RefreshQuickView();
@@ -207,8 +230,8 @@ private:
     };
     std::vector<IfCounter> netCounters_;
 
-    HFONT iconFont_ = nullptr;          // шрифт значков (Segoe Fluent Icons / MDL2 Assets)
-    bool haveIconFont_ = false;
+    int hoverBtn_ = -1;                 // индекс кнопки тулбара под курсором (-1 — нет)
+    std::map<int, HICON> toolIcons_;    // кэш цветных значков тулбара по команде
     HWND tip_ = nullptr;                // подсказки кнопок тулбара
     HWND quickView_ = nullptr;          // Ctrl+Q: просмотр на неактивной панели
     int quickViewSide_ = -1;
@@ -285,6 +308,7 @@ void App::BuildMenu() {
     AppendMenuW(file, MF_STRING, IDM_PROPERTIES, L"С&войства\tAlt+Enter");
     AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(file, MF_STRING, IDM_PACK, L"У&паковать…\tAlt+F5");
+    AppendMenuW(file, MF_STRING, IDM_UNPACK, L"Рас&паковать…");
     AppendMenuW(file, MF_STRING, IDM_BATCH_RENAME, L"Пакетное &переименование…\tCtrl+M");
     AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(file, MF_STRING, IDM_PLUGINS, L"&Плагины Total Commander…");
@@ -368,6 +392,8 @@ void App::CreateChildren() {
         toolbar_[i] = CreateWindowExW(0, L"BUTTON", L"",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, 0, 0, 10, 10,
                                       hwnd_, (HMENU)(INT_PTR)(ID_TB_FIRST + i), g_inst, nullptr);
+        // Кнопкам (не сепараторам) — subclass для hover-подсветки, как в TC.
+        if (!kToolbar[i].separator) SetWindowSubclass(toolbar_[i], TbBtnProc, 5, (DWORD_PTR)this);
     }
 
     for (int i = 0; i < kFKeyCount; i++) {
@@ -382,6 +408,7 @@ void App::CreateChildren() {
                            CW_USEDEFAULT, CW_USEDEFAULT, hwnd_, nullptr, g_inst, nullptr);
     if (tip_) {
         for (int i = 0; i < kToolbarCount; i++) {
+            if (kToolbar[i].separator) continue;   // сепараторам подсказки не нужны
             TOOLINFOW ti{};
             ti.cbSize = sizeof(ti);
             ti.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
@@ -393,34 +420,6 @@ void App::CreateChildren() {
     }
 
     ApplyFont();
-
-    // Значки тулбара берём из системного шрифта значков: ровные, «родные» для Windows.
-    {
-        auto tryFace = [&](const wchar_t* face) -> HFONT {
-            LOGFONTW lf{};
-            lf.lfHeight = -MulDiv(12, (int)dpi_, 72);
-            lf.lfWeight = FW_NORMAL;
-            lf.lfCharSet = DEFAULT_CHARSET;
-            lf.lfQuality = CLEARTYPE_QUALITY;
-            wcscpy_s(lf.lfFaceName, face);
-            HFONT font = CreateFontIndirectW(&lf);
-            if (!font) return nullptr;
-
-            HDC dc = CreateCompatibleDC(nullptr);
-            HGDIOBJ old = SelectObject(dc, font);
-            wchar_t actual[LF_FACESIZE]{};
-            GetTextFaceW(dc, LF_FACESIZE, actual);
-            SelectObject(dc, old);
-            DeleteDC(dc);
-            if (_wcsicmp(actual, face) == 0) return font;
-            DeleteObject(font);
-            return nullptr;
-        };
-        iconFont_ = tryFace(L"Segoe Fluent Icons");
-        if (!iconFont_) iconFont_ = tryFace(L"Segoe MDL2 Assets");
-        haveIconFont_ = iconFont_ != nullptr;
-        LogDebug(L"icon font: " + std::wstring(haveIconFont_ ? L"есть" : L"нет"));
-    }
 
     // Приём файлов, перетащенных из Проводника.
     DragAcceptFiles(hwnd_, TRUE);
@@ -501,7 +500,7 @@ void App::Layout() {
     if (width <= 0 || height <= 0) return;
 
     int gap = Scale(4, dpi_);
-    int tbH = Scale(30, dpi_);
+    int tbH = Scale(28, dpi_);          // ряд тулбара: кнопки 24×24 + поля
     int fkeyH = Scale(30, dpi_);
     int promptH = Scale(26, dpi_);
     int panelsY = tbH + gap;
@@ -517,10 +516,12 @@ void App::Layout() {
     HDWP dwp = BeginDeferWindowPos(10 + kToolbarCount);
     if (dwp) {
         int x = 0;
-        int bw = Scale(36, dpi_);
+        const int bh = Scale(24, dpi_);              // кнопка 24×24, как в TC
+        const int by = (tbH - bh) / 2;
         for (int i = 0; i < kToolbarCount; i++) {
-            dwp = DeferWindowPos(dwp, toolbar_[i], nullptr, x, 0, bw, tbH, SWP_NOZORDER);
-            x += bw + Scale(2, dpi_);
+            const int w = kToolbar[i].separator ? Scale(7, dpi_) : bh;
+            dwp = DeferWindowPos(dwp, toolbar_[i], nullptr, x, by, w, bh, SWP_NOZORDER);
+            x += w + Scale(2, dpi_);
         }
     }
     if (dwp) dwp = DeferWindowPos(dwp, left_.Hwnd(), nullptr, 0, panelsY, leftW, panelsH, SWP_NOZORDER);
@@ -839,35 +840,64 @@ void App::ShowDrivesMenu(int side) {
     }
 }
 
-// Плоские кнопки в стиле TC: фон панели, рамка только у нажатой.
+// Плоские кнопки тулбара в стиле TC: значок 16×16, hover-подсветка #CCE8FF.
 void App::DrawFlatButton(DRAWITEMSTRUCT* dis) {
     HDC dc = dis->hDC;
     RECT rc = dis->rcItem;
     const bool pressed = (dis->itemState & ODS_SELECTED) != 0;
     const bool disabled = (dis->itemState & ODS_DISABLED) != 0;
 
-    HBRUSH fill = CreateSolidBrush(pressed ? RGB(198, 195, 189) : GetSysColor(COLOR_BTNFACE));
-    FillRect(dc, &rc, fill);
-    DeleteObject(fill);
-
-    if (pressed) DrawEdge(dc, &rc, BDR_SUNKENOUTER, BF_RECT);
-
     const int id = (int)dis->CtlID;
-    if (id >= ID_TB_FIRST && id < ID_TB_FIRST + kToolbarCount) {
-        const int command = kToolbar[id - ID_TB_FIRST].command;
-        const wchar_t* glyph = haveIconFont_ ? ToolGlyph(command) : nullptr;
-        if (glyph) {
-            SetBkMode(dc, TRANSPARENT);
-            SetTextColor(dc, pressed ? RGB(0, 0, 0) : RGB(45, 45, 45));
-            HGDIOBJ oldFont = SelectObject(dc, iconFont_);
-            RECT tr = rc;
-            DrawTextW(dc, glyph, 1, &tr, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-            SelectObject(dc, oldFont);
-        } else {
-            DrawToolGlyph(dc, rc, command);
+    const bool isTool = id >= ID_TB_FIRST && id < ID_TB_FIRST + kToolbarCount;
+    const int idx = isTool ? id - ID_TB_FIRST : -1;
+
+    if (isTool && kToolbar[idx].separator) {
+        // Сепаратор: вертикальная линия по центру, как в TC.
+        HBRUSH fill = CreateSolidBrush(GetSysColor(COLOR_BTNFACE));
+        FillRect(dc, &rc, fill);
+        DeleteObject(fill);
+        RECT ln = rc;
+        ln.left = (rc.left + rc.right) / 2;
+        ln.right = ln.left + 1;
+        InflateRect(&ln, 0, -Scale(4, dpi_));
+        HBRUSH line = CreateSolidBrush(RGB(0xC0, 0xC0, 0xC0));
+        FillRect(dc, &ln, line);
+        DeleteObject(line);
+        return;
+    }
+
+    if (isTool) {
+        // Кнопка тулбара: hover — заливка #CCE8FF с рамкой #99D1FF, как в TC.
+        const bool hover = hoverBtn_ == idx && !pressed && !disabled;
+        HBRUSH fill = CreateSolidBrush(pressed ? RGB(0x99, 0xD1, 0xFF)
+                                     : hover   ? RGB(0xCC, 0xE8, 0xFF)
+                                               : GetSysColor(COLOR_BTNFACE));
+        FillRect(dc, &rc, fill);
+        DeleteObject(fill);
+        if (hover || pressed) {
+            HPEN pen = CreatePen(PS_SOLID, 1, RGB(0x99, 0xD1, 0xFF));
+            HGDIOBJ oldPen = SelectObject(dc, pen);
+            HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
+            Rectangle(dc, rc.left, rc.top, rc.right - 1, rc.bottom - 1);
+            SelectObject(dc, oldBrush);
+            SelectObject(dc, oldPen);
+            DeleteObject(pen);
+        }
+
+        if (HICON icon = ToolIcon(kToolbar[idx].command)) {
+            const int sz = Scale(16, dpi_);
+            const int x = (rc.left + rc.right - sz) / 2;
+            const int y = (rc.top + rc.bottom - sz) / 2 + (pressed ? 1 : 0);
+            DrawIconEx(dc, x, y, icon, sz, sz, 0, nullptr, DI_NORMAL);
         }
         return;
     }
+
+    // F-кнопки: текст, рамка только у нажатой.
+    HBRUSH fill = CreateSolidBrush(pressed ? RGB(198, 195, 189) : GetSysColor(COLOR_BTNFACE));
+    FillRect(dc, &rc, fill);
+    DeleteObject(fill);
+    if (pressed) DrawEdge(dc, &rc, BDR_SUNKENOUTER, BF_RECT);
 
     wchar_t text[160]{};
     GetWindowTextW(dis->hwndItem, text, 160);
@@ -881,130 +911,59 @@ void App::DrawFlatButton(DRAWITEMSTRUCT* dis) {
     SelectObject(dc, oldFont);
 }
 
-// Код значка в системном шрифте (Segoe MDL2 Assets / Segoe Fluent Icons).
-const wchar_t* App::ToolGlyph(int command) const {
-    switch (command) {
-        case IDM_REFRESH: return L"\uE72C";       // обновить
-        case IDM_NAV_BACK: return L"\uE72B";      // назад
-        case IDM_NAV_FORWARD: return L"\uE72A";   // вперёд
-        case IDM_NAV_UP: return L"\uE74A";        // вверх
-        case IDM_VIEW: return L"\uE890";          // просмотр (глаз)
-        case IDM_SEARCH: return L"\uE721";        // поиск
-        case IDM_TREE: return L"\uEC50";          // дерево каталогов (папка)
-        case IDM_QUEUE: return L"\uE8FD";         // очередь (список)
-        case IDM_PROPERTIES: return L"\uE713";    // свойства (шестерёнка)
-        default: return nullptr;
+// Hover кнопок тулбара: TrackMouseEvent, подсветка при наведении.
+LRESULT CALLBACK App::TbBtnProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, UINT_PTR,
+                                DWORD_PTR refData) {
+    App* app = reinterpret_cast<App*>(refData);
+    if (msg == WM_MOUSEMOVE) {
+        TRACKMOUSEEVENT tme{};
+        tme.cbSize = sizeof(tme);
+        tme.dwFlags = TME_LEAVE;
+        tme.hwndTrack = hwnd;
+        TrackMouseEvent(&tme);
+        const int idx = GetDlgCtrlID(hwnd) - ID_TB_FIRST;
+        if (app->hoverBtn_ != idx) {
+            app->hoverBtn_ = idx;
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
+    } else if (msg == WM_MOUSELEAVE) {
+        const int idx = GetDlgCtrlID(hwnd) - ID_TB_FIRST;
+        if (app->hoverBtn_ == idx) {
+            app->hoverBtn_ = -1;
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
     }
+    return DefSubclassProc(hwnd, msg, wParam, lParam);
 }
 
-// Значки кнопок тулбара — рисуем сами, без внешних картинок.
-void App::DrawToolGlyph(HDC dc, const RECT& rc, int command) {
-    const int cx = (rc.left + rc.right) / 2;
-    const int cy = (rc.top + rc.bottom) / 2;
-    const int s = Scale(6, dpi_);
-    const int w = Scale(2, dpi_);
-    const COLORREF ink = RGB(45, 45, 45);
-
-    HPEN pen = CreatePen(PS_SOLID, w, ink);
-    HGDIOBJ oldPen = SelectObject(dc, pen);
-    HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
-
+// Цветной значок тулбара по команде: рисуется кодом (MakeToolIcon) и кэшируется.
+HICON App::ToolIcon(int command) {
+    if (auto it = toolIcons_.find(command); it != toolIcons_.end()) return it->second;
+    int kind = -1;
     switch (command) {
-        case IDM_REFRESH: {                       // круговая стрелка
-            Arc(dc, cx - s, cy - s, cx + s, cy + s, cx + s, cy, cx, cy - s);
-            MoveToEx(dc, cx + s, cy, nullptr);
-            LineTo(dc, cx + s - Scale(4, dpi_), cy - Scale(2, dpi_));
-            MoveToEx(dc, cx + s, cy, nullptr);
-            LineTo(dc, cx + s - Scale(4, dpi_), cy + Scale(2, dpi_));
-            break;
-        }
-        case IDM_NAV_BACK:                        // стрелка влево
-            MoveToEx(dc, cx + s, cy, nullptr);
-            LineTo(dc, cx - s, cy);
-            MoveToEx(dc, cx - s, cy, nullptr);
-            LineTo(dc, cx - s + Scale(4, dpi_), cy - Scale(3, dpi_));
-            MoveToEx(dc, cx - s, cy, nullptr);
-            LineTo(dc, cx - s + Scale(4, dpi_), cy + Scale(3, dpi_));
-            break;
-        case IDM_NAV_FORWARD:                     // стрелка вправо
-            MoveToEx(dc, cx - s, cy, nullptr);
-            LineTo(dc, cx + s, cy);
-            MoveToEx(dc, cx + s, cy, nullptr);
-            LineTo(dc, cx + s - Scale(4, dpi_), cy - Scale(3, dpi_));
-            MoveToEx(dc, cx + s, cy, nullptr);
-            LineTo(dc, cx + s - Scale(4, dpi_), cy + Scale(3, dpi_));
-            break;
-        case IDM_NAV_UP:                          // стрелка вверх
-            MoveToEx(dc, cx, cy + s, nullptr);
-            LineTo(dc, cx, cy - s);
-            MoveToEx(dc, cx, cy - s, nullptr);
-            LineTo(dc, cx - Scale(3, dpi_), cy - s + Scale(4, dpi_));
-            MoveToEx(dc, cx, cy - s, nullptr);
-            LineTo(dc, cx + Scale(3, dpi_), cy - s + Scale(4, dpi_));
-            break;
-        case IDM_VIEW: {                          // «глаз»
-            Arc(dc, cx - s, cy - s + Scale(1, dpi_), cx + s, cy + s, cx + s, cy, cx - s, cy);
-            Arc(dc, cx - s, cy - s + Scale(1, dpi_), cx + s, cy + s, cx - s, cy, cx + s, cy);
-            HBRUSH pupil = CreateSolidBrush(ink);
-            HGDIOBJ ob = SelectObject(dc, pupil);
-            Ellipse(dc, cx - Scale(2, dpi_), cy - Scale(2, dpi_), cx + Scale(2, dpi_), cy + Scale(2, dpi_));
-            SelectObject(dc, ob);
-            DeleteObject(pupil);
-            break;
-        }
-        case IDM_SEARCH: {                        // лупа
-            const int r = Scale(4, dpi_);
-            Ellipse(dc, cx - r, cy - r, cx + r, cy + r);
-            MoveToEx(dc, cx + Scale(3, dpi_), cy + Scale(3, dpi_), nullptr);
-            LineTo(dc, cx + s, cy + s);
-            break;
-        }
-        case IDM_TREE: {                          // дерево каталогов
-            const int r = Scale(3, dpi_);
-            Rectangle(dc, cx - s, cy - s, cx - s + r * 2, cy - s + r);
-            MoveToEx(dc, cx - s + r, cy - s + r, nullptr);
-            LineTo(dc, cx - s + r, cy + s - Scale(2, dpi_));
-            MoveToEx(dc, cx - s + r, cy + s - Scale(2, dpi_), nullptr);
-            LineTo(dc, cx + s, cy + s - Scale(2, dpi_));
-            MoveToEx(dc, cx - s + r, cy + Scale(1, dpi_), nullptr);
-            LineTo(dc, cx + s - Scale(1, dpi_), cy + Scale(1, dpi_));
-            break;
-        }
-        case IDM_QUEUE: {                         // список с точками
-            for (int i = -1; i <= 1; ++i) {
-                const int y = cy + i * Scale(4, dpi_);
-                HBRUSH dot = CreateSolidBrush(ink);
-                HGDIOBJ ob = SelectObject(dc, dot);
-                Ellipse(dc, cx - s, y - Scale(1, dpi_), cx - s + Scale(2, dpi_), y + Scale(1, dpi_));
-                SelectObject(dc, ob);
-                DeleteObject(dot);
-                MoveToEx(dc, cx - s + Scale(4, dpi_), y, nullptr);
-                LineTo(dc, cx + s, y);
-            }
-            break;
-        }
-        case IDM_PROPERTIES: {                    // шестерёнка
-            const int r = Scale(4, dpi_);
-            Ellipse(dc, cx - r, cy - r, cx + r, cy + r);
-            for (int i = 0; i < 8; ++i) {
-                static const double kPi = 3.14159265358979;
-                const double a = i * kPi / 4.0;
-                const int x1 = cx + (int)(r * cos(a));
-                const int y1 = cy + (int)(r * sin(a));
-                const int x2 = cx + (int)((r + Scale(3, dpi_)) * cos(a));
-                const int y2 = cy + (int)((r + Scale(3, dpi_)) * sin(a));
-                MoveToEx(dc, x1, y1, nullptr);
-                LineTo(dc, x2, y2);
-            }
-            break;
-        }
-        default:
-            break;
+        case IDM_NAV_BACK:     kind = TIK_BACK; break;
+        case IDM_NAV_FORWARD:  kind = TIK_FWD; break;
+        case IDM_NAV_UP:       kind = TIK_UP; break;
+        case IDM_TREE:         kind = TIK_TREE; break;
+        case IDM_VIEW:         kind = TIK_VIEW; break;
+        case IDM_EDIT:         kind = TIK_EDIT; break;
+        case IDM_COPY:         kind = TIK_COPY; break;
+        case IDM_MOVE:         kind = TIK_MOVE; break;
+        case IDM_MKDIR:        kind = TIK_MKDIR; break;
+        case IDM_DELETE:       kind = TIK_DEL; break;
+        case IDM_PACK:         kind = TIK_PACK; break;
+        case IDM_UNPACK:       kind = TIK_UNPACK; break;
+        case IDM_BATCH_RENAME: kind = TIK_RENM; break;
+        case IDM_SEARCH:       kind = TIK_FIND; break;
+        case IDM_SYNC:         kind = TIK_SYNC; break;
+        case IDM_REFRESH:      kind = TIK_REFRESH; break;
+        case IDM_PROPERTIES:   kind = TIK_PROPS; break;
+        default: break;
     }
-
-    SelectObject(dc, oldBrush);
-    SelectObject(dc, oldPen);
-    DeleteObject(pen);
+    HICON icon = nullptr;
+    if (kind >= 0) icon = MakeToolIcon(kind, Scale(16, dpi_));
+    toolIcons_[command] = icon;
+    return icon;
 }
 
 // Подписи под ряд F-клавиш меняются при нажатом Shift/Ctrl/Alt.
@@ -1878,6 +1837,14 @@ void App::Dispatch(int id) {
         case IDM_PACK:
             PackSelection();
             break;
+        case IDM_UNPACK:
+            MessageBoxW(hwnd_, L"Распаковка архивов будет добавлена в следующей вехе.",
+                        kTitle, MB_ICONINFORMATION);
+            break;
+        case IDM_SYNC:
+            MessageBoxW(hwnd_, L"Синхронизация каталогов будет добавлена в следующей вехе.",
+                        kTitle, MB_ICONINFORMATION);
+            break;
         case IDM_TREE:
             panel->ToggleTree();
             break;
@@ -2331,7 +2298,8 @@ LRESULT App::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 return 0;
             }
             if (id >= ID_TB_FIRST && id < ID_TB_FIRST + kToolbarCount) {
-                Dispatch(kToolbar[id - ID_TB_FIRST].command);
+                // Сепараторы — не кнопки, команду не диспатчат.
+                if (kToolbar[id - ID_TB_FIRST].command) Dispatch(kToolbar[id - ID_TB_FIRST].command);
                 return 0;
             }
             if (id >= ID_FKEY_FIRST && id < ID_FKEY_FIRST + kFKeyCount) {
@@ -2472,6 +2440,9 @@ LRESULT App::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             return 0;
 
         case WM_DESTROY: {
+            for (auto& kv : toolIcons_)
+                if (kv.second) DestroyIcon(kv.second);
+            toolIcons_.clear();
             PostQuitMessage(0);
             return 0;
         }
