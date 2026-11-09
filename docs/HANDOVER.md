@@ -5,8 +5,8 @@
 
 ## Состояние
 
-- Репозиторий: `E:\Work\VSC\POSCommander2`, ветка `master`, HEAD `977be02`
-  (веха FTP закоммичена локально, в `origin/master` ещё не отправлена).
+- Репозиторий: `E:\Work\VSC\POSCommander2`, ветка `master`.
+  Веха FTP — коммит `67c87bf` (закоммичена локально, в `origin/master` ещё не отправлена).
 - Продукт называется **POS Commander**; файл `build\POS Commander.exe` (2 575 222 байт, 32-бит).
 - Сборка: MinGW-w64 GCC (`C:\Tools\w64devkit\bin`), CMake + Ninja:
 
