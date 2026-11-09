@@ -151,10 +151,7 @@ bool Panel::Create(HWND parent, int id) {
         ti.hwnd = hwnd_;
         ti.lpszText = LPSTR_TEXTCALLBACKW;
 
-        ti.uId = (UINT_PTR)list_;
-        SendMessageW(tip_, TTM_ADDTOOLW, 0, (LPARAM)&ti);
-
-        ti.uId = (UINT_PTR)pathEdit_;
+        ti.uId = (UINT_PTR)list_;          // только список: над полем пути показываем список каталога
         SendMessageW(tip_, TTM_ADDTOOLW, 0, (LPARAM)&ti);
     }
     return true;
@@ -2212,9 +2209,7 @@ LRESULT Panel::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             auto hdr = reinterpret_cast<NMHDR*>(lParam);
             if (hdr && tip_ && hdr->hwndFrom == tip_ && hdr->code == TTN_NEEDTEXTW) {
                 auto tt = reinterpret_cast<NMTTDISPINFOW*>(lParam);
-                if (tt->hdr.idFrom == (UINT_PTR)pathEdit_) {
-                    tipText_ = DisplayPath();
-                } else {
+                {
                     POINT pt{};
                     GetCursorPos(&pt);
                     LVHITTESTINFO ht{};
