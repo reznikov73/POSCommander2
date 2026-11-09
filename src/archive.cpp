@@ -536,7 +536,8 @@ void UnpPump() {
 }  // namespace
 
 bool ExtractArchiveWithProgress(HWND owner, const std::wstring& archive,
-                                const std::wstring& target, std::wstring& error) {
+                                const std::wstring& target, const std::wstring& password,
+                                std::wstring& error) {
     const std::wstring exe = Find7z();
     if (exe.empty()) {
         error = L"7z.exe не найден. Установите 7-Zip.";
@@ -559,8 +560,9 @@ bool ExtractArchiveWithProgress(HWND owner, const std::wstring& archive,
     si.hStdOutput = writePipe;
     si.hStdError = writePipe;
 
-    std::wstring cmd = QuoteArg(exe) + L" x -y -bsp1 -bso1 -sccUTF-8 " +
-                       QuoteArg(archive) + L" -o" + QuoteArg(target);
+    std::wstring cmd = QuoteArg(exe) + L" x -y -bsp1 -bso1 -sccUTF-8 " + QuoteArg(archive) +
+                       L" -o" + QuoteArg(target);
+    if (!password.empty()) cmd += L" " + QuoteArg(L"-p" + password);
     PROCESS_INFORMATION pi{};
     std::wstring mutableCmd = cmd;
     if (!CreateProcessW(nullptr, mutableCmd.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {

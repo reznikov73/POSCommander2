@@ -8,6 +8,7 @@
 #include "settings.h"
 #include "search.h"
 #include "archive.h"
+#include "sync.h"
 #include "plugins.h"
 #include "wcx.h"
 
@@ -1560,21 +1561,21 @@ void App::DoUnpack() {
     }
 
     std::wstring target = other->Path();
-    wchar_t prompt[512]{};
-    if (archives.size() == 1) {
-        std::wstring name = archives[0].substr(archives[0].find_last_of(L'\\') + 1);
-        swprintf(prompt, 512, L"Распаковать «%ls» в каталог:", name.c_str());
-    } else {
-        swprintf(prompt, 512, L"Распаковать архивов: %zu в каталог:", archives.size());
+    std::wstring password;
+    std::wstring archiveName = archives[0].substr(archives[0].find_last_of(L'\\') + 1);
+    if (archives.size() > 1) {
+        wchar_t many[128]{};
+        swprintf(many, 128, L"архивов: %zu", archives.size());
+        archiveName = many;
     }
-    if (!InputBox(hwnd_, L"Распаковка", prompt, target, false)) return;
+    if (!UnpackDialog(hwnd_, archiveName, target, password)) return;
     target = Trim(target);
     if (target.empty()) return;
 
     int done = 0;
     for (auto& archive : archives) {
         std::wstring error;
-        if (!ExtractArchiveWithProgress(hwnd_, archive, target, error)) {
+        if (!ExtractArchiveWithProgress(hwnd_, archive, target, password, error)) {
             ShowError(error);
             break;
         }
@@ -2079,8 +2080,7 @@ void App::Dispatch(int id) {
             DoUnpack();
             break;
         case IDM_SYNC:
-            MessageBoxW(hwnd_, L"Синхронизация каталогов будет добавлена в следующей вехе.",
-                        kTitle, MB_ICONINFORMATION);
+            SyncDirectories(hwnd_, left_.Path(), right_.Path());
             break;
         case IDM_TREE:
             panel->ToggleTree();

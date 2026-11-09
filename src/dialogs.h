@@ -4,6 +4,9 @@
 #include "common.h"
 
 // Модальный ввод строки. Возвращает false при отмене.
+// Диалог распаковки: каталог назначения и пароль (пусто — без пароля).
+bool UnpackDialog(HWND owner, const std::wstring& archiveName, std::wstring& target, std::wstring& password);
+
 bool InputBox(HWND owner, const std::wstring& title, const std::wstring& prompt, std::wstring& value,
               bool isPath);
 

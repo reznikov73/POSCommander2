@@ -289,10 +289,37 @@ void Panel::DrawDriveButton(DRAWITEMSTRUCT* dis) {
         DeleteObject(pen);
     }
 
-    int textLeft = rc.left + Scale(3, dpi_);
+    // Значок тома: если оболочка в момент создания панели не отдала его (бывает
+    // при старте без рабочего стола), пробуем ещё раз здесь и запоминаем.
+    if (index < (int)driveIcons_.size() && !driveIcons_[index]) {
+        wchar_t rootPath[4] = {driveLetters_[index], L':', L'\\', 0};
+        SHFILEINFOW sfi{};
+        if (SHGetFileInfoW(rootPath, 0, &sfi, sizeof(sfi), SHGFI_ICON | SHGFI_SMALLICON)) {
+            driveIcons_[index] = sfi.hIcon;
+        }
+    }
+
+    const int iconLeft = rc.left + Scale(3, dpi_);
+    const int iconTop = (rc.top + rc.bottom) / 2 - Scale(8, dpi_);
+    int textLeft = iconLeft;
     if (index < (int)driveIcons_.size() && driveIcons_[index]) {
-        DrawIconEx(dc, rc.left + Scale(3, dpi_), (rc.top + rc.bottom) / 2 - Scale(8, dpi_),
-                   driveIcons_[index], 16, 16, 0, nullptr, DI_NORMAL);
+        DrawIconEx(dc, iconLeft, iconTop, driveIcons_[index], 16, 16, 0, nullptr, DI_NORMAL);
+        textLeft = rc.left + Scale(22, dpi_);
+    } else {
+        // Совсем без значка не оставляем: рисуем простой силуэт диска.
+        const int w = Scale(14, dpi_), h = Scale(11, dpi_);
+        HBRUSH body = CreateSolidBrush(RGB(200, 205, 212));
+        HPEN edge = CreatePen(PS_SOLID, 1, RGB(90, 96, 106));
+        HGDIOBJ oldBrush = SelectObject(dc, body);
+        HGDIOBJ oldPen = SelectObject(dc, edge);
+        Rectangle(dc, iconLeft, iconTop + Scale(3, dpi_), iconLeft + w, iconTop + Scale(3, dpi_) + h);
+        SelectObject(dc, GetStockObject(WHITE_BRUSH));
+        Rectangle(dc, iconLeft + Scale(3, dpi_), iconTop + Scale(6, dpi_), iconLeft + w - Scale(3, dpi_),
+                  iconTop + Scale(9, dpi_));
+        SelectObject(dc, oldPen);
+        SelectObject(dc, oldBrush);
+        DeleteObject(edge);
+        DeleteObject(body);
         textLeft = rc.left + Scale(22, dpi_);
     }
 

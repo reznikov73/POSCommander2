@@ -455,6 +455,81 @@ bool ReadWholeFile(const std::wstring& path, std::vector<BYTE>& out, std::wstrin
 
 }  // namespace
 
+// ---------- распаковка: каталог + пароль ----------
+
+const int kIdUnpTarget = 201;
+const int kIdUnpPass = 202;
+
+struct UnpackDlgCtx {
+    std::wstring target;
+    std::wstring password;
+};
+
+INT_PTR CALLBACK UnpackDlgProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM lParam) {
+    auto* ctx = reinterpret_cast<UnpackDlgCtx*>(GetWindowLongPtrW(dlg, GWLP_USERDATA));
+    switch (msg) {
+        case WM_INITDIALOG: {
+            ctx = reinterpret_cast<UnpackDlgCtx*>(lParam);
+            SetWindowLongPtrW(dlg, GWLP_USERDATA, (LONG_PTR)ctx);
+            SetDlgItemTextW(dlg, kIdUnpTarget, ctx->target.c_str());
+            SetDlgItemTextW(dlg, kIdUnpPass, ctx->password.c_str());
+            SHAutoComplete(GetDlgItem(dlg, kIdUnpTarget), SHACF_FILESYSTEM);
+            SendDlgItemMessageW(dlg, kIdUnpTarget, EM_SETSEL, 0, -1);
+            SetFocus(GetDlgItem(dlg, kIdUnpTarget));
+            return FALSE;
+        }
+        case WM_COMMAND: {
+            const int id = LOWORD(wParam);
+            if (id == IDOK) {
+                wchar_t buf[32768]{};
+                GetDlgItemTextW(dlg, kIdUnpTarget, buf, 32768);
+                if (ctx) {
+                    ctx->target = buf;
+                    wchar_t pass[512]{};
+                    GetDlgItemTextW(dlg, kIdUnpPass, pass, 512);
+                    ctx->password = pass;
+                }
+                EndDialog(dlg, 1);
+                return TRUE;
+            }
+            if (id == IDCANCEL) {
+                EndDialog(dlg, 0);
+                return TRUE;
+            }
+            break;
+        }
+        default:
+            break;
+    }
+    return FALSE;
+}
+
+bool UnpackDialog(HWND owner, const std::wstring& archiveName, std::wstring& target, std::wstring& password) {
+    const std::wstring title = L"Распаковка";
+    const std::wstring prompt = L"Распаковать «" + archiveName + L"» в каталог:";
+
+    DlgBuilder builder(title.c_str(), 380, 132);
+    builder.Add(prompt.c_str(), 200, kClsStatic, WS_CHILD | WS_VISIBLE | SS_LEFT | SS_ENDELLIPSIS, 10, 8, 360, 18);
+    builder.Add(L"", kIdUnpTarget, kClsEdit, WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL,
+                10, 28, 360, 14);
+    builder.Add(L"Пароль (если архив зашифрован):", 203, kClsStatic, WS_CHILD | WS_VISIBLE | SS_LEFT, 10, 52, 360, 14);
+    builder.Add(L"", kIdUnpPass, kClsEdit, WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP | ES_PASSWORD | ES_AUTOHSCROLL,
+                10, 68, 360, 14);
+    builder.Add(L"OK", IDOK, kClsButton, WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON, 248, 100, 58, 18);
+    builder.Add(L"Отмена", IDCANCEL, kClsButton, WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 312, 100, 58, 18);
+
+    UnpackDlgCtx ctx;
+    ctx.target = target;
+    ctx.password = password;
+    INT_PTR result = DialogBoxIndirectParamW(g_inst, builder.Get(), owner, UnpackDlgProc, (LPARAM)&ctx);
+    if (result == 1) {
+        target = ctx.target;
+        password = ctx.password;
+        return true;
+    }
+    return false;
+}
+
 bool InputBox(HWND owner, const std::wstring& title, const std::wstring& prompt, std::wstring& value,
               bool isPath) {
     DlgBuilder builder(title.c_str(), 300, 78);
