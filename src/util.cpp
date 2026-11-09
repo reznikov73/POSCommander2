@@ -463,6 +463,17 @@ static int g_typeIcons[kTkCount * 2] = {-1, -1, -1, -1, -1, -1, -1, -1,
 
 static std::map<std::wstring, int> g_iconCache;
 static const size_t kIconCacheLimit = 3000;
+// Значки конкретных файлов (exe, dll, lnk…): у каждого свой, как в TC.
+// Кэш ограничен, иначе на каталоге с тысячами exe список значков разрастётся.
+static std::map<std::wstring, int> g_pathIcons;
+static const size_t kPathIconLimit = 512;
+
+// Типы, у которых значок свой у каждого файла, а не по расширению.
+static bool WantsOwnIcon(const std::wstring& ext) {
+    return ext == L".exe" || ext == L".dll" || ext == L".scr" || ext == L".cpl" ||
+           ext == L".msi" || ext == L".lnk" || ext == L".ico" || ext == L".cur" ||
+           ext == L".ocx" || ext == L".sys";
+}
 
 // Пиксельный холст 32-бит с альфой: рисуем иконки сами, чтобы выглядели как в TC.
 struct PixelCanvas {
@@ -1120,38 +1131,52 @@ HIMAGELIST ShellSmallImageList() {
 
 int IconForEntry(const Entry& e, const std::wstring& dir) {
     InitShellIcons();
-    (void)dir;   // значки типов не зависят от пути
 
-    // «..» — отдельная стрелка, как в TC.
+    // «..» — стрелка, как в TC.
     if (e.isUp) return g_iconUp >= 0 ? g_iconUp : g_iconFolder;
 
-    // Каталоги — единая жёлтая папка TC, у скрытых красная полоса.
+    // Каталоги — жёлтая папка TC, у скрытых светлее с красным пунктиром.
     if (e.isDir) return e.hidden() ? g_iconFolderHidden : g_iconFolder;
 
     const std::wstring ext = Lower(e.ext());
 
-    // Наши иконки типов — по спецификации макета ui-target.html.
-    int kind = -1;
-    if (ext == L".txt" || ext == L".log" || ext == L".ini") kind = kTkText;
-    else if (ext == L".cpp" || ext == L".h" || ext == L".c" || ext == L".py") kind = kTkCode;
-    else if (ext == L".exe" || ext == L".dll") kind = kTkApp;
-    else if (ext == L".zip" || ext == L".rar" || ext == L".7z") kind = kTkArchive;
-    else if (ext == L".jpg" || ext == L".png" || ext == L".bmp") kind = kTkImage;
-    else if (ext == L".lnk") kind = kTkLink;
-    if (kind >= 0) return TypeIconIndex(kind, e.hidden());
+    // exe, dll, lnk и подобные: значок конкретного файла по полному пути — как в TC,
+    // где у каждого exe своя иконка. Ответ кэшируем по пути.
+    if (WantsOwnIcon(ext) && !dir.empty()) {
+        const std::wstring full = JoinPath(dir, e.name);
+        const std::wstring key = L"p:" + Lower(full);
+        auto mine = g_pathIcons.find(key);
+        if (mine != g_pathIcons.end()) return mine->second;
 
-    // Скрытый файл неизвестного типа — белый лист с красной полосой.
-    if (e.hidden()) return g_iconFileHidden;
+        const int own = IconFromPath(full, 0, false);
+        if (own >= 0) {
+            if (g_pathIcons.size() >= kPathIconLimit) g_pathIcons.clear();
+            g_pathIcons[key] = own;
+            return own;
+        }
+        // файл мог исчезнуть — ниже возьмём значок по расширению
+    }
 
-    // Прочие расширения — системный значок (pdf, docx, mp3…), как в Проводнике.
+    // Остальные типы — значок оболочки по расширению: ровно как в Проводнике и TC.
     auto it = g_iconCache.find(L"e:" + ext);
     if (it != g_iconCache.end()) return it->second;
 
     const int byExt = IconFromPath(L"file" + ext, FILE_ATTRIBUTE_NORMAL, true);
-    int index = byExt >= 0 ? byExt : g_iconFile;
-    if (g_iconCache.size() >= kIconCacheLimit) g_iconCache.clear();
-    g_iconCache[L"e:" + ext] = index;
-    return index;
+    if (byExt >= 0) {
+        if (g_iconCache.size() >= kIconCacheLimit) g_iconCache.clear();
+        g_iconCache[L"e:" + ext] = byExt;
+        return byExt;
+    }
+
+    // Оболочка не дала значок (редкий случай) — своя отрисовка по типу.
+    int kind = kTkFile;
+    if (ext == L".txt" || ext == L".log" || ext == L".ini") kind = kTkText;
+    else if (ext == L".cpp" || ext == L".h" || ext == L".c" || ext == L".py") kind = kTkCode;
+    else if (ext == L".zip" || ext == L".rar" || ext == L".7z") kind = kTkArchive;
+    else if (ext == L".jpg" || ext == L".png" || ext == L".bmp") kind = kTkImage;
+    else if (ext == L".exe" || ext == L".dll") kind = kTkApp;
+    else if (ext == L".lnk") kind = kTkLink;
+    return TypeIconIndex(kind, e.hidden());
 }
 
 UINT WindowDpi(HWND hwnd) {
