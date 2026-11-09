@@ -837,6 +837,9 @@ void Panel::SetActive(bool active) {
     if (active_ == active) return;
     active_ = active;
     UpdateHeader();
+    LogDebug(L"активация: панель " + std::to_wstring(side_) +
+             (active ? L" активна, курсор " : L" неактивна, курсор ") +
+             std::to_wstring(CursorIndex()));   // временная диагностика этапа 4
     // Курсор: на активной панели — синяя заливка, на неактивной — пунктирная рамка.
     // Смена LVIS_SELECTED не всегда перерисовывает строку в списке без фокуса —
     // перерисовываем явно, чтобы заливка/рамка появлялись сразу.
@@ -2191,6 +2194,23 @@ void Panel::DrawRow(NMLVCUSTOMDRAW* cd) {
     }
 }
 
+// Пунктирная рамка обычным пером (а не DrawFocusRect: тот рисует в XOR, и при
+// повторной отрисовке строки за один цикл рамка бы стёрлась).
+namespace {
+void DrawDottedFrame(HDC dc, RECT rc) {
+    InflateRect(&rc, -1, -1);   // линия по центру пера — не залезаем на соседние строки
+    HPEN pen = CreatePen(PS_DOT, 1, GetSysColor(COLOR_WINDOWTEXT));
+    HGDIOBJ old = SelectObject(dc, pen);
+    MoveToEx(dc, rc.left, rc.top, nullptr);
+    LineTo(dc, rc.right, rc.top);
+    LineTo(dc, rc.right, rc.bottom);
+    LineTo(dc, rc.left, rc.bottom);
+    LineTo(dc, rc.left, rc.top);
+    SelectObject(dc, old);
+    DeleteObject(pen);
+}
+}
+
 // Пунктирная рамка вокруг строки курсора неактивной панели — как в TC
 // (вместо серой заливки невыделенного списка).
 void Panel::DrawCursorFrame(NMLVCUSTOMDRAW* cd) {
@@ -2202,18 +2222,35 @@ void Panel::DrawCursorFrame(NMLVCUSTOMDRAW* cd) {
     if (index != CursorIndex()) return;
     RECT rc{};
     if (!ListView_GetItemRect(list_, index, &rc, LVIR_BOUNDS)) return;
-    InflateRect(&rc, -1, -1);   // линия рисуется по центру пера — не залезаем на соседние строки
-    // Пунктир обычным пером, а не DrawFocusRect: тот рисует в XOR, и при
-    // повторной отрисовке строки за один цикл рамка бы стёрлась.
-    HPEN pen = CreatePen(PS_DOT, 1, GetSysColor(COLOR_WINDOWTEXT));
-    HGDIOBJ old = SelectObject(cd->nmcd.hdc, pen);
-    MoveToEx(cd->nmcd.hdc, rc.left, rc.top, nullptr);
-    LineTo(cd->nmcd.hdc, rc.right, rc.top);
-    LineTo(cd->nmcd.hdc, rc.right, rc.bottom);
-    LineTo(cd->nmcd.hdc, rc.left, rc.bottom);
-    LineTo(cd->nmcd.hdc, rc.left, rc.top);
-    SelectObject(cd->nmcd.hdc, old);
-    DeleteObject(pen);
+    DrawDottedFrame(cd->nmcd.hdc, rc);
+    static int logged = 0;   // временная диагностика этапа 4 — убрать после приёмки
+    if (logged++ < 40) {
+        LogDebug(L"рамка: custom-draw, панель " + std::to_wstring(side_) +
+                 L", строка " + std::to_wstring(index));
+    }
+}
+
+// Та же рамка, но поверх уже отрисованного списка — вызывается из ListProc
+// ПОСЛЕ DefSubclassProc(WM_PAINT). Не зависит от стадий custom draw
+// (CDDS_ITEMPOSTPAINT на части систем не приходит) и от LVIS_FOCUSED.
+void Panel::PaintCursorOverlay() {
+    if (!list_ || active_) return;
+    const int index = CursorIndex();
+    if (index < 0 || index >= (int)entries_.size()) return;
+    RECT rc{};
+    if (!ListView_GetItemRect(list_, index, &rc, LVIR_BOUNDS)) return;
+    RECT client{}, vis{};
+    GetClientRect(list_, &client);
+    if (!IntersectRect(&vis, &rc, &client)) return;   // строка вне видимой части
+    HDC dc = GetDC(list_);
+    if (!dc) return;
+    DrawDottedFrame(dc, rc);
+    ReleaseDC(list_, dc);
+    static int logged = 0;   // временная диагностика этапа 4 — убрать после приёмки
+    if (logged++ < 40) {
+        LogDebug(L"рамка: overlay, панель " + std::to_wstring(side_) +
+                 L", строка " + std::to_wstring(index));
+    }
 }
 
 // ---------- дерево каталогов ----------
@@ -2422,6 +2459,13 @@ LRESULT CALLBACK Panel::ListProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
     // чтобы снялась активность другой панели.
     if (self && msg == WM_SETFOCUS && !self->active_) {
         PostMessageW(GetParent(self->hwnd_), WM_APP + 303, (WPARAM)self->side_, 0);
+    }
+    // Рамка курсора неактивной панели: рисуем ПОСЛЕ штатной отрисовки списка,
+    // не полагаясь на стадии custom draw (основной путь — PaintCursorOverlay).
+    if (self && msg == WM_PAINT) {
+        LRESULT result = DefSubclassProc(hwnd, msg, wParam, lParam);
+        self->PaintCursorOverlay();
+        return result;
     }
     return DefSubclassProc(hwnd, msg, wParam, lParam);
 }

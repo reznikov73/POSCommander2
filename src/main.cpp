@@ -471,6 +471,14 @@ void App::LoadPanels() {
     if (st.activeSide == 1) SetActivePanel(1);
     ActivePanel()->FocusList();
     UpdatePromptLabel();
+
+    // Временная диагностика этапа 4 (рамка курсора неактивной панели) — в %TEMP%\posc2-debug.log.
+    wchar_t stamp[32]{};
+    swprintf(stamp, 32, L"%hs %hs", __DATE__, __TIME__);
+    LogDebug(L"старт: сборка " + std::wstring(stamp) + L", активная панель " +
+             std::to_wstring(activeSide_) + L", курсоры " + std::to_wstring(left_.CursorIndex()) + L"/" +
+             std::to_wstring(right_.CursorIndex()) + L" (" + std::to_wstring((int)left_.Entries().size()) + L"/" +
+             std::to_wstring((int)right_.Entries().size()) + L" записей)");
 }
 
 void App::ApplyFont() {
@@ -1141,11 +1149,11 @@ void App::UpdateTitle() {
     wchar_t buf[512]{};
     swprintf(buf, 512,
              L"%ls - Win32   %ls %02d %ls %04d %02d:%02d:%02d   Сеть: %d,%d/%d,%d Мбит/с   "
-             L"Память: %d,%d/%d,%d ГБ (%d%%)   ЦП: %d%%",
+             L"Память: %d,%d/%d,%d ГБ (%d%%)   ЦП: %d%%   [сборка %hs]",
              kTitle, kWeekday[st.wDayOfWeek], st.wDay, kMonth[st.wMonth - 1], st.wYear, st.wHour,
              st.wMinute, st.wSecond, (int)downMbit, (int)((downMbit - (int)downMbit) * 10), (int)upMbit,
              (int)((upMbit - (int)upMbit) * 10), memUsedTenths / 10, memUsedTenths % 10,
-             memTotalTenths / 10, memTotalTenths % 10, memPct, cpuPct);
+             memTotalTenths / 10, memTotalTenths % 10, memPct, cpuPct, __TIME__);   // метка сборки — временная, для проверки свежести бинарника
     SetWindowTextW(hwnd_, buf);
 }
 

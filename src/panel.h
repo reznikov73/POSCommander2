@@ -218,6 +218,7 @@ private:
     void DrawRowName(NMLVCUSTOMDRAW* cd);
     void DrawRow(NMLVCUSTOMDRAW* cd);
     void DrawCursorFrame(NMLVCUSTOMDRAW* cd);
+    void PaintCursorOverlay();   // пунктир поверх WM_PAINT списка — не зависит от стадий custom draw
     void FillDispInfo(NMLVDISPINFO* info);
 
     int side_ = 0;
