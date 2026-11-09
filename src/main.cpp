@@ -15,6 +15,7 @@
 
 #include <windowsx.h>
 #include <winnetwk.h>
+#include <ole2.h>
 
 #include <commctrl.h>
 
@@ -164,6 +165,120 @@ const TbDef kToolbar[] = {
 };
 const int kToolbarCount = (int)(sizeof(kToolbar) / sizeof(kToolbar[0]));
 
+class App;
+class PanelDropTarget;
+
+
+// ---------- OLE drag & drop: источник CF_HDROP ----------
+
+class FileDataObject final : public IDataObject {
+public:
+    explicit FileDataObject(std::vector<std::wstring> paths) : paths_(std::move(paths)) {}
+
+    STDMETHODIMP QueryInterface(REFIID riid, void** ppv) override {
+        if (!ppv) return E_POINTER;
+        if (riid == IID_IUnknown || riid == IID_IDataObject) {
+            *ppv = static_cast<IDataObject*>(this);
+            AddRef();
+            return S_OK;
+        }
+        *ppv = nullptr;
+        return E_NOINTERFACE;
+    }
+    STDMETHODIMP_(ULONG) AddRef() override { return (ULONG)InterlockedIncrement(&ref_); }
+    STDMETHODIMP_(ULONG) Release() override {
+        const ULONG n = (ULONG)InterlockedDecrement(&ref_);
+        if (n == 0) delete this;
+        return n;
+    }
+
+    STDMETHODIMP GetData(FORMATETC* fmt, STGMEDIUM* stg) override {
+        if (!fmt || !stg) return E_INVALIDARG;
+        if (fmt->cfFormat != CF_HDROP || !(fmt->tymed & TYMED_HGLOBAL)) return DV_E_FORMATETC;
+
+        SIZE_T chars = 1;
+        for (const auto& path : paths_) chars += path.size() + 1;
+        const SIZE_T bytes = sizeof(DROPFILES) + chars * sizeof(wchar_t);
+        HGLOBAL mem = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, bytes);
+        if (!mem) return E_OUTOFMEMORY;
+
+        auto* df = static_cast<DROPFILES*>(GlobalLock(mem));
+        if (!df) {
+            GlobalFree(mem);
+            return E_OUTOFMEMORY;
+        }
+        df->pFiles = sizeof(DROPFILES);
+        df->fWide = TRUE;
+        auto* dst = reinterpret_cast<wchar_t*>(reinterpret_cast<BYTE*>(df) + sizeof(DROPFILES));
+        for (const auto& path : paths_) {
+            wcscpy(dst, path.c_str());
+            dst += path.size() + 1;
+        }
+        *dst = 0;
+        GlobalUnlock(mem);
+
+        stg->tymed = TYMED_HGLOBAL;
+        stg->hGlobal = mem;
+        stg->pUnkForRelease = nullptr;
+        return S_OK;
+    }
+    STDMETHODIMP GetDataHere(FORMATETC*, STGMEDIUM*) override { return E_NOTIMPL; }
+    STDMETHODIMP QueryGetData(FORMATETC* fmt) override {
+        if (fmt && fmt->cfFormat == CF_HDROP && (fmt->tymed & TYMED_HGLOBAL)) return S_OK;
+        return DV_E_FORMATETC;
+    }
+    STDMETHODIMP GetCanonicalFormatEtc(FORMATETC*, FORMATETC* out) override {
+        if (out) out->ptd = nullptr;
+        return E_NOTIMPL;
+    }
+    STDMETHODIMP SetData(FORMATETC*, STGMEDIUM*, BOOL) override { return E_NOTIMPL; }
+    STDMETHODIMP EnumFormatEtc(DWORD direction, IEnumFORMATETC** out) override {
+        if (!out) return E_POINTER;
+        if (direction != DATADIR_GET) return E_NOTIMPL;
+        FORMATETC fmt{CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+        return SHCreateStdEnumFmtEtc(1, &fmt, out);
+    }
+    STDMETHODIMP DAdvise(FORMATETC*, DWORD, IAdviseSink*, DWORD*) override {
+        return OLE_E_ADVISENOTSUPPORTED;
+    }
+    STDMETHODIMP DUnadvise(DWORD) override { return E_NOTIMPL; }
+    STDMETHODIMP EnumDAdvise(IEnumSTATDATA**) override { return OLE_E_ADVISENOTSUPPORTED; }
+
+private:
+    ~FileDataObject() = default;
+    LONG ref_ = 1;
+    std::vector<std::wstring> paths_;
+};
+
+class FileDropSource final : public IDropSource {
+public:
+    STDMETHODIMP QueryInterface(REFIID riid, void** ppv) override {
+        if (!ppv) return E_POINTER;
+        if (riid == IID_IUnknown || riid == IID_IDropSource) {
+            *ppv = static_cast<IDropSource*>(this);
+            AddRef();
+            return S_OK;
+        }
+        *ppv = nullptr;
+        return E_NOINTERFACE;
+    }
+    STDMETHODIMP_(ULONG) AddRef() override { return (ULONG)InterlockedIncrement(&ref_); }
+    STDMETHODIMP_(ULONG) Release() override {
+        const ULONG n = (ULONG)InterlockedDecrement(&ref_);
+        if (n == 0) delete this;
+        return n;
+    }
+    STDMETHODIMP QueryContinueDrag(BOOL escape, DWORD keyState) override {
+        if (escape) return DRAGDROP_S_CANCEL;
+        if (!(keyState & MK_LBUTTON)) return DRAGDROP_S_DROP;
+        return S_OK;
+    }
+    STDMETHODIMP GiveFeedback(DWORD) override { return DRAGDROP_S_USEDEFAULTCURSORS; }
+
+private:
+    ~FileDropSource() = default;
+    LONG ref_ = 1;
+};
 // ---------- FTP: общие помощники копирования ----------
 
 struct FtpCopyCtx {
@@ -400,6 +515,8 @@ class App {
 public:
     bool Create(HINSTANCE inst);
     int Run();
+    DWORD OleDragEffect(POINTL pt, DWORD keyState) const;
+    void OleDropFiles(POINTL pt, const std::vector<std::wstring>& files, bool move);
 
 private:
     static LRESULT CALLBACK ProcStatic(HWND, UINT, WPARAM, LPARAM);
@@ -466,6 +583,7 @@ private:
     int SplitX() const;
 
     HWND hwnd_ = nullptr;
+    PanelDropTarget* dropTarget_ = nullptr;
     HMENU menu_ = nullptr;
     HWND label_ = nullptr;
     HWND prompt_ = nullptr;
@@ -518,6 +636,91 @@ private:
     std::vector<std::wstring> history_;
 };
 
+
+// ---------- OLE drag & drop: приёмник на главном окне и списках ----------
+
+class PanelDropTarget final : public IDropTarget {
+public:
+    explicit PanelDropTarget(App* app) : app_(app) {}
+
+    STDMETHODIMP QueryInterface(REFIID riid, void** ppv) override {
+        if (!ppv) return E_POINTER;
+        if (riid == IID_IUnknown || riid == IID_IDropTarget) {
+            *ppv = static_cast<IDropTarget*>(this);
+            AddRef();
+            return S_OK;
+        }
+        *ppv = nullptr;
+        return E_NOINTERFACE;
+    }
+    STDMETHODIMP_(ULONG) AddRef() override { return (ULONG)InterlockedIncrement(&ref_); }
+    STDMETHODIMP_(ULONG) Release() override {
+        const ULONG n = (ULONG)InterlockedDecrement(&ref_);
+        if (n == 0) delete this;
+        return n;
+    }
+
+    STDMETHODIMP DragEnter(IDataObject* data, DWORD keyState, POINTL pt, DWORD* effect) override {
+        if (!effect) return E_POINTER;
+        *effect = app_->OleDragEffect(pt, keyState);
+        if (*effect != DROPEFFECT_NONE && data) {
+            FORMATETC fmt{CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+            if (data->QueryGetData(&fmt) != S_OK) *effect = DROPEFFECT_NONE;
+        }
+        accepted_ = (*effect != DROPEFFECT_NONE);
+        return S_OK;
+    }
+    STDMETHODIMP DragOver(DWORD keyState, POINTL pt, DWORD* effect) override {
+        if (!effect) return E_POINTER;
+        *effect = accepted_ ? app_->OleDragEffect(pt, keyState) : DROPEFFECT_NONE;
+        return S_OK;
+    }
+    STDMETHODIMP DragLeave() override {
+        accepted_ = false;
+        return S_OK;
+    }
+    STDMETHODIMP Drop(IDataObject* data, DWORD keyState, POINTL pt, DWORD* effect) override {
+        if (!effect) return E_POINTER;
+        accepted_ = false;
+        const DWORD targetEffect = app_->OleDragEffect(pt, keyState);
+        std::vector<std::wstring> files;
+        if (targetEffect == DROPEFFECT_NONE || !ReadFiles(data, files)) {
+            *effect = DROPEFFECT_NONE;
+            return S_OK;
+        }
+        app_->OleDropFiles(pt, files, (targetEffect & DROPEFFECT_MOVE) != 0);
+        *effect = targetEffect;
+        return S_OK;
+    }
+
+private:
+    ~PanelDropTarget() = default;
+
+    static bool ReadFiles(IDataObject* data, std::vector<std::wstring>& files) {
+        if (!data) return false;
+        FORMATETC fmt{CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+        STGMEDIUM stg{};
+        if (data->GetData(&fmt, &stg) != S_OK) return false;
+        if (!stg.hGlobal) return false;
+        auto drop = static_cast<HDROP>(stg.hGlobal);
+        const UINT count = DragQueryFileW(drop, 0xFFFFFFFF, nullptr, 0);
+        for (UINT i = 0; i < count; ++i) {
+            const UINT len = DragQueryFileW(drop, i, nullptr, 0);
+            if (!len) continue;
+            std::wstring path((size_t)len + 1, L'\0');
+            if (DragQueryFileW(drop, i, path.data(), len + 1) == len) {
+                path.resize(len);
+                files.push_back(path);
+            }
+        }
+        ReleaseStgMedium(&stg);
+        return !files.empty();
+    }
+
+    LONG ref_ = 1;
+    App* app_ = nullptr;
+    bool accepted_ = false;
+};
 // ---------- создание ----------
 
 bool App::Create(HINSTANCE inst) {
@@ -543,6 +746,13 @@ bool App::Create(HINSTANCE inst) {
     hwnd_ = CreateWindowExW(0, kMainClass, kTitle, WS_OVERLAPPEDWINDOW, wx, wy, saved.w, saved.h,
                             nullptr, menu_, inst, this);
     if (!hwnd_) return false;
+
+    // OLE drag & drop: источник — панель, приёмник — окно и оба списка.
+    dropTarget_ = new PanelDropTarget(this);
+    RegisterDragDrop(hwnd_, dropTarget_);
+    if (left_.List()) RegisterDragDrop(left_.List(), dropTarget_);
+    if (right_.List()) RegisterDragDrop(right_.List(), dropTarget_);
+
     ShowWindow(hwnd_, saved.maximized ? SW_SHOWMAXIMIZED : SW_SHOW);
     UpdateWindow(hwnd_);
     return true;
@@ -1985,6 +2195,37 @@ int App::PanelAtScreen(POINT screen) const {
     return -1;
 }
 
+DWORD App::OleDragEffect(POINTL pt, DWORD keyState) const {
+    POINT p{pt.x, pt.y};
+    const int side = PanelAtScreen(p);
+    if (side < 0) return DROPEFFECT_NONE;
+    const Panel* target = (side == 0) ? &left_ : &right_;
+    if (target->InFtp() || target->InArchive()) return DROPEFFECT_NONE;
+    return (keyState & MK_SHIFT) ? DROPEFFECT_MOVE : DROPEFFECT_COPY;
+}
+
+void App::OleDropFiles(POINTL pt, const std::vector<std::wstring>& files, bool move) {
+    POINT p{pt.x, pt.y};
+    const int side = PanelAtScreen(p);
+    if (side < 0 || files.empty()) return;
+    Panel* target = (side == 0) ? &left_ : &right_;
+    if (target->InFtp() || target->InArchive()) {
+        MessageBoxW(hwnd_, L"Перетаскивание в FTP или архив не поддерживается. Используйте F5/F6.",
+                    L"Перетаскивание", MB_ICONINFORMATION | MB_OK);
+        return;
+    }
+    LogDebug(L"OLE drop files=" + std::to_wstring(files.size()) + L" move=" + std::to_wstring(move ? 1 : 0) +
+             L" target='" + target->Path() + L"'");
+    if (!ShellCopyMove(hwnd_, files, target->Path(), move)) {
+        ShowError(move ? L"Перемещение не выполнено или отменено." : L"Копирование не выполнено или отменено.");
+    }
+    left_.ClearMarks();
+    right_.ClearMarks();
+    left_.Reload();
+    right_.Reload();
+    UpdatePromptLabel();
+}
+
 // Перетаскивание между панелями: по умолчанию копирование, с Shift — перемещение.
 void App::DropOnPanel(int fromSide, int toSide) {
     if (fromSide == toSide) return;
@@ -3085,13 +3326,31 @@ LRESULT App::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             RunNextJob();
             return 0;
 
-        case WM_APP + 300:
-            // Панель сообщила LVN_BEGINDRAG — ведём перетаскивание сами.
-            dragging_ = true;
-            dragFromSide_ = (int)wParam;
-            LogDebug(L"drag begin side=" + std::to_wstring(dragFromSide_));
-            SetCapture(hwnd_);
+        case WM_APP + 300: {
+            // Панель сообщила LVN_BEGINDRAG — ведём настоящий OLE-драг,
+            // чтобы файлы можно было бросать на рабочий стол и в Проводник.
+            Panel* panel = ((int)wParam == 0) ? &left_ : &right_;
+            if (panel->InFtp() || panel->InArchive()) {
+                MessageBoxW(hwnd_, L"Перетаскивание с FTP или из архива пока не поддерживается.\n"
+                                    L"Используйте F5/F6.",
+                            L"Перетаскивание", MB_ICONINFORMATION | MB_OK);
+                return 0;
+            }
+            std::vector<std::wstring> paths = panel->SelectedPaths();
+            if (paths.empty()) return 0;
+            auto* data = new FileDataObject(std::move(paths));
+            auto* source = new FileDropSource();
+            DWORD effect = 0;
+            DoDragDrop(data, source, DROPEFFECT_COPY | DROPEFFECT_MOVE, &effect);
+            data->Release();
+            source->Release();
+            if (effect != DROPEFFECT_NONE) {
+                left_.Reload();
+                right_.Reload();
+                UpdatePromptLabel();
+            }
             return 0;
+        }
 
         case WM_SIZE:
             Layout();
@@ -3276,6 +3535,13 @@ LRESULT App::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             break;
 
         case WM_CLOSE:
+            if (dropTarget_) {
+                if (hwnd_) RevokeDragDrop(hwnd_);
+                if (left_.List()) RevokeDragDrop(left_.List());
+                if (right_.List()) RevokeDragDrop(right_.List());
+                dropTarget_->Release();
+                dropTarget_ = nullptr;
+            }
             SaveState();
             DestroyWindow(hwnd_);
             return 0;
@@ -3479,7 +3745,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR cmdLine, int) {
     icc.dwICC = ICC_LISTVIEW_CLASSES | ICC_BAR_CLASSES | ICC_STANDARD_CLASSES;
     InitCommonControlsEx(&icc);
 
-    HRESULT hrCo = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    HRESULT hrOle = OleInitialize(nullptr);
 
     App app;
     int code = 0;
@@ -3490,6 +3756,6 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR cmdLine, int) {
         code = 1;
     }
 
-    if (SUCCEEDED(hrCo)) CoUninitialize();
+    if (SUCCEEDED(hrOle)) OleUninitialize();
     return code;
 }
