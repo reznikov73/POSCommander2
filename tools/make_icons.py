@@ -8,6 +8,7 @@
 Запуск:  python tools/make_icons.py [--preview]
 """
 import io
+import math
 import os
 import struct
 import sys
@@ -59,71 +60,90 @@ def fy(y):
 
 
 def folder_image(size, hidden=False):
-    img, d, s = new_canvas(size)
-    k = s / 16.0
+    """Папка по пиксельной сетке эталона, без масштабирования.
 
-    def P(x, y):
-        return (fx(x) * k, fy(y) * k)
+    Тело: строки 2..12, столбцы 0..14; углы скошены на 1 px (справа сверху/снизу
+    и слева снизу), справа внутри — фаска темнее заливки, над нижней кромкой —
+    тёмная полоса. Язычок: строки 0..1, верх x 2..6, основание x 1..7.
 
-    def W(v):
-        return max(1, int(v * k))
+    Порядок слоёв: корпус с контуром, затем язычок — иначе верхняя кромка корпуса
+    рисуется поверх заливки язычка и тот выглядит отдельной «ручкой».
+    """
+    img = Image.new('RGBA', (size, size), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    k = size / 16.0
+
+    def S(v):
+        return int(math.floor(v * k + 0.5))
+
+    ow = max(1, S(1))
 
     if hidden:
-        tab_fill, tab_edge = (0xF8, 0xF2, 0xC8), (0xD6, 0xB6, 0x79)
+        tab_fill, tab_edge = (0xF8, 0xF1, 0xC6), (0xD6, 0xB6, 0x79)
         body_top, body_bottom = (0xF9, 0xF5, 0xDC), (0xF8, 0xE8, 0xBB)
-        edge_top, edge_left, edge_right, edge_bottom = ((0xD2, 0xB2, 0x74), (0xD6, 0xB6, 0x79),
-                                                       (0xBD, 0xA7, 0x7F), (0xC0, 0xA9, 0x7E))
-        inner_shade = (0xE5, 0xD6, 0xB0)
+        edge_top, edge_left = (0xC9, 0xAE, 0x7C), (0xD4, 0xB5, 0x7A)
+        edge_right, edge_bottom = (0xBD, 0xA7, 0x7F), (0xBD, 0xA7, 0x7F)
+        bevel_top, bevel_bottom, shade_row = (0xF7, 0xE3, 0xB9), (0xDD, 0xC9, 0xA3), (0xDD, 0xC9, 0xA4)
     else:
         tab_fill, tab_edge = (0xFE, 0xF2, 0x9D), (0xB9, 0x7A, 0x00)
         body_top, body_bottom = (0xFF, 0xF8, 0xC5), (0xFD, 0xDE, 0x84)
-        edge_top, edge_left, edge_right, edge_bottom = ((0xA4, 0x6D, 0x05), (0xB9, 0x7A, 0x00),
-                                                       (0x87, 0x5B, 0x0C), (0x8E, 0x5F, 0x0A))
-        inner_shade = (0xD7, 0xBA, 0x6D)
+        edge_top, edge_left = (0xA4, 0x6D, 0x05), (0xB9, 0x7A, 0x00)
+        edge_right, edge_bottom = (0x87, 0x5B, 0x0C), (0x8E, 0x5F, 0x0A)
+        bevel_top, bevel_bottom, shade_row = (0xF0, 0xC7, 0x71), (0xC8, 0x9F, 0x54), (0xC7, 0x9F, 0x55)
 
-    # --- язычок: трапеция, левый скос больше правого ---
-    tab = [P(4.9, 4.0), P(10.1, 4.0), P(11.0, 6.6), P(4.0, 6.6)]
-    d.polygon(tab, fill=tab_fill + (255,))
-    # обводим только верх и скосы: нижняя кромка язычка уходит под корпус
-    d.line([tab[3], tab[0], tab[1], tab[2]], fill=tab_edge + (255,), width=W(0.8), joint='curve')
+    y0, y1 = S(2), S(13)
+    x0, x1 = S(0), S(15)
 
-    # --- корпус ---
-    body = [P(4.0, 6.0), P(18.0, 6.0), P(18.0, 16.0), P(4.0, 16.0)]
-    mask = Image.new('L', (s, s), 0)
-    ImageDraw.Draw(mask).polygon(body, fill=255)
+    # 1. заливка с фаской справа и полосой над нижней кромкой
+    top_row, bottom_row = y0 + ow, y1 - ow
+    for y in range(y0 + ow, y1 - ow):
+        t = (y - top_row) / max(1, bottom_row - top_row)
+        left_col = lerp(body_top, body_bottom, min(1.0, max(0.0, t)))[:3] + (255,)
+        if y >= y1 - 2 * ow:                       # полоса над нижней кромкой
+            for x in range(x0 + ow, x1 - 2 * ow):
+                t2 = min(1.0, max(0.0, (x - x0 - ow) / 5.0))
+                rc = lerp(left_col[:3], shade_row, t2)
+                d.rectangle([x, y, x, y], fill=rc[:3] + (255,))
+        else:
+            d.rectangle([x0 + ow, y, x1 - 2 * ow - 1, y], fill=left_col)
+        bevel = lerp(bevel_top, bevel_bottom, min(1.0, max(0.0, t)) ** 0.55)[:3] + (255,)
+        d.rectangle([x1 - 2 * ow, y, x1 - 2 * ow + ow - 1, y], fill=bevel)
 
-    grad = Image.new('RGBA', (s, s), (0, 0, 0, 0))
-    vgrad(ImageDraw.Draw(grad), [0, P(0, 6.4)[1], s, P(0, 15.2)[1]], body_top, body_bottom)
-    img.paste(grad, (0, 0), mask)
+    # 2. контур: верх уже на 1 px справа, низ начинается с 1 px слева (скосы)
+    d.rectangle([x0, y0, x1 - 2 * ow, y0 + ow - 1], fill=edge_top + (255,))
+    d.rectangle([x0, y0 + ow, x0 + ow - 1, y1 - ow - 1], fill=edge_left + (255,))
+    d.rectangle([x1 - ow, y0 + ow, x1 - 1, y1 - ow - 1], fill=edge_right + (255,))
+    d.rectangle([x0 + ow, y1 - ow, x1 - 2 * ow, y1 - 1], fill=edge_bottom + (255,))
 
-    # тень по низу корпуса и блик сверху — как в эталоне
-    layer = Image.new('RGBA', (s, s), (0, 0, 0, 0))
-    dl = ImageDraw.Draw(layer)
-    dl.rectangle([P(4.4, 0)[0], P(0, 15.0)[1], P(17.6, 0)[0], P(0, 15.9)[1]], fill=inner_shade + (255,))
-    dl.rectangle([P(4.4, 0)[0], P(0, 6.4)[1], P(17.6, 0)[0], P(0, 7.4)[1]], fill=(255, 255, 255, 55))
-    masked_paste(img, layer, mask)
+    # 3. язычок поверх верхней кромки корпуса
+    tab_y0, tab_y1 = S(0), S(2)
+    for y in range(tab_y0, tab_y1 + ow):
+        t = (y - tab_y0) / max(1, (tab_y1 - tab_y0 - 1))
+        left = int(math.floor(S(2) + (S(1) - S(2)) * t + 0.5))
+        right = int(math.floor(S(6) + (S(7) - S(6)) * t + 0.5))
+        d.rectangle([left + ow, y, right - ow - 1, y], fill=tab_fill + (255,))
 
-    d = ImageDraw.Draw(img)
-    d.line([P(4.0, 6.0), P(18.0, 6.0)], fill=edge_top + (255,), width=W(1.0))
-    d.line([P(4.0, 6.0), P(4.0, 16.0)], fill=edge_left + (255,), width=W(1.0))
-    d.line([P(18.0, 6.0), P(18.0, 16.0)], fill=edge_right + (255,), width=W(1.05))
-    d.line([P(4.0, 16.0), P(18.0, 16.0)], fill=edge_bottom + (255,), width=W(1.15))
-    d.arc([P(4.0, 15.0)[0], P(4.0, 15.0)[1], P(5.0, 16.0)[0], P(5.0, 16.0)[1]], 90, 180,
-          fill=edge_bottom + (255,), width=W(1.15))
-    d.arc([P(17.0, 15.0)[0], P(17.0, 15.0)[1], P(18.0, 16.0)[0], P(18.0, 16.0)[1]], 0, 90,
-          fill=edge_bottom + (255,), width=W(1.15))
+    # 4. контур язычка: верх и скосы (нижнюю строку основания не обводим)
+    d.rectangle([S(2), tab_y0, S(6) - 1, tab_y0 + ow - 1], fill=tab_edge + (255,))
+    for y in range(tab_y0, tab_y1):
+        t = (y - tab_y0) / max(1, (tab_y1 - tab_y0 - 1))
+        left = int(math.floor(S(2) + (S(1) - S(2)) * t + 0.5))
+        right = int(math.floor(S(6) + (S(7) - S(6)) * t + 0.5))
+        d.rectangle([left, y, left + ow - 1, y], fill=tab_edge + (255,))
+        d.rectangle([right - ow, y, right - 1, y], fill=tab_edge + (255,))
 
     if hidden:
-        # белая полоса и красный пунктир по центру (как у скрытой папки в TC)
-        layer = Image.new('RGBA', (s, s), (0, 0, 0, 0))
-        dl = ImageDraw.Draw(layer)
-        dl.rectangle([P(9.6, 0)[0], P(0, 6.6)[1], P(13.6, 0)[0], P(0, 15.4)[1]], fill=(255, 255, 255, 255))
-        red = (0xBE, 0x38, 0x42, 255)
-        for y0, y1 in ((7.0, 10.4), (12.0, 14.4)):
-            dl.rectangle([P(10.7, 0)[0], P(0, y0)[1], P(12.7, 0)[0], P(0, y1)[1]], fill=red)
-        masked_paste(img, layer, mask)
+        # 5. белая полоса 2 px (столбцы 7..8) и красный пунктир с окантовкой 1 px
+        sx0, sx1 = S(7), S(9)
+        d.rectangle([sx0, y0, sx1 - 1, y1 - ow - 1], fill=(255, 255, 255, 255))
+        hx0, hx1 = S(6), S(10)
+        red = (0xC4, 0x3D, 0x47, 255)
+        for dy0, dy1 in ((3, 7), (9, 11)):
+            yy0, yy1 = S(dy0), S(dy1)
+            d.rectangle([hx0, yy0, hx1 - 1, yy1 - 1], fill=(255, 255, 255, 255))
+            d.rectangle([sx0, yy0, sx1 - 1, yy1 - 1], fill=red)
 
-    return img.resize((size, size), Image.LANCZOS)
+    return img
 
 
 # ---------- стрелка «на уровень вверх» ----------
