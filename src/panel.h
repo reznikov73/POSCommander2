@@ -157,6 +157,9 @@ private:
     bool clickShift_ = false;      // Shift был зажат в момент клика
     bool clickCtrl_ = false;       // Ctrl был зажат в момент клика
 
+    HWND tip_ = nullptr;           // подсказка с полным путём
+    std::wstring tipText_;         // текст подсказки (живёт до следующего запроса)
+
     HWND pathEdit_ = nullptr;      // редактируемое поле пути
     HWND pathApply_ = nullptr;     // ✓ — перейти по введённому пути
     HWND pathFav_ = nullptr;       // ★ — избранные каталоги

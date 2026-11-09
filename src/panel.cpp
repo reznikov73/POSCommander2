@@ -134,6 +134,26 @@ bool Panel::Create(HWND parent, int id) {
                               0, 0, 10, 10, hwnd_, (HMENU)(INT_PTR)kVolumeId, g_inst, nullptr);
 
     CreateDriveBar();
+
+    // Подсказка с полным путём: при наведении на запись списка и на поле пути (как в TC).
+    tip_ = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, nullptr, WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX,
+                           CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, hwnd_, nullptr, g_inst,
+                           nullptr);
+    if (tip_) {
+        SendMessageW(tip_, TTM_SETMAXTIPWIDTH, 0, Scale(900, dpi_));
+
+        TOOLINFOW ti{};
+        ti.cbSize = sizeof(ti);
+        ti.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
+        ti.hwnd = hwnd_;
+        ti.lpszText = LPSTR_TEXTCALLBACKW;
+
+        ti.uId = (UINT_PTR)list_;
+        SendMessageW(tip_, TTM_ADDTOOLW, 0, (LPARAM)&ti);
+
+        ti.uId = (UINT_PTR)pathEdit_;
+        SendMessageW(tip_, TTM_ADDTOOLW, 0, (LPARAM)&ti);
+    }
     return true;
 }
 
@@ -1483,14 +1503,13 @@ void Panel::FillDispInfo(NMLVDISPINFO* info) {
                 text = e.isUp ? L".." : e.stem();
                 break;
             case 1:
-                text = e.isUp ? L"<Папка>" : (e.isDir ? L"<Папка>" : Upper(e.ext()).substr(0, 8));
+                // У каталогов (и «..») колонка «Тип» пустая, как в TC.
+                text = (e.isUp || e.isDir) ? L"" : Upper(e.ext()).substr(0, 8);
                 if (!text.empty() && text[0] == L'.') text.erase(0, 1);
                 break;
             case 2:
-                if (e.isUp) {
-                    text = L"<Папка>";
-                } else if (e.isDir) {
-                    text = e.dirSizeBusy ? L"…" : (e.dirSizeKnown ? FmtSize(e.dirSize) : L"<DIR>");
+                if (e.isDir) {
+                    text = e.dirSizeBusy ? L"…" : (e.dirSizeKnown ? FmtSize(e.dirSize) : L"<Папка>");
                 } else {
                     text = FmtSize(e.size);
                 }
@@ -1958,6 +1977,29 @@ LRESULT Panel::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
         case WM_NOTIFY: {
             auto hdr = reinterpret_cast<NMHDR*>(lParam);
+            if (hdr && tip_ && hdr->hwndFrom == tip_ && hdr->code == TTN_NEEDTEXTW) {
+                auto tt = reinterpret_cast<NMTTDISPINFOW*>(lParam);
+                if (tt->hdr.idFrom == (UINT_PTR)pathEdit_) {
+                    tipText_ = DisplayPath();
+                } else {
+                    POINT pt{};
+                    GetCursorPos(&pt);
+                    LVHITTESTINFO ht{};
+                    ht.pt = pt;
+                    ScreenToClient(list_, &ht.pt);
+                    const int hit = ListView_HitTest(list_, &ht);
+                    if (hit >= 0 && hit < (int)entries_.size()) {
+                        tipText_ = FullPathOf(entries_[hit]);
+                        if (entries_[hit].isDir && !tipText_.empty() && tipText_.back() != L'\\') {
+                            tipText_.push_back(L'\\');   // у каталогов путь с завершающей чертой, как в TC
+                        }
+                    } else {
+                        tipText_ = DisplayPath();
+                    }
+                }
+                tt->lpszText = tipText_.data();
+                return 0;
+            }
             if (hdr && hdr->code == HDN_ENDTRACKW) {
                 SaveColumnWidths();
                 return 0;
