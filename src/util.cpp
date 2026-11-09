@@ -113,6 +113,14 @@ std::wstring NormalizeDir(const std::wstring& path) {
     for (auto& ch : in) if (ch == L'/') ch = L'\\';
     if (in.empty()) return in;
 
+    // %TEMP%, %USERPROFILE%, %HOMEDRIVE%%HOMEPATH% и т. п. — как в TC: переменные
+    // окружения раскрываются в пути из поля пути, избранного и истории.
+    if (in.find(L'%') != std::wstring::npos) {
+        wchar_t expanded[32768]{};
+        DWORD need = ExpandEnvironmentStringsW(in.c_str(), expanded, 32768);
+        if (need > 0 && need <= 32768) in = expanded;
+    }
+
     if (in == L"\\") {
         wchar_t cwd[MAX_PATH]{};
         if (GetCurrentDirectoryW(MAX_PATH, cwd)) return DriveRootOf(cwd);

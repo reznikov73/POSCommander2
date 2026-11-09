@@ -176,6 +176,22 @@ int RunSelfTest() {
     rep.Check(DriveRootOf(L"\\\\server\\share\\dir") == L"\\\\server\\share",
               L"DriveRootOf: корень общего ресурса", DriveRootOf(L"\\\\server\\share\\dir"));
 
+    // --- переменные окружения в путях (как в TC: %TEMP%, %USERPROFILE%) ---
+    {
+        wchar_t buf[32768]{};
+        ExpandEnvironmentStringsW(L"%TEMP%", buf, 32768);
+        rep.Check(NormalizeDir(L"%TEMP%") == NormalizeDir(buf),
+                  L"NormalizeDir раскрывает %TEMP%", NormalizeDir(L"%TEMP%"));
+        ExpandEnvironmentStringsW(L"%SystemRoot%", buf, 32768);
+        rep.Check(NormalizeDir(L"%SystemRoot%\\") == NormalizeDir(buf),
+                  L"NormalizeDir раскрывает %SystemRoot% с обратной косой", NormalizeDir(L"%SystemRoot%\\"));
+        // Неизвестную переменную ExpandEnvironmentStringsW оставляет текстом;
+        // относительный путь затем достраивается до текущего каталога — это норма.
+        const std::wstring unknown = NormalizeDir(L"%НЕТ_ТАКОЙ_ПЕРЕМЕННОЙ%");
+        rep.Check(unknown.find(L"%НЕТ_ТАКОЙ_ПЕРЕМЕННОЙ%") != std::wstring::npos,
+                  L"неизвестная переменная остаётся текстом пути", unknown);
+    }
+
     // Чтение общего ресурса, если он доступен на этой машине.
     wchar_t computer[MAX_COMPUTERNAME_LENGTH + 1]{};
     DWORD computerLen = MAX_COMPUTERNAME_LENGTH + 1;
