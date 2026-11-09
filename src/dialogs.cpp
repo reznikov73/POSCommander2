@@ -846,11 +846,15 @@ const int kFtpProgTextId = 80;
 const int kFtpProgPercentId = 81;
 const int kFtpProgBarId = 82;
 const int kFtpProgCancelId = 83;
+const int kFtpProgTargetId = 84;
+const int kFtpProgStatsId = 85;
 
 struct FtpProgState {
     HWND hwnd = nullptr;
     HWND text = nullptr;
+    HWND target = nullptr;
     HWND percent = nullptr;
+    HWND stats = nullptr;
     HWND bar = nullptr;
     HWND cancel = nullptr;
     HWND owner = nullptr;
@@ -858,6 +862,8 @@ struct FtpProgState {
     bool cancelled = false;
     bool shown = false;
     ULONGLONG started = 0;
+    ULONGLONG lastUi = 0;
+    ULONGLONG lastPump = 0;
 };
 
 FtpProgState g_ftpProg;
@@ -865,10 +871,12 @@ FtpProgState g_ftpProg;
 void FtpProgLayout(HWND hwnd) {
     RECT rc{};
     GetClientRect(hwnd, &rc);
-    const int pad = 12, lineH = 20, barH = 18, btnW = 100, btnH = 26;
+    const int pad = 12, lineH = 18, barH = 16, btnW = 100, btnH = 26;
     MoveWindow(g_ftpProg.text, pad, pad, rc.right - 2 * pad, lineH, TRUE);
-    MoveWindow(g_ftpProg.percent, pad, pad + lineH + 6, rc.right - 2 * pad, lineH, TRUE);
-    MoveWindow(g_ftpProg.bar, pad, pad + 2 * lineH + 14, rc.right - 2 * pad, barH, TRUE);
+    MoveWindow(g_ftpProg.target, pad, pad + lineH + 2, rc.right - 2 * pad, lineH, TRUE);
+    MoveWindow(g_ftpProg.percent, pad, pad + 2 * lineH + 8, rc.right - 2 * pad, lineH, TRUE);
+    MoveWindow(g_ftpProg.stats, pad, pad + 3 * lineH + 8, rc.right - 2 * pad, lineH, TRUE);
+    MoveWindow(g_ftpProg.bar, pad, pad + 4 * lineH + 12, rc.right - 2 * pad, barH, TRUE);
     MoveWindow(g_ftpProg.cancel, rc.right - pad - btnW, rc.bottom - pad - btnH, btnW, btnH, TRUE);
 }
 
@@ -878,15 +886,20 @@ LRESULT CALLBACK FtpProgProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             g_ftpProg.hwnd = hwnd;
             g_ftpProg.text = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_LEFT | SS_ENDELLIPSIS,
                                              0, 0, 10, 10, hwnd, (HMENU)kFtpProgTextId, nullptr, nullptr);
+            g_ftpProg.target = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_LEFT | SS_ENDELLIPSIS,
+                                               0, 0, 10, 10, hwnd, (HMENU)kFtpProgTargetId, nullptr, nullptr);
             g_ftpProg.percent = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_LEFT,
                                                 0, 0, 10, 10, hwnd, (HMENU)kFtpProgPercentId, nullptr, nullptr);
+            g_ftpProg.stats = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_LEFT | SS_ENDELLIPSIS,
+                                              0, 0, 10, 10, hwnd, (HMENU)kFtpProgStatsId, nullptr, nullptr);
             g_ftpProg.bar = CreateWindowExW(0, PROGRESS_CLASSW, nullptr, WS_CHILD | WS_VISIBLE | PBS_SMOOTH,
                                             0, 0, 10, 10, hwnd, (HMENU)kFtpProgBarId, nullptr, nullptr);
             g_ftpProg.cancel = CreateWindowExW(0, L"BUTTON", L"Отмена",
                                                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
                                                0, 0, 10, 10, hwnd, (HMENU)kFtpProgCancelId, nullptr, nullptr);
             HFONT font = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
-            const HWND kids[] = {g_ftpProg.text, g_ftpProg.percent, g_ftpProg.bar, g_ftpProg.cancel};
+            const HWND kids[] = {g_ftpProg.text, g_ftpProg.target, g_ftpProg.percent, g_ftpProg.stats,
+                                 g_ftpProg.bar, g_ftpProg.cancel};
             for (HWND k : kids) SendMessageW(k, WM_SETFONT, (WPARAM)font, TRUE);
             SendMessageW(g_ftpProg.bar, PBM_SETRANGE32, 0, 1000);
             FtpProgLayout(hwnd);
@@ -925,7 +938,7 @@ void FtpProgPump() {
 
 }  // namespace
 
-void FtpProgressOpen(HWND owner, const std::wstring& title) {
+void FtpProgressOpen(HWND owner, const std::wstring& title, const std::wstring& target) {
     if (g_ftpProg.hwnd) FtpProgressClose();
 
     static bool registered = false;
@@ -944,9 +957,11 @@ void FtpProgressOpen(HWND owner, const std::wstring& title) {
     g_ftpProg.cancelled = false;
     g_ftpProg.shown = false;
     g_ftpProg.started = GetTickCount64();
+    g_ftpProg.lastUi = 0;
+    g_ftpProg.lastPump = 0;
     g_ftpProg.owner = owner;
 
-    const int w = 480, h = 166;
+    const int w = 480, h = 196;
     RECT orc{};
     GetWindowRect(owner, &orc);
     const int x = orc.left + ((orc.right - orc.left) - w) / 2;
@@ -959,20 +974,31 @@ void FtpProgressOpen(HWND owner, const std::wstring& title) {
     EnableWindow(owner, FALSE);
     g_ftpProg.ownerDisabled = true;
     SetWindowTextW(g_ftpProg.text, L"Подготовка…");
+    SetWindowTextW(g_ftpProg.target, target.empty() ? L"" : (L"Куда: " + target).c_str());
     SetWindowTextW(g_ftpProg.percent, L"");
+    SetWindowTextW(g_ftpProg.stats, L"");
 }
 
-bool FtpProgressUpdate(const std::wstring& file, ULONGLONG done, ULONGLONG total) {
-    FtpProgPump();
+bool FtpProgressUpdate(const std::wstring& file, ULONGLONG done, ULONGLONG total,
+                       int filesDone, ULONGLONG bytesDone) {
+    const ULONGLONG now = GetTickCount64();
+    if (now - g_ftpProg.lastPump >= 40) {
+        FtpProgPump();
+        g_ftpProg.lastPump = now;
+    }
 
-    if (g_ftpProg.hwnd) {
-        if (!g_ftpProg.shown && GetTickCount64() - g_ftpProg.started > 250) {
+    // Не дёргаем перерисовку на каждые 64 Кб — иначе передача сама себя тормозит.
+    const bool force = (total > 0 && done >= total);
+    if (g_ftpProg.hwnd && (force || now - g_ftpProg.lastUi >= 100)) {
+        g_ftpProg.lastUi = now;
+        if (!g_ftpProg.shown && now - g_ftpProg.started > 250) {
             ShowWindow(g_ftpProg.hwnd, SW_SHOW);
             UpdateWindow(g_ftpProg.hwnd);
             g_ftpProg.shown = true;
         }
         if (g_ftpProg.shown) {
             SetWindowTextW(g_ftpProg.text, file.c_str());
+            UpdateWindow(g_ftpProg.text);
             std::wstring info;
             if (total > 0) {
                 const ULONGLONG percent = done * 100 / total;
@@ -983,6 +1009,16 @@ bool FtpProgressUpdate(const std::wstring& file, ULONGLONG done, ULONGLONG total
                 info = FmtSize(done);
             }
             SetWindowTextW(g_ftpProg.percent, info.c_str());
+            UpdateWindow(g_ftpProg.percent);
+
+            if (filesDone >= 0) {
+                std::wstring stats = L"Готово файлов: " + std::to_wstring(filesDone);
+                if (bytesDone > 0) stats += L" · всего: " + FmtSize(bytesDone);
+                SetWindowTextW(g_ftpProg.stats, stats.c_str());
+                UpdateWindow(g_ftpProg.stats);
+            }
+            InvalidateRect(g_ftpProg.bar, nullptr, TRUE);
+            UpdateWindow(g_ftpProg.bar);
         }
     }
     return !g_ftpProg.cancelled;

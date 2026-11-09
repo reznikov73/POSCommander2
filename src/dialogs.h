@@ -30,8 +30,10 @@ struct FtpConnectOptions {
 bool FtpConnectBox(HWND owner, FtpConnectOptions& options, const std::vector<FtpSite>& sites);
 
 // Окно прогресса FTP-передачи. Одно на приложение; Update возвращает false при отмене.
-void FtpProgressOpen(HWND owner, const std::wstring& title);
-bool FtpProgressUpdate(const std::wstring& file, ULONGLONG done, ULONGLONG total);
+void FtpProgressOpen(HWND owner, const std::wstring& title, const std::wstring& target = L"");
+// filesDone < 0 — счётчик файлов не показывать; bytesDone — всего скопировано.
+bool FtpProgressUpdate(const std::wstring& file, ULONGLONG done, ULONGLONG total,
+                       int filesDone = -1, ULONGLONG bytesDone = 0);
 void FtpProgressClose();
 
 // Просмотр файла (F3) в отдельном окне.

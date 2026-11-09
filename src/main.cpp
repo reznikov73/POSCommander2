@@ -172,10 +172,12 @@ struct FtpCopyCtx {
     FtpConnection* dst = nullptr;       // null — локальный приёмник
     bool move = false;
     bool overwriteAll = false;
+    bool skipExisting = false;
     std::vector<std::wstring> masks;
     std::wstring error;
     bool aborted = false;
     int files = 0;
+    ULONGLONG bytesDone = 0;
 };
 
 bool ConnectFtpForUrl(const std::wstring& url, std::unique_ptr<FtpConnection>& conn, FtpSite& site,
@@ -303,6 +305,7 @@ bool CopyFtpItem(FtpCopyCtx& c, const std::wstring& srcPath, const std::wstring&
     }
 
     if (exists && !c.overwriteAll) {
+        if (c.skipExisting) return true;
         const int answer = MessageBoxW(c.owner, (L"Перезаписать «" + name + L"»?").c_str(), L"FTP",
                                        MB_YESNOCANCEL | MB_ICONQUESTION);
         if (answer == IDCANCEL) {
@@ -313,8 +316,10 @@ bool CopyFtpItem(FtpCopyCtx& c, const std::wstring& srcPath, const std::wstring&
         if (answer == IDNO) return true;
     }
 
-    auto progress = [&name](ULONGLONG done, ULONGLONG total) {
-        return FtpProgressUpdate(name, done, total);
+    ULONGLONG fileTotal = 0;
+    auto progress = [&name, &fileTotal, &c](ULONGLONG done, ULONGLONG total) {
+        fileTotal = total;
+        return FtpProgressUpdate(name, done, total, c.files, c.bytesDone);
     };
 
     if (c.src && c.dst) {
@@ -343,6 +348,7 @@ bool CopyFtpItem(FtpCopyCtx& c, const std::wstring& srcPath, const std::wstring&
     }
 
     ++c.files;
+    c.bytesDone += fileTotal;
     if (c.move) {
         if (c.src) {
             std::wstring remote;
@@ -1148,15 +1154,42 @@ void App::DoFtpCopyMove(bool move) {
         }
     }
 
+    // Один вопрос про перезапись вместо вопроса на каждый файл.
+    bool overwriteAll = opts.overwriteAll;
+    bool skipExisting = false;
+    bool targetHasEntries = false;
+    if (targetRemote) {
+        std::vector<FtpEntryInfo> probe;
+        std::wstring probeError;
+        if (FtpList(*dstConn, dstRemote, probe, probeError)) targetHasEntries = !probe.empty();
+    } else {
+        std::vector<Entry> probe;
+        DWORD probeError = 0;
+        if (ListDir(target, true, probe, probeError)) targetHasEntries = !probe.empty();
+    }
+    if (targetHasEntries && !overwriteAll) {
+        const int answer = MessageBoxW(
+            hwnd_,
+            L"В каталоге назначения уже есть файлы.\n\n"
+            L"«Да» — перезаписать все\n"
+            L"«Нет» — пропустить существующие\n"
+            L"«Отмена» — прервать",
+            move ? L"FTP: перемещение" : L"FTP: копирование", MB_YESNOCANCEL | MB_ICONQUESTION);
+        if (answer == IDCANCEL) return;
+        if (answer == IDYES) overwriteAll = true;
+        if (answer == IDNO) skipExisting = true;
+    }
+
     FtpCopyCtx ctx;
     ctx.owner = hwnd_;
     ctx.src = srcConn.get();
     ctx.dst = dstConn.get();
     ctx.move = move;
-    ctx.overwriteAll = opts.overwriteAll;
+    ctx.overwriteAll = overwriteAll;
+    ctx.skipExisting = skipExisting;
     if (!Trim(opts.mask).empty()) ctx.masks = SplitMasks(opts.mask);
 
-    FtpProgressOpen(hwnd_, move ? L"FTP: перемещение" : L"FTP: копирование");
+    FtpProgressOpen(hwnd_, move ? L"FTP: перемещение" : L"FTP: копирование", target);
     for (auto& name : names) {
         const Entry* entry = nullptr;
         for (auto& e : panel->Entries()) {
@@ -1296,7 +1329,7 @@ void App::DoDelete() {
             return;
         }
 
-        FtpProgressOpen(hwnd_, L"FTP: удаление");
+        FtpProgressOpen(hwnd_, L"FTP: удаление", panel->Path());
         bool cancelled = false;
         for (auto& name : names) {
             DeleteFtpTree(*conn, FtpJoinUrl(panel->Path(), name), name, error, cancelled);
