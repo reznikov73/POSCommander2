@@ -130,6 +130,7 @@ private:
     void CreateDriveBar();
     void UpdateDriveBar();
     void UpdateVolume();
+    void DrawNavButton(DRAWITEMSTRUCT* dis);
     void RebuildTabBar();
     void UpdateTabText();
     void UpdateHeader();
@@ -203,6 +204,8 @@ private:
     HWND list_ = nullptr;
     HWND status_ = nullptr;
     HWND volume_ = nullptr;
+    HWND rootBtn_ = nullptr;   // «\» — в корень диска/архива
+    HWND upBtn_ = nullptr;     // «..» — на уровень вверх
     std::atomic<ULONGLONG> dirSizeResult_{0};
     int dirSizeIndex_ = -1;
     HWND tree_ = nullptr;

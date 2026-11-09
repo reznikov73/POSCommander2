@@ -27,6 +27,8 @@ const wchar_t* kHoverClass = L"POSPathHover2";
 const int kListId = 2;
 const int kStatusId = 3;
 const int kDriveBase = 100;   // 100..125 — кнопки дисков
+const int kDriveRootId = 130; // «\» — в корень диска/архива
+const int kDriveUpId = 131;   // «..» — на уровень вверх
 const int kTvId = 5;          // дерево каталогов
 const int kTabBase = 200;     // 200..231 — вкладки панели
 const int kVolumeId = 4;      // строка "свободно из" под дисками
@@ -134,10 +136,17 @@ bool Panel::Create(HWND parent, int id) {
     status_ = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE | SS_LEFT,
                               0, 0, 10, 10, hwnd_, (HMENU)(INT_PTR)kStatusId, g_inst, nullptr);
 
-    volume_ = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE | SS_LEFT,
+    volume_ = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE | SS_RIGHT,
                               0, 0, 10, 10, hwnd_, (HMENU)(INT_PTR)kVolumeId, g_inst, nullptr);
 
     CreateDriveBar();
+
+    // «\» и «..» в ряду дисков: корень и уровень вверх, как в TC.
+    const DWORD navBtn = WS_CHILD | WS_VISIBLE | BS_OWNERDRAW;
+    rootBtn_ = CreateWindowExW(0, L"BUTTON", L"\\", navBtn, 0, 0, 10, 10, hwnd_,
+                               (HMENU)(INT_PTR)kDriveRootId, g_inst, nullptr);
+    upBtn_ = CreateWindowExW(0, L"BUTTON", L"..", navBtn, 0, 0, 10, 10, hwnd_,
+                             (HMENU)(INT_PTR)kDriveUpId, g_inst, nullptr);
 
     // Подсказка с полным путём: при наведении на запись списка и на поле пути (как в TC).
     tip_ = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, nullptr, WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX,
@@ -207,7 +216,8 @@ void Panel::UpdateDriveBar() {
     for (auto h : driveButtons_) InvalidateRect(h, nullptr, TRUE);
 }
 
-// Кнопка диска: значок тома + буква; текущий диск — светлее и с рамкой.
+// Кнопка диска: значок тома + буква; активный — в стиле hover-кнопок тулбара
+// (этап 1): заливка #CCE8FF, рамка #8CC3EA (макет .db.on).
 void Panel::DrawDriveButton(DRAWITEMSTRUCT* dis) {
     // ID кнопки — kDriveBase + буква (0..25), поэтому ищем позицию в списке, а не берём как индекс.
     int index = -1;
@@ -226,12 +236,13 @@ void Panel::DrawDriveButton(DRAWITEMSTRUCT* dis) {
     const bool isCurrent = towupper(current) == towupper(driveLetters_[index]);
     const bool pressed = (dis->itemState & ODS_SELECTED) != 0;
 
-    HBRUSH fill = CreateSolidBrush(isCurrent ? RGB(255, 255, 255) : GetSysColor(COLOR_BTNFACE));
+    HBRUSH fill = CreateSolidBrush(isCurrent ? RGB(204, 232, 255)
+                                             : (pressed ? RGB(178, 215, 247) : GetSysColor(COLOR_BTNFACE)));
     FillRect(dc, &rc, fill);
     DeleteObject(fill);
 
     if (isCurrent || pressed) {
-        HPEN pen = CreatePen(PS_SOLID, 1, RGB(120, 120, 120));
+        HPEN pen = CreatePen(PS_SOLID, 1, RGB(140, 195, 234));
         HGDIOBJ oldPen = SelectObject(dc, pen);
         HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
         Rectangle(dc, rc.left, rc.top, rc.right, rc.bottom);
@@ -254,6 +265,33 @@ void Panel::DrawDriveButton(DRAWITEMSTRUCT* dis) {
     SetTextColor(dc, RGB(20, 20, 20));
     HGDIOBJ oldFont = SelectObject(dc, font_ ? font_ : (HFONT)GetStockObject(DEFAULT_GUI_FONT));
     DrawTextW(dc, text, -1, &tr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    SelectObject(dc, oldFont);
+}
+
+// Кнопки «\» и «..» в ряду дисков: тот же стиль, текст по центру без значка.
+void Panel::DrawNavButton(DRAWITEMSTRUCT* dis) {
+    HDC dc = dis->hDC;
+    RECT rc = dis->rcItem;
+    const bool pressed = (dis->itemState & ODS_SELECTED) != 0;
+
+    HBRUSH fill = CreateSolidBrush(pressed ? RGB(178, 215, 247) : GetSysColor(COLOR_BTNFACE));
+    FillRect(dc, &rc, fill);
+    DeleteObject(fill);
+    if (pressed) {
+        HPEN pen = CreatePen(PS_SOLID, 1, RGB(140, 195, 234));
+        HGDIOBJ oldPen = SelectObject(dc, pen);
+        HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
+        Rectangle(dc, rc.left, rc.top, rc.right, rc.bottom);
+        SelectObject(dc, oldBrush);
+        SelectObject(dc, oldPen);
+        DeleteObject(pen);
+    }
+
+    const wchar_t* text = dis->CtlID == kDriveRootId ? L"\\" : L"..";
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, RGB(20, 20, 20));
+    HGDIOBJ oldFont = SelectObject(dc, font_ ? font_ : (HFONT)GetStockObject(DEFAULT_GUI_FONT));
+    DrawTextW(dc, text, -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
     SelectObject(dc, oldFont);
 }
 
@@ -590,6 +628,8 @@ void Panel::SetFont(HFONT font, UINT dpi) {
     if (list_) SendMessageW(list_, WM_SETFONT, (WPARAM)font, TRUE);
     if (status_) SendMessageW(status_, WM_SETFONT, (WPARAM)font, TRUE);
     if (volume_) SendMessageW(volume_, WM_SETFONT, (WPARAM)font, TRUE);
+    if (rootBtn_) SendMessageW(rootBtn_, WM_SETFONT, (WPARAM)font, TRUE);
+    if (upBtn_) SendMessageW(upBtn_, WM_SETFONT, (WPARAM)font, TRUE);
     for (auto h : driveButtons_) SendMessageW(h, WM_SETFONT, (WPARAM)font, TRUE);
     for (auto h : tabButtons_) SendMessageW(h, WM_SETFONT, (WPARAM)font, TRUE);
     Layout();
@@ -610,18 +650,36 @@ void Panel::Layout() {
     int listH = height - driveH - tabH - headerH - statusH;
     if (listH < 0) listH = 0;
 
-    HDWP dwp = BeginDeferWindowPos(5 + (int)driveButtons_.size() + (int)tabButtons_.size());
+    HDWP dwp = BeginDeferWindowPos(5 + 2 + (int)driveButtons_.size() + (int)tabButtons_.size());
     int drivesRight = 0;
     if (dwp) {
-        int x = 0;
-        const int bw = Scale(44, dpi_);
+        // Ширина кнопки диска — по фактическому тексту «C:» (макет: поля 7px, значок 16, зазор 4).
+        HDC dc = GetDC(hwnd_);
+        HGDIOBJ oldFont = SelectObject(dc, font_ ? font_ : (HFONT)GetStockObject(DEFAULT_GUI_FONT));
+        SIZE sz{};
+        GetTextExtentPoint32W(dc, L"C:", 2, &sz);
+        SelectObject(dc, oldFont);
+        ReleaseDC(hwnd_, dc);
+
+        int x = Scale(4, dpi_);
+        const int bw = sz.cx + Scale(34, dpi_);
         for (auto h : driveButtons_) {
             dwp = DeferWindowPos(dwp, h, nullptr, x, 1, bw, driveH - 2, SWP_NOZORDER);
-            x += bw + Scale(1, dpi_);
+            x += bw + Scale(2, dpi_);
+        }
+        // «\» — корень, «..» — уровень вверх; переехали из заголовка, как в TC.
+        const int nbw = Scale(28, dpi_);
+        if (rootBtn_) {
+            dwp = DeferWindowPos(dwp, rootBtn_, nullptr, x, 1, nbw, driveH - 2, SWP_NOZORDER);
+            x += nbw + Scale(2, dpi_);
+        }
+        if (upBtn_) {
+            dwp = DeferWindowPos(dwp, upBtn_, nullptr, x, 1, nbw, driveH - 2, SWP_NOZORDER);
+            x += nbw + Scale(2, dpi_);
         }
         drivesRight = x;
     }
-    // «1,2 Тб свободно из 3,6 Тб» — справа от кнопок, в той же строке.
+    // «[рабочий] 1 253,4 ГБ из 3 726,0 ГБ свободно» — справа от кнопок, у правого края.
     if (dwp)
         dwp = DeferWindowPos(dwp, volume_, nullptr, drivesRight, 1, width - drivesRight, driveH - 2, SWP_NOZORDER);
     if (dwp) {
@@ -2326,6 +2384,10 @@ LRESULT Panel::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     DrawDriveButton(dis);
                     return TRUE;
                 }
+                if (dis->CtlID == kDriveRootId || dis->CtlID == kDriveUpId) {
+                    DrawNavButton(dis);
+                    return TRUE;
+                }
                 if (dis->CtlID == kPathApplyId || dis->CtlID == kPathFavId || dis->CtlID == kPathHistId) {
                     DrawPathButton(dis);
                     return TRUE;
@@ -2359,6 +2421,17 @@ LRESULT Panel::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 FocusList();
                 return 0;
             }
+            if (id == kDriveRootId) {
+                if (inArchive_) LoadArchiveListing(L"");   // корень архива
+                else GoRoot();
+                FocusList();
+                return 0;
+            }
+            if (id == kDriveUpId) {
+                GoUp();
+                FocusList();
+                return 0;
+            }
             break;
         }
 
@@ -2375,6 +2448,11 @@ LRESULT Panel::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 }
                 SetBkColor(dc, active_ ? kActiveHeaderBg : kInactiveHeaderBg);
                 return (LRESULT)(active_ ? brActive_ : brInactive_);
+            }
+            if (child == volume_ && msg == WM_CTLCOLORSTATIC) {
+                SetBkMode(dc, TRANSPARENT);
+                SetTextColor(dc, RGB(102, 102, 102));   // #666, как .dfree в макете
+                return (LRESULT)(HBRUSH)(COLOR_BTNFACE + 1);
             }
             if (msg == WM_CTLCOLOREDIT) return (LRESULT)(HBRUSH)(COLOR_WINDOW + 1);
 

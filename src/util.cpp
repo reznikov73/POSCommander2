@@ -419,11 +419,11 @@ std::wstring VolumeSummary(const std::wstring& path) {
     std::wstring root = DriveRootOf(path);
     ULARGE_INTEGER freeBytes{}, total{}, totalFree{};
     if (!GetDiskFreeSpaceExW(root.c_str(), &freeBytes, &total, &totalFree)) return {};
-    std::wstring out = FmtSize(freeBytes.QuadPart) + L" свободно из " + FmtSize(total.QuadPart);
+    // Как в макете: «[рабочий] 1 253,4 ГБ из 3 726,0 ГБ свободно».
+    std::wstring out = FmtSize(freeBytes.QuadPart) + L" из " + FmtSize(total.QuadPart) + L" свободно";
     wchar_t label[MAX_PATH + 1]{};
     if (GetVolumeInformationW(root.c_str(), label, MAX_PATH, nullptr, nullptr, nullptr, nullptr, 0) && label[0]) {
-        out += L" · ";
-        out += label;
+        out = std::wstring(L"[") + label + L"] " + out;
     }
     return out;
 }
