@@ -1744,3 +1744,47 @@ bool FtpFileSize(FtpConnection& conn, const std::wstring& file, ULONGLONG& size,
     size = wcstoull(digits.c_str(), nullptr, 10);
     return true;
 }
+
+namespace {
+
+bool FtpDirSizeRec(FtpConnection& conn, const std::wstring& remote, int depth, ULONGLONG& total,
+                   std::wstring& error) {
+    if (depth > 32) {
+        error = L"Слишком глубокая вложенность каталогов";
+        return false;
+    }
+    std::vector<FtpEntryInfo> list;
+    if (!FtpList(conn, remote, list, error)) return false;
+    for (auto& e : list) {
+        if (e.isDir) {
+            const std::wstring child = NormalizeRemotePath(remote + L"/" + e.name);
+            if (!FtpDirSizeRec(conn, child, depth + 1, total, error)) return false;
+        } else {
+            total += e.size;
+        }
+    }
+    return true;
+}
+
+}  // namespace
+
+bool FtpDirectorySize(const std::wstring& url, ULONGLONG& size, std::wstring& error) {
+    size = 0;
+    error.clear();
+    FtpSite site;
+    std::wstring remote;
+    if (!FtpParseUrl(url, site, remote)) {
+        error = L"Некорректный FTP-адрес: " + url;
+        return false;
+    }
+    if (!site.password.empty()) FtpRememberPassword(url, site.password);
+    if (site.password.empty() && !site.user.empty() && !FtpPasswordFor(url, site.password)) {
+        error = L"Нет пароля для " + site.user + L"@" + site.host;
+        return false;
+    }
+    std::unique_ptr<FtpConnection> conn;
+    if (!FtpConnect(site, conn, error)) return false;
+    const bool ok = FtpDirSizeRec(*conn, remote, 0, size, error);
+    FtpDisconnect(conn);
+    return ok;
+}

@@ -79,6 +79,8 @@ bool FtpDeleteFile(FtpConnection& conn, const std::wstring& file, std::wstring& 
 bool FtpRemoveDir(FtpConnection& conn, const std::wstring& dir, std::wstring& error);
 bool FtpRename(FtpConnection& conn, const std::wstring& from, const std::wstring& to, std::wstring& error);
 bool FtpFileSize(FtpConnection& conn, const std::wstring& file, ULONGLONG& size, std::wstring& error);
+// Рекурсивный размер каталога по FTP (для отмеченных папок); соединение открывается само.
+bool FtpDirectorySize(const std::wstring& url, ULONGLONG& size, std::wstring& error);
 
 // --- FTP-URL (панель хранит URL без пароля) ---
 

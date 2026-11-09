@@ -401,6 +401,19 @@ int RunFtpTest(const std::wstring& spec) {
               L"FTP: имя и размер на сервере",
               uploaded ? (uploaded->name + L", " + std::to_wstring(uploaded->size)) : L"не найдено");
 
+    ULONGLONG remoteDirSize = 0;
+    std::wstring dirSizeError;
+    const std::wstring remoteDirUrl = FtpMakeUrl(site, remoteDir);
+    FtpRememberPassword(remoteDirUrl, password);
+    const bool dirSizeOk = FtpDirectorySize(remoteDirUrl, remoteDirSize, dirSizeError);
+    const ULONGLONG expectedDirSize = (ULONGLONG)payload.size();
+    rep.Check(dirSizeOk && remoteDirSize == expectedDirSize,
+              L"FTP: рекурсивный размер каталога",
+              std::wstring(L"ok=") + (dirSizeOk ? L"1" : L"0") +
+                  L", size=" + std::to_wstring(remoteDirSize) +
+                  L", expected=" + std::to_wstring(expectedDirSize) +
+                  (dirSizeError.empty() ? L"" : (L", " + dirSizeError)));
+
     const std::wstring downloaded = base + L"\\скачано.bin";
     int downloadCalls = 0;
     auto downloadProgress = [&](ULONGLONG done, ULONGLONG total) {

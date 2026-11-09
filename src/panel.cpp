@@ -2272,7 +2272,7 @@ void Panel::UpdateStatus() {
         if (!e.marked) continue;
         ++marked;
         if (e.isDir) {
-            if (ftp_ || inArchive_) continue;       // размер таких каталогов не считаем
+            if (inArchive_) continue;       // размер каталогов внутри архива не считаем
             if (e.dirSizeKnown) markedSize += e.dirSize;
             else ++pendingDirs;
         } else {
@@ -2610,15 +2610,17 @@ void Panel::ShowShellContextMenu(int screenX, int screenY) {
 
 // Размер каталога считаем в фоне: рекурсия по большому дереву иначе подвесила бы окно.
 void Panel::CalculateDirSize(int index) {
-    if (ftp_ || inArchive_) {
-        MessageBoxW(GetParent(hwnd_), L"Размер каталога здесь не считается.", L"Размер", MB_ICONINFORMATION | MB_OK);
+    if (inArchive_) {
+        MessageBoxW(GetParent(hwnd_), L"Размер каталога в архиве не считается.", L"Размер",
+                    MB_ICONINFORMATION | MB_OK);
         return;
     }
     if (index < 0 || index >= (int)entries_.size()) return;
     Entry& e = entries_[index];
     if (!e.isDir || e.isUp || e.dirSizeKnown || e.dirSizeBusy) return;
 
-    const std::wstring target = JoinPath(path_, e.name);
+    const bool remote = ftp_;
+    const std::wstring target = remote ? FtpJoinUrl(path_, e.name) : JoinPath(path_, e.name);
     const std::wstring name = e.name;
     e.dirSizeBusy = true;
     ++dirSizeActive_;
@@ -2626,8 +2628,14 @@ void Panel::CalculateDirSize(int index) {
 
     const int item = index;
     HWND self = hwnd_;
-    std::thread([this, target, name, item, self]() {
-        const ULONGLONG size = DirectorySize(target);
+    std::thread([this, target, name, item, self, remote]() {
+        ULONGLONG size = 0;
+        if (remote) {
+            std::wstring error;
+            if (!FtpDirectorySize(target, size, error)) size = 0;
+        } else {
+            size = DirectorySize(target);
+        }
         {
             std::lock_guard<std::mutex> lock(dirSizeMutex_);
             dirSizeFinished_[item] = DirSizeResult{name, target, size};
@@ -2639,7 +2647,7 @@ void Panel::CalculateDirSize(int index) {
 // Отмеченные папки считаем в фоне, но не больше четырёх одновременно:
 // иначе Ctrl+A на каталоге с сотнями папок поднял бы сотни потоков.
 void Panel::StartMarkedDirSizes() {
-    if (ftp_ || inArchive_) return;
+    if (inArchive_) return;
     const int kMaxActive = 4;
     for (int i = 0; i < (int)entries_.size() && dirSizeActive_ < kMaxActive; ++i) {
         Entry& e = entries_[i];
@@ -2892,10 +2900,13 @@ LRESULT Panel::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             if (dirSizeActive_ > 0) --dirSizeActive_;
 
             if (have) {
+                auto dirTarget = [this](const std::wstring& name) {
+                    return ftp_ ? FtpJoinUrl(path_, name) : JoinPath(path_, name);
+                };
                 int targetIndex = -1;
                 if (index >= 0 && index < (int)entries_.size()) {
                     const Entry& at = entries_[index];
-                    if (SamePath(at.name, result.name) && SamePath(result.target, JoinPath(path_, at.name))) {
+                    if (SamePath(at.name, result.name) && SamePath(result.target, dirTarget(at.name))) {
                         targetIndex = index;
                     }
                 }
@@ -2904,7 +2915,7 @@ LRESULT Panel::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     for (int i = 0; i < (int)entries_.size(); ++i) {
                         const Entry& candidate = entries_[i];
                         if (SamePath(candidate.name, result.name) &&
-                            SamePath(result.target, JoinPath(path_, candidate.name))) {
+                            SamePath(result.target, dirTarget(candidate.name))) {
                             targetIndex = i;
                             break;
                         }
