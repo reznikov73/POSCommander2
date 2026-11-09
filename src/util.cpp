@@ -436,6 +436,17 @@ static int g_iconFile = -1;
 static int g_iconUp = -1;
 static int g_iconFolderHidden = -1;
 static int g_iconFileHidden = -1;
+static int g_iconSize = 16;   // фактический размер малых значков (с учётом DPI)
+
+// Наши иконки типов файлов (макет ui-target.html): лист, текст, код,
+// приложение, архив, изображение, ярлык.
+enum IconTypeKind {
+    kTkFile = 0, kTkText, kTkCode, kTkApp, kTkArchive, kTkImage, kTkLink, kTkCount
+};
+// Ленивый кэш: kind*2 + (скрытый?) → индекс в g_images; -1 = ещё не создана.
+static int g_typeIcons[kTkCount * 2] = {-1, -1, -1, -1, -1, -1, -1, -1,
+                                        -1, -1, -1, -1, -1, -1};
+
 static std::map<std::wstring, int> g_iconCache;
 static const size_t kIconCacheLimit = 3000;
 
@@ -498,73 +509,238 @@ struct PixelCanvas {
     }
 };
 
+// ---------- палитра панельных иконок (по макету ui-target.html) ----------
+namespace {
+const DWORD kColFolderEdge  = 0xFFC89A30;   // контур папки
+const DWORD kColFolderBody  = 0xFFFFD061;   // корпус
+const DWORD kColFolderFront = 0xFFFFE9A8;   // передняя грань
+const DWORD kColFolderGloss = 0xFFFFF3C9;   // блик внизу
+const DWORD kColHiddenBand  = 0xFFD03030;   // полоса скрытого/системного
+const DWORD kColSheetEdge   = 0xFF7E8794;   // контур листа
+const DWORD kColSheetPaper  = 0xFFFFFFFF;
+const DWORD kColSheetFold   = 0xFFD9DEE7;   // загнутый уголок
+const DWORD kColTextLine    = 0xFF6B7280;
+const DWORD kColCodeBlue    = 0xFF1E5FA8;
+const DWORD kColCodeGreen   = 0xFF2A7A2A;
+const DWORD kColWinFace     = 0xFFF2F3F7;   // окно приложения/ярлыка
+const DWORD kColWinEdge     = 0xFF4A5568;
+const DWORD kColWinTitle    = 0xFF2A5AAA;
+const DWORD kColWinBar      = 0xFFC7D2E4;
+const DWORD kColZipFace     = 0xFFE8B95C;   // архив
+const DWORD kColZipEdge     = 0xFF9C6B1E;
+const DWORD kColZipStrap    = 0xFFB8862F;
+const DWORD kColZipBuckle   = 0xFFECECEC;
+const DWORD kColZipBuckleE  = 0xFF7A7A7A;
+const DWORD kColZipSlot     = 0xFF4D4D4D;
+const DWORD kColImgSun      = 0xFFFFD34D;   // изображение
+const DWORD kColImgSunEdge  = 0xFFD99E1B;
+const DWORD kColImgHill     = 0xFF3E9E4F;
+const DWORD kColLnkArrow    = 0xFF1257C1;   // ярлык
+}  // namespace
+
 // Красная полоса по левому краю иконки — признак скрытого/системного, как в TC.
 void PaintHiddenMark(PixelCanvas& c) {
     const int s = c.size;
-    const int top = s * 4 / 16;
-    const int bottom = s - s * 3 / 16;
-    const DWORD dark = 0xFFC00000;
-    const DWORD light = 0xFFE87777;
-
-    c.Fill(1, top, 3, bottom, dark);
-    c.VLine(2, top + 1, bottom - 1, light);
+    auto P = [&](double v) { return (int)lround(v * s / 16.0); };
+    const int x1 = P(4.3), y0 = P(3.0), y1 = P(12.9);
+    c.Fill(P(1.2), y0, x1, y1, kColHiddenBand);
+    c.Set(x1 + 1, y0 + 1, kColHiddenBand);   // скос верхнего края
+    c.Set(x1 + 2, y0 + 2, kColHiddenBand);
 }
 
-// Классическая жёлтая папка с язычком — как в Total Commander.
+// Жёлтая папка TC: тёмный язычок сверху, корпус #FFD061, передняя грань
+// #FFE9A8, блик #FFF3C9, контур #C89A30 (макет ui-target.html).
 HICON MakeFolderIcon(int size, bool hidden = false) {
     PixelCanvas c(size);
     const int s = size;
-    const int bodyTop = s * 5 / 16;
-    const int tabTop = s * 3 / 16;
-    const int tabRight = s * 8 / 16;
+    auto P = [&](double v) { return (int)lround(v * s / 16.0); };
 
-    const DWORD edge = 0xFFB8860B;      // тёмно-янтарный контур
-    const DWORD body = 0xFFFFE9A8;      // светлая середина
-    const DWORD bodyDark = 0xFFFFD061;  // низ и тень
-    const DWORD tab = 0xFFFFD061;
+    // задняя стенка с язычком (тёмный янтарь)
+    c.Fill(P(1.6), P(3.2), P(6.0), P(6.2), kColFolderEdge);
+    c.Fill(P(7.7), P(5.1), P(14.5), P(6.2), kColFolderEdge);
+    c.Set(P(6.5), P(3.6), kColFolderEdge);   // скос между язычком и стенкой
+    c.Set(P(7.2), P(4.5), kColFolderEdge);
 
-    // язычок
-    c.Fill(1, tabTop, tabRight, bodyTop - 1, tab);
-    c.HLine(1, tabRight, tabTop - 1, edge);
-    c.HLine(1, tabRight, bodyTop - 1, edge);
-    c.VLine(1, tabTop, bodyTop - 1, edge);
-
-    // корпус
-    c.Fill(1, bodyTop, s - 2, s - 2, body);
-    c.Fill(1, s - 4, s - 2, s - 2, bodyDark);
+    // корпус с передней гранью и бликом
+    c.Fill(P(1.6), P(6.2), P(14.5), P(12.2), kColFolderBody);
+    c.Fill(P(1.6), P(6.2), P(14.5), P(7.8), kColFolderFront);
+    c.Fill(P(2.6), P(10.2), P(13.5), P(11.3), kColFolderGloss);
 
     // контур корпуса
-    c.HLine(1, s - 2, bodyTop, edge);
-    c.HLine(1, s - 2, s - 2, edge);
-    c.VLine(1, bodyTop, s - 2, edge);
-    c.VLine(s - 2, bodyTop, s - 2, edge);
+    c.HLine(P(1.6), P(14.5), P(6.2), kColFolderEdge);
+    c.HLine(P(1.6), P(14.5), P(12.8), kColFolderEdge);
+    c.VLine(P(1.6), P(6.2), P(12.8), kColFolderEdge);
+    c.VLine(P(14.5), P(6.2), P(12.8), kColFolderEdge);
 
     if (hidden) PaintHiddenMark(c);
     return c.ToIcon();
 }
 
-// Белая страница с загнутым уголком — для файлов без своего значка.
-HICON MakeFileIcon(int size, bool hidden = false) {
+// Общий базовый «лист с загнутым уголком» для файловых иконок.
+void PaintSheet(PixelCanvas& c) {
+    const int s = c.size;
+    auto P = [&](double v) { return (int)lround(v * s / 16.0); };
+    const int xl = P(3.2), xr = P(12.8), yt = P(1.5), yb = P(14.2);
+    const int xf = P(9.6), yf = P(4.7);
+
+    c.Fill(xl, yt, xr, yb, kColSheetPaper);
+
+    // срез страницы над диагональю + сам загнутый уголок
+    for (int x = xf; x <= xr; ++x) {
+        const double t = double(x - xf) / double(xr - xf);
+        const int yEdge = yt + (int)lround(t * (yf - yt));
+        for (int y = yt; y < yEdge; ++y) c.Set(x, y, 0);              // прозрачный срез
+        for (int y = yEdge; y <= yf; ++y) c.Set(x, y, kColSheetFold);  // сгиб
+    }
+
+    // контуры
+    c.HLine(xl, xf, yt, kColSheetEdge);
+    c.VLine(xl, yt, yb, kColSheetEdge);
+    c.HLine(xl, xr, yb, kColSheetEdge);
+    c.VLine(xr, yf, yb, kColSheetEdge);
+    c.VLine(xf, yt + 1, yf, kColSheetEdge);
+    c.HLine(xf, xr, yf, kColSheetEdge);
+}
+
+// Текст (.txt .log .ini): серые строки.
+void PaintTextDeco(PixelCanvas& c) {
+    const int s = c.size;
+    auto P = [&](double v) { return (int)lround(v * s / 16.0); };
+    c.HLine(P(5.0), P(11.0), P(7.0), kColTextLine);
+    c.HLine(P(5.0), P(11.0), P(9.2), kColTextLine);
+    c.HLine(P(5.0), P(9.6), P(11.4), kColTextLine);
+}
+
+// Код (.cpp .h .c .py): маркеры синего, зелёного и серого.
+void PaintCodeDeco(PixelCanvas& c) {
+    const int s = c.size;
+    auto P = [&](double v) { return (int)lround(v * s / 16.0); };
+    c.HLine(P(5.0), P(11.2), P(7.0), kColCodeBlue);
+    c.HLine(P(5.0), P(10.2), P(9.4), kColCodeGreen);
+    c.HLine(P(5.0), P(11.2), P(11.8), kColTextLine);
+}
+
+// Изображение (.jpg .png .bmp): солнце и горы на листе.
+void PaintImageDeco(PixelCanvas& c) {
+    const int s = c.size;
+    auto P = [&](double v) { return (int)lround(v * s / 16.0); };
+
+    // солнце с ободком
+    const int cx = P(6.1), cy = P(7.0);
+    c.Set(cx, cy - 1, kColImgSun);
+    c.Set(cx - 1, cy, kColImgSun);
+    c.Set(cx, cy, kColImgSun);
+    c.Set(cx + 1, cy, kColImgSun);
+    c.Set(cx, cy + 1, kColImgSun);
+    c.Set(cx - 1, cy - 1, kColImgSunEdge);
+    c.Set(cx + 1, cy - 1, kColImgSunEdge);
+    c.Set(cx - 1, cy + 1, kColImgSunEdge);
+    c.Set(cx + 1, cy + 1, kColImgSunEdge);
+
+    // горы: основание и два холма
+    const int hy = P(12.6);
+    c.Fill(P(4.0), P(11.4), P(12.4), hy, kColImgHill);
+    for (int i = 1; i <= 3; ++i) {
+        c.Set(P(7.0) - i, P(9.4) + i, kColImgHill);
+        c.Set(P(7.0) + i, P(10.0) + i, kColImgHill);
+    }
+    for (int i = 1; i <= 2; ++i) {
+        c.Set(P(10.6) - i, P(10.4) + i, kColImgHill);
+        if (P(10.6) + i <= P(12.4)) c.Set(P(10.6) + i, P(10.8) + i, kColImgHill);  // не вылезаем на кромку
+    }
+}
+
+// Окно приложения (.exe .dll): рамка, синий заголовок с точками, серые строки.
+void PaintAppWindow(PixelCanvas& c) {
+    const int s = c.size;
+    auto P = [&](double v) { return (int)lround(v * s / 16.0); };
+    const int xl = P(2.2), xr = P(13.8), yt = P(2.8), yb = P(13.2);
+
+    c.Fill(xl, yt, xr, yb, kColWinFace);
+    c.Fill(xl, yt, xr, P(5.2), kColWinTitle);
+    c.Set(P(4.0), P(4.2), 0xFFFFFFFF);
+    c.Set(P(5.7), P(4.2), 0xFFFFFFFF);
+    c.HLine(P(3.5), P(12.7), P(7.0), kColWinBar);
+    c.HLine(P(3.5), P(9.7), P(9.1), kColWinBar);
+    c.HLine(P(3.5), P(11.3), P(11.2), kColWinBar);
+
+    c.HLine(xl, xr, yt, kColWinEdge);
+    c.HLine(xl, xr, yb, kColWinEdge);
+    c.VLine(xl, yt, yb, kColWinEdge);
+    c.VLine(xr, yt, yb, kColWinEdge);
+    c.HLine(xl, xr, P(5.2), kColWinEdge);
+}
+
+// Архив (.zip .rar .7z): жёлтая коробка с ремнём и пряжкой.
+void PaintArchive(PixelCanvas& c) {
+    const int s = c.size;
+    auto P = [&](double v) { return (int)lround(v * s / 16.0); };
+    const int xl = P(2.6), xr = P(13.4), yt = P(3.4), yb = P(13.4);
+
+    c.Fill(xl, yt, xr, yb, kColZipFace);
+    c.Fill(P(6.4), yt, P(9.6), yb, kColZipStrap);
+
+    // пряжка с прорезью
+    const int bx0 = P(5.2), bx1 = P(10.5), by0 = P(6.4), by1 = P(9.6);
+    c.Fill(bx0, by0, bx1, by1, kColZipBuckle);
+    c.Fill(P(7.1), P(7.2), P(8.9), P(8.8), kColZipSlot);
+    c.HLine(bx0, bx1, by0, kColZipBuckleE);
+    c.HLine(bx0, bx1, by1, kColZipBuckleE);
+    c.VLine(bx0, by0, by1, kColZipBuckleE);
+    c.VLine(bx1, by0, by1, kColZipBuckleE);
+
+    c.HLine(xl, xr, yt, kColZipEdge);
+    c.HLine(xl, xr, yb, kColZipEdge);
+    c.VLine(xl, yt, yb, kColZipEdge);
+    c.VLine(xr, yt, yb, kColZipEdge);
+}
+
+// Ярлык (.lnk): окно + страница со синей стрелкой внизу слева.
+void PaintLink(PixelCanvas& c) {
+    const int s = c.size;
+    auto P = [&](double v) { return (int)lround(v * s / 16.0); };
+
+    // окно справа
+    const int wxl = P(3.6), wxr = P(14.2), wyt = P(1.6), wyb = P(14.4);
+    c.Fill(wxl, wyt, wxr, wyb, kColWinFace);
+    c.Fill(wxl, wyt, wxr, P(4.2), kColWinTitle);
+    c.HLine(P(6.0), P(12.6), P(6.8), kColWinBar);
+    c.HLine(P(6.0), P(10.0), P(8.6), kColWinBar);
+    c.HLine(wxl, wxr, wyt, kColWinEdge);
+    c.HLine(wxl, wxr, wyb, kColWinEdge);
+    c.VLine(wxl, wyt, wyb, kColWinEdge);
+    c.VLine(wxr, wyt, wyb, kColWinEdge);
+    c.HLine(wxl, wxr, P(4.2), kColWinEdge);
+
+    // страница внизу слева
+    const int pxl = P(0.8), pxr = P(6.8), pyt = P(9.2), pyb = P(15.2);
+    c.Fill(pxl, pyt, pxr, pyb, kColSheetPaper);
+    c.HLine(pxl, pxr, pyt, kColSheetEdge);
+    c.HLine(pxl, pxr, pyb, kColSheetEdge);
+    c.VLine(pxl, pyt, pyb, kColSheetEdge);
+    c.VLine(pxr, pyt, pyb, kColSheetEdge);
+
+    // стрелка из нижнего левого угла страницы
+    for (int i = 0; i < 4; ++i) {
+        c.Set(P(2.1) + i, P(13.8) - i, kColLnkArrow);
+        c.Set(P(2.1) + 1 + i, P(13.8) - i, kColLnkArrow);
+    }
+    c.HLine(P(3.5), P(5.6), P(10.2), kColLnkArrow);
+    c.VLine(P(5.6), P(10.2), P(12.3), kColLnkArrow);
+}
+
+// Иконка типа файла: базовый лист/окно + оформление по типу (макет).
+HICON MakeTypeIcon(int kind, int size, bool hidden = false) {
     PixelCanvas c(size);
-    const int s = size;
-    const DWORD edge = 0xFF8A8A8A;
-    const DWORD paper = 0xFFFFFFFF;
-    const DWORD fold = 0xFFD8D8D8;
-    const DWORD line = 0xFF9A9A9A;
-
-    c.Fill(3, 1, s - 4, s - 2, paper);
-    c.HLine(3, s - 4, 1, edge);
-    c.VLine(3, 1, s - 2, edge);
-    c.HLine(3, s - 4, s - 2, edge);
-    c.VLine(s - 4, 1, s - 2, edge);
-
-    // загнутый уголок
-    c.Fill(s - 7, 1, s - 5, 4, fold);
-    c.HLine(s - 7, s - 5, 5, edge);
-
-    // строки текста
-    for (int y = 7; y <= s - 4; y += 3) c.HLine(5, s - 6, y, line);
-
+    switch (kind) {
+        case kTkText:    PaintSheet(c); PaintTextDeco(c); break;
+        case kTkCode:    PaintSheet(c); PaintCodeDeco(c); break;
+        case kTkImage:   PaintSheet(c); PaintImageDeco(c); break;
+        case kTkApp:     PaintAppWindow(c); break;
+        case kTkArchive: PaintArchive(c); break;
+        case kTkLink:    PaintLink(c); break;
+        default:         PaintSheet(c); break;   // обычный файл
+    }
     if (hidden) PaintHiddenMark(c);
     return c.ToIcon();
 }
@@ -596,7 +772,7 @@ HICON MakeUpArrowIcon(int size) {
         // Простая стрелка: древко внизу по центру и треугольник сверху.
         const int cx = size / 2;
         const int headH = size / 2;
-        const DWORD solid = 0xFF000000;     // чёрная, непрозрачная
+        const DWORD solid = 0xFF141414;     // почти чёрная, как в макете
 
         for (int y = 0; y < size; ++y) {
             for (int x = 0; x < size; ++x) {
@@ -876,48 +1052,17 @@ int IconFromPath(const std::wstring& path, DWORD attrs, bool useFileAttrs, UINT 
     return AddIcon(icon);
 }
 
-// Копия системного значка с красной меткой «скрытый». nullptr, если формат не подходит.
-HICON MarkHiddenCopy(HICON src, int size) {
-    if (!src) return nullptr;
-    ICONINFO ii{};
-    if (!GetIconInfo(src, &ii)) return nullptr;
-
-    HICON result = nullptr;
-    BITMAP bm{};
-    if (ii.hbmColor && GetObjectW(ii.hbmColor, sizeof(bm), &bm) && bm.bmWidth == size &&
-        bm.bmHeight == size && bm.bmBitsPixel == 32) {
-        PixelCanvas c(size);
-        BITMAPINFO bi{};
-        bi.bmiHeader.biSize = sizeof(bi.bmiHeader);
-        bi.bmiHeader.biWidth = size;
-        bi.bmiHeader.biHeight = -size;
-        bi.bmiHeader.biPlanes = 1;
-        bi.bmiHeader.biBitCount = 32;
-        bi.bmiHeader.biCompression = BI_RGB;
-        HDC dc = GetDC(nullptr);
-        const int lines = GetDIBits(dc, ii.hbmColor, 0, size, c.px.data(), &bi, DIB_RGB_COLORS);
-        ReleaseDC(nullptr, dc);
-
-        bool hasAlpha = false;
-        for (DWORD p : c.px) {
-            if (p >> 24) {
-                hasAlpha = true;
-                break;
-            }
-        }
-        if (lines == size && hasAlpha) {
-            // Как в Проводнике: скрытый элемент — полупрозрачный «призрачный» значок.
-            // Цвета не трогаем (альфа непредумноженная), меняем только прозрачность.
-            for (DWORD& p : c.px) {
-                const DWORD a = (p >> 24) * 50 / 100;
-                p = (a << 24) | (p & 0x00FFFFFF);
-            }
-            result = c.ToIcon();
-        }
+// Индекс нашей иконки типа в общем списке. Создаётся лениво, по одному
+// экземпляру на тип и признак скрытости; утечек нет — список владеет значками.
+int TypeIconIndex(int kind, bool hidden) {
+    InitShellIcons();
+    const int slot = kind * 2 + (hidden ? 1 : 0);
+    if (slot < 0 || slot >= kTkCount * 2) return g_iconFile;
+    if (g_typeIcons[slot] < 0) {
+        HICON icon = MakeTypeIcon(kind, g_iconSize, hidden);
+        g_typeIcons[slot] = icon ? AddIcon(icon) : 0;
     }
-    if (ii.hbmColor) DeleteObject(ii.hbmColor);
-    if (ii.hbmMask) DeleteObject(ii.hbmMask);
-    return result;
+    return g_typeIcons[slot];
 }
 
 void InitShellIcons() {
@@ -926,22 +1071,19 @@ void InitShellIcons() {
     // Размер малого значка берём из системы: он уже учитывает DPI.
     int size = GetSystemMetrics(SM_CXSMICON);
     if (size < 16) size = 16;
+    g_iconSize = size;
     g_images = ImageList_Create(size, size, ILC_COLOR32, 64, 256);
+
+    for (int& i : g_typeIcons) i = -1;
 
     g_iconUp = AddIcon(MakeUpArrowIcon(size));
 
-    // Папка и файл по умолчанию — системные значки, как в Проводнике.
-    // Нарисованные вручную остаются запасным вариантом.
-    HICON folder = ShellIcon(L"folder", FILE_ATTRIBUTE_DIRECTORY, true);
-    HICON file = ShellIcon(L"file", FILE_ATTRIBUTE_NORMAL, true);
-
-    HICON folderHidden = MarkHiddenCopy(folder, size);
-    HICON fileHidden = MarkHiddenCopy(file, size);
-
-    g_iconFolder = folder ? AddIcon(folder) : AddIcon(MakeFolderIcon(size));
-    g_iconFile = file ? AddIcon(file) : AddIcon(MakeFileIcon(size));
-    g_iconFolderHidden = folderHidden ? AddIcon(folderHidden) : AddIcon(MakeFolderIcon(size, true));
-    g_iconFileHidden = fileHidden ? AddIcon(fileHidden) : AddIcon(MakeFileIcon(size, true));
+    // Панельные значки рисуем сами — как в Total Commander (макет):
+    // жёлтые папки, типы файлов по расширению, у скрытых красная полоса.
+    g_iconFolder = AddIcon(MakeFolderIcon(size, false));
+    g_iconFolderHidden = AddIcon(MakeFolderIcon(size, true));
+    g_iconFile = TypeIconIndex(kTkFile, false);
+    g_iconFileHidden = TypeIconIndex(kTkFile, true);
 }
 
 HIMAGELIST ShellSmallImageList() {
@@ -949,65 +1091,37 @@ HIMAGELIST ShellSmallImageList() {
     return g_images;
 }
 
-// Кэш с ограничением: на огромных каталогах не растём бесконечно.
-int CachedIcon(const std::wstring& key, const std::wstring& path, DWORD attrs, bool useFileAttrs, UINT extra = 0) {
-    auto it = g_iconCache.find(key);
-    if (it != g_iconCache.end()) return it->second;
-
-    int index = IconFromPath(path, attrs, useFileAttrs, extra);
-    if (index < 0) return -1;
-
-    if (g_iconCache.size() >= kIconCacheLimit) g_iconCache.clear();
-    g_iconCache[key] = index;
-    return index;
-}
-
 int IconForEntry(const Entry& e, const std::wstring& dir) {
     InitShellIcons();
+    (void)dir;   // значки типов не зависят от пути
 
     // «..» — отдельная стрелка, как в TC.
     if (e.isUp) return g_iconUp >= 0 ? g_iconUp : g_iconFolder;
 
-    const std::wstring full = dir.empty() ? e.name : JoinPath(dir, e.name);
-
-    if (e.isDir) {
-        // У узнаваемых системных папок берём значок оболочки, у остальных — свою жёлтую папку.
-        static const wchar_t* kSpecial[] = {
-            L"desktop", L"рабочий стол", L"documents", L"документы", L"downloads", L"загрузки",
-            L"pictures", L"изображения", L"music", L"музыка", L"videos", L"видео",
-            L"onedrive", L"3d objects", L"объекты 3d", L"favorites", L"избранное",
-        };
-        const std::wstring lowerName = Lower(e.name);
-        bool special = false;
-        for (auto n : kSpecial) {
-            if (lowerName == n) {
-                special = true;
-                break;
-            }
-        }
-        if (special) {
-            const int byPath = CachedIcon(L"p:" + full, full, FILE_ATTRIBUTE_DIRECTORY, false);
-            if (byPath >= 0) return byPath;
-        }
-        return e.hidden() ? g_iconFolderHidden : g_iconFolder;
-    }
+    // Каталоги — единая жёлтая папка TC, у скрытых красная полоса.
+    if (e.isDir) return e.hidden() ? g_iconFolderHidden : g_iconFolder;
 
     const std::wstring ext = Lower(e.ext());
 
-    // Для exe/lnk/ico/msi значок берём из самого файла, а не по расширению.
-    if (ext == L".exe" || ext == L".lnk" || ext == L".ico" || ext == L".msi" || ext == L".com" ||
-        ext == L".bat" || ext == L".cmd") {
-        const UINT extra = (ext == L".lnk") ? SHGFI_LINKOVERLAY : 0;
-        const int byPath = CachedIcon(L"f:" + full, full, FILE_ATTRIBUTE_NORMAL, false, extra);
-        if (byPath >= 0) return byPath;
-    }
+    // Наши иконки типов — по спецификации макета ui-target.html.
+    int kind = -1;
+    if (ext == L".txt" || ext == L".log" || ext == L".ini") kind = kTkText;
+    else if (ext == L".cpp" || ext == L".h" || ext == L".c" || ext == L".py") kind = kTkCode;
+    else if (ext == L".exe" || ext == L".dll") kind = kTkApp;
+    else if (ext == L".zip" || ext == L".rar" || ext == L".7z") kind = kTkArchive;
+    else if (ext == L".jpg" || ext == L".png" || ext == L".bmp") kind = kTkImage;
+    else if (ext == L".lnk") kind = kTkLink;
+    if (kind >= 0) return TypeIconIndex(kind, e.hidden());
 
+    // Скрытый файл неизвестного типа — белый лист с красной полосой.
+    if (e.hidden()) return g_iconFileHidden;
+
+    // Прочие расширения — системный значок (pdf, docx, mp3…), как в Проводнике.
     auto it = g_iconCache.find(L"e:" + ext);
     if (it != g_iconCache.end()) return it->second;
 
     const int byExt = IconFromPath(L"file" + ext, FILE_ATTRIBUTE_NORMAL, true);
     int index = byExt >= 0 ? byExt : g_iconFile;
-    if (e.hidden() && ext.empty()) index = g_iconFileHidden;
     if (g_iconCache.size() >= kIconCacheLimit) g_iconCache.clear();
     g_iconCache[L"e:" + ext] = index;
     return index;
