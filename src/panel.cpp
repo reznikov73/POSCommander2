@@ -914,6 +914,7 @@ void Panel::ShowPathHover() {
                                          LVS_SHOWSELALWAYS | WS_VSCROLL,
                                      0, 0, 10, 10, hoverWin_, (HMENU)(INT_PTR)1, g_inst, nullptr);
         if (hoverList_) {
+            SetWindowSubclass(hoverList_, HoverListProc, 4, (DWORD_PTR)this);
             ListView_SetExtendedListViewStyle(hoverList_, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
             ListView_SetImageList(hoverList_, ShellSmallImageList(), LVSIL_SMALL);
             LVCOLUMNW col{};
@@ -951,12 +952,47 @@ void Panel::ShowPathHover() {
 }
 
 void Panel::HidePathHover() {
+    if (hoverWin_ && IsWindowVisible(hoverWin_)) {
+        if (GetFocus() == hoverList_) FocusList();
+    }
     if (pathEdit_) {
         KillTimer(pathEdit_, kHoverShowTimer);
         KillTimer(pathEdit_, kHoverHideTimer);
     }
     hoverChars_ = -1;
     if (hoverWin_ && IsWindowVisible(hoverWin_)) ShowWindow(hoverWin_, SW_HIDE);
+}
+
+// Мышь над самим списком: не даём таймеру скрытия сработать (иначе список исчезал под курсором).
+LRESULT CALLBACK Panel::HoverListProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, UINT_PTR id,
+                                      DWORD_PTR ref) {
+    auto* self = reinterpret_cast<Panel*>(ref);
+    if (self && self->pathEdit_) {
+        switch (msg) {
+            case WM_MOUSEMOVE: {
+                TRACKMOUSEEVENT tme{};
+                tme.cbSize = sizeof(tme);
+                tme.dwFlags = TME_LEAVE;
+                tme.hwndTrack = hwnd;
+                TrackMouseEvent(&tme);
+                KillTimer(self->pathEdit_, kHoverHideTimer);
+                break;
+            }
+            case WM_MOUSELEAVE:
+                // Ушли со списка — через мгновение закрываем, если курсор не вернулся.
+                SetTimer(self->pathEdit_, kHoverHideTimer, 250, nullptr);
+                break;
+            case WM_LBUTTONDOWN:
+            case WM_LBUTTONUP:
+            case WM_MOUSEWHEEL:
+            case WM_LBUTTONDBLCLK:
+                KillTimer(self->pathEdit_, kHoverHideTimer);
+                break;
+            default:
+                break;
+        }
+    }
+    return DefSubclassProc(hwnd, msg, wParam, lParam);
 }
 
 // Всплывающее окно: колесо прокручивает список, двойной клик открывает каталог.
@@ -2000,7 +2036,21 @@ LRESULT CALLBACK Panel::PathEditProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
             }
             if (wParam == kHoverHideTimer) {
                 KillTimer(hwnd, kHoverHideTimer);
-                if (self) self->HidePathHover();
+                if (!self) return 0;
+                // Если курсор уже над списком — не скрываем, ждём дальше.
+                POINT pt{};
+                GetCursorPos(&pt);
+                bool overList = false;
+                if (self->hoverWin_ && IsWindowVisible(self->hoverWin_)) {
+                    RECT rc{};
+                    GetWindowRect(self->hoverWin_, &rc);
+                    overList = PtInRect(&rc, pt) != FALSE;
+                }
+                if (overList) {
+                    SetTimer(self->pathEdit_, kHoverHideTimer, 200, nullptr);
+                    return 0;
+                }
+                self->HidePathHover();
                 return 0;
             }
             if (wParam == kPathClickTimer) {

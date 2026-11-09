@@ -150,6 +150,7 @@ private:
     void HidePathHover();
     void FillPathHover(const std::wstring& dir);
     static LRESULT CALLBACK HoverProc(HWND, UINT, WPARAM, LPARAM);
+    static LRESULT CALLBACK HoverListProc(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
     int PathCharIndexAt(int x, int y) const;
     bool PathClickInEmptyArea(int x) const;
     void LeavePathEdit(bool restore);
