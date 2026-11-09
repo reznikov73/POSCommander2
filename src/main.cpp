@@ -286,9 +286,12 @@ bool App::Create(HINSTANCE inst) {
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
     wc.lpszClassName = kMainClass;
-    wc.hIcon = LoadIconW(inst, MAKEINTRESOURCEW(101));
+    wc.hIcon = (HICON)LoadImageW(inst, MAKEINTRESOURCEW(101), IMAGE_ICON,
+                                 GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), 0);
     if (!wc.hIcon) wc.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
-    wc.hIconSm = wc.hIcon;
+    wc.hIconSm = (HICON)LoadImageW(inst, MAKEINTRESOURCEW(101), IMAGE_ICON,
+                                   GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), 0);
+    if (!wc.hIconSm) wc.hIconSm = wc.hIcon;
     if (!RegisterClassExW(&wc)) return false;
 
     BuildMenu();

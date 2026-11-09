@@ -439,6 +439,12 @@ std::wstring VolumeSummary(const std::wstring& path) {
 // ---------- иконки оболочки ----------
 
 static HIMAGELIST g_images = nullptr;          // наш список: сюда можно добавлять свои значки
+// Идентификаторы иконок в ресурсах (res/app.rc).
+const int kResAppIcon = 101;
+const int kResFolder = 102;
+const int kResFolderHidden = 103;
+const int kResFolderUp = 104;
+
 static int g_iconFolder = -1;
 static int g_iconFile = -1;
 static int g_iconUp = -1;
@@ -554,6 +560,14 @@ void PaintHiddenMark(PixelCanvas& c) {
     c.Fill(P(1.2), y0, x1, y1, kColHiddenBand);
     c.Set(x1 + 1, y0 + 1, kColHiddenBand);   // скос верхнего края
     c.Set(x1 + 2, y0 + 2, kColHiddenBand);
+}
+
+// Иконки панели берём из ресурсов: их рисует tools/make_icons.py в стиле TC
+// (жёлтая папка с язычком, скрытая — светлее с красным пунктиром, «..» — серая).
+// LoadImageW сам выбирает подходящий размер из многоразмерного .ico.
+HICON LoadUiIcon(int resId, int size) {
+    HINSTANCE inst = GetModuleHandleW(nullptr);
+    return (HICON)LoadImageW(inst, MAKEINTRESOURCEW(resId), IMAGE_ICON, size, size, LR_DEFAULTCOLOR);
 }
 
 // Жёлтая папка TC: тёмный язычок сверху, корпус #FFD061, передняя грань
@@ -1084,12 +1098,17 @@ void InitShellIcons() {
 
     for (int& i : g_typeIcons) i = -1;
 
-    g_iconUp = AddIcon(MakeUpArrowIcon(size));
+    // Панельные значки — из ресурсов (стиль Total Commander): жёлтая папка,
+    // скрытая папка с красным пунктиром, «..» серой папкой с двумя точками.
+    // Если ресурс не загрузился — откат на прежнюю отрисовку кодом.
+    if (HICON up = LoadUiIcon(kResFolderUp, size)) g_iconUp = AddIcon(up);
+    if (g_iconUp < 0) g_iconUp = AddIcon(MakeUpArrowIcon(size));
 
-    // Панельные значки рисуем сами — как в Total Commander (макет):
-    // жёлтые папки, типы файлов по расширению, у скрытых красная полоса.
-    g_iconFolder = AddIcon(MakeFolderIcon(size, false));
-    g_iconFolderHidden = AddIcon(MakeFolderIcon(size, true));
+    if (HICON folder = LoadUiIcon(kResFolder, size)) g_iconFolder = AddIcon(folder);
+    if (g_iconFolder < 0) g_iconFolder = AddIcon(MakeFolderIcon(size, false));
+
+    if (HICON folderHidden = LoadUiIcon(kResFolderHidden, size)) g_iconFolderHidden = AddIcon(folderHidden);
+    if (g_iconFolderHidden < 0) g_iconFolderHidden = AddIcon(MakeFolderIcon(size, true));
     g_iconFile = TypeIconIndex(kTkFile, false);
     g_iconFileHidden = TypeIconIndex(kTkFile, true);
 }
