@@ -263,6 +263,20 @@ int RunSelfTest() {
         rep.Check(FtpMakeUrl(withPass, passPath).find(L"secret") == std::wstring::npos,
                   L"FTP: пароль не попадает в URL", FtpMakeUrl(withPass, passPath));
 
+        // Поле «Сервер»: можно вставить как чистый адрес, так и готовую строку ftp://.
+        FtpServerField serverField;
+        std::wstring serverError;
+        rep.Check(FtpParseServerField(L"194.37.254.233", serverField, serverError) &&
+                      serverField.host == L"194.37.254.233" && serverField.port == 0,
+                  L"FTP: поле сервера — чистый адрес", serverError);
+        rep.Check(FtpParseServerField(L"ftp://admin@194.37.254.233/", serverField, serverError) &&
+                      serverField.host == L"194.37.254.233" && serverField.port == 21 &&
+                      serverField.user == L"admin",
+                  L"FTP: поле сервера — готовая строка ftp://", serverError);
+        rep.Check(!FtpParseServerField(L"ftps://194.37.254.233/", serverField, serverError) &&
+                      serverError.find(L"FTPS") != std::wstring::npos,
+                  L"FTP: ftps:// отклонён с понятным текстом", serverError);
+
         const std::wstring secret = L"пароль-123";
         const std::wstring obfuscated = FtpObfuscatePassword(secret);
         rep.Check(!obfuscated.empty() && obfuscated != secret, L"FTP: пароль обфусцирован");

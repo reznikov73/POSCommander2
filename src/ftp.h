@@ -18,6 +18,18 @@ struct FtpSite {
     bool passive = true;
 };
 
+// Разобранное поле «Сервер»: host, host:port, user@host или ftp://user@host[:port]/path.
+struct FtpServerField {
+    std::wstring host;
+    int port = 0;                      // 0 — порт в поле не указан
+    std::wstring user;
+    std::wstring password;
+    std::wstring root = L"/";
+    bool hasRoot = false;              // путь был указан явно
+};
+
+bool FtpParseServerField(const std::wstring& text, FtpServerField& out, std::wstring& error);
+
 // Запись удалённого каталога.
 struct FtpEntryInfo {
     std::wstring name;

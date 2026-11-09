@@ -654,7 +654,7 @@ void FtpFill(HWND dlg, const FtpSite& site) {
     EnableWindow(GetDlgItem(dlg, kIdFtpPass), !anon);
 }
 
-void FtpRead(HWND dlg, FtpSite& site) {
+bool FtpRead(HWND dlg, FtpSite& site, std::wstring& error) {
     wchar_t host[1024]{};
     wchar_t port[32]{};
     wchar_t user[512]{};
@@ -663,13 +663,29 @@ void FtpRead(HWND dlg, FtpSite& site) {
     GetDlgItemTextW(dlg, kIdFtpPort, port, 32);
     GetDlgItemTextW(dlg, kIdFtpUser, user, 512);
     GetDlgItemTextW(dlg, kIdFtpPass, pass, 512);
-    site.host = Trim(host);
-    site.port = _wtoi(port);
-    if (site.port <= 0 || site.port > 65535) site.port = 21;
+
+    FtpServerField field;
+    if (!FtpParseServerField(host, field, error)) return false;
+
+    site.host = field.host;
+    if (field.port > 0) {
+        site.port = field.port;
+    } else {
+        site.port = _wtoi(port);
+        if (site.port <= 0 || site.port > 65535) site.port = 21;
+    }
+
     const bool anon = IsDlgButtonChecked(dlg, kIdFtpAnon) == BST_CHECKED;
-    site.user = anon ? L"" : Trim(user);
-    site.password = anon ? L"" : pass;
+    if (anon) {
+        site.user.clear();
+        site.password.clear();
+    } else {
+        site.user = !field.user.empty() ? field.user : Trim(user);
+        site.password = !field.password.empty() ? field.password : pass;
+    }
     site.passive = IsDlgButtonChecked(dlg, kIdFtpPassive) == BST_CHECKED;
+    if (field.hasRoot) site.root = field.root;
+    return true;
 }
 
 INT_PTR CALLBACK FtpProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -735,14 +751,14 @@ INT_PTR CALLBACK FtpProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM lParam) {
             if (id == IDOK) {
                 FtpSite site;
                 if (ctx && ctx->options) site = ctx->options->site;
-                FtpRead(dlg, site);
-                if (site.host.empty()) {
-                    MessageBoxW(dlg, L"Укажите адрес FTP-сервера.", L"FTP", MB_ICONWARNING | MB_OK);
+                std::wstring readError;
+                if (!FtpRead(dlg, site, readError)) {
+                    MessageBoxW(dlg, readError.c_str(), L"FTP", MB_ICONWARNING | MB_OK);
                     SetFocus(GetDlgItem(dlg, kIdFtpHost));
                     return TRUE;
                 }
                 if (ctx && ctx->options) {
-                    site.root = ctx->options->site.root.empty() ? L"/" : ctx->options->site.root;
+                    if (site.root.empty()) site.root = L"/";
                     if (site.root[0] != L'/') site.root = L"/" + site.root;
                     ctx->options->site = site;
                     ctx->options->saveSite = IsDlgButtonChecked(dlg, kIdFtpSave) == BST_CHECKED;

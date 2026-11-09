@@ -341,6 +341,110 @@ bool FtpParseUrl(const std::wstring& url, FtpSite& site, std::wstring& path) {
     return true;
 }
 
+bool FtpParseServerField(const std::wstring& text, FtpServerField& out, std::wstring& error) {
+    out = FtpServerField{};
+    error.clear();
+    const std::wstring input = TrimWs(text);
+    if (input.empty()) {
+        error = L"Укажите адрес FTP-сервера.";
+        return false;
+    }
+
+    const auto allDigits = [](const std::wstring& value) {
+        if (value.empty()) return false;
+        for (auto ch : value) {
+            if (!iswdigit(ch)) return false;
+        }
+        return true;
+    };
+
+    const std::wstring head = LowerAscii(input.substr(0, std::min<size_t>(8, input.size())));
+    if (head.rfind(L"ftps://", 0) == 0) {
+        error = L"FTPS не поддерживается. Укажите ftp:// или просто адрес сервера.";
+        return false;
+    }
+    if (IsFtpUrl(input)) {
+        FtpSite site;
+        std::wstring path;
+        if (!FtpParseUrl(input, site, path)) {
+            error = L"Не удалось разобрать FTP-адрес: " + input;
+            return false;
+        }
+        out.host = site.host;
+        out.port = site.port;
+        out.user = site.user;
+        out.password = site.password;
+        out.root = path;
+        out.hasRoot = (path != L"/");
+        return true;
+    }
+    if (input.find(L"://") != std::wstring::npos) {
+        error = L"Поддерживается только ftp:// (без TLS) или адрес вида host[:port].";
+        return false;
+    }
+
+    // host[:port][/path], допускаем user[:pass]@host.
+    std::wstring rest = input;
+    const size_t slash = rest.find(L'/');
+    if (slash != std::wstring::npos) {
+        out.root = NormalizeRemotePath(rest.substr(slash));
+        out.hasRoot = true;
+        rest = rest.substr(0, slash);
+    }
+    const size_t at = rest.rfind(L'@');
+    if (at != std::wstring::npos) {
+        std::wstring userInfo = rest.substr(0, at);
+        rest = rest.substr(at + 1);
+        const size_t colon = userInfo.find(L':');
+        if (colon != std::wstring::npos) {
+            out.password = PercentDecode(userInfo.substr(colon + 1));
+            userInfo = userInfo.substr(0, colon);
+        }
+        out.user = PercentDecode(userInfo);
+    }
+
+    std::wstring host = rest;
+    int port = 0;
+    if (!host.empty() && host[0] == L'[') {
+        const size_t close = host.find(L']');
+        if (close == std::wstring::npos) {
+            error = L"Не закрыта квадратная скобка в адресе: " + input;
+            return false;
+        }
+        const std::wstring inside = host.substr(1, close - 1);
+        const std::wstring tail = host.substr(close + 1);
+        host = inside;
+        if (!tail.empty()) {
+            if (tail[0] != L':' || !allDigits(tail.substr(1))) {
+                error = L"Не удалось разобрать порт в адресе: " + input;
+                return false;
+            }
+            port = _wtoi(tail.substr(1).c_str());
+        }
+    } else {
+        const size_t colon = host.rfind(L':');
+        if (colon != std::wstring::npos && host.find(L':') == colon) {
+            const std::wstring portText = host.substr(colon + 1);
+            if (!portText.empty() && allDigits(portText)) {
+                port = _wtoi(portText.c_str());
+                host = host.substr(0, colon);
+            }
+        }
+    }
+
+    if (host.empty()) {
+        error = L"Укажите адрес FTP-сервера.";
+        return false;
+    }
+    if (port < 0 || port > 65535) {
+        error = L"Порт должен быть в диапазоне 1…65535.";
+        return false;
+    }
+    out.host = host;
+    out.port = port;
+    return true;
+}
+
 std::wstring FtpMakeUrl(const FtpSite& site, const std::wstring& path) {
     std::wstring url = L"ftp://";
     if (!site.user.empty()) url += site.user + L"@";
@@ -1187,15 +1291,33 @@ bool FtpConnect(const FtpSite& site, std::unique_ptr<FtpConnection>& out, std::w
         error = L"Не указан адрес FTP-сервера";
         return false;
     }
+
+    // Поле «Сервер» может содержать готовую строку ftp://user@host[:port]/путь.
+    FtpServerField field;
+    std::wstring fieldError;
+    if (!FtpParseServerField(site.host, field, fieldError)) {
+        error = fieldError;
+        return false;
+    }
+    FtpSite target = site;
+    target.host = field.host;
+    if (field.port > 0) target.port = field.port;
+    if (!field.user.empty()) target.user = field.user;
+    if (!field.password.empty()) target.password = field.password;
+    if (site.root.empty() && field.root != L"/") target.root = field.root;
+    if (target.host.empty()) {
+        error = L"Не указан адрес FTP-сервера";
+        return false;
+    }
     if (!EnsureWinsock(error)) return false;
 
     auto conn = std::make_unique<FtpConnection>();
     conn->impl_ = std::make_unique<FtpSession>();
     FtpSession& s = *conn->impl_;
-    s.site = site;
-    s.passive = site.passive;
+    s.site = target;
+    s.passive = target.passive;
 
-    if (!ConnectTcp(site.host, site.port, kConnectTimeoutMs, s.ctrl, error)) return false;
+    if (!ConnectTcp(target.host, target.port, kConnectTimeoutMs, s.ctrl, error)) return false;
     s.peerHost = NumericPeerHost(s.ctrl);
 
     FtpReply reply;
@@ -1208,8 +1330,8 @@ bool FtpConnect(const FtpSite& site, std::unique_ptr<FtpConnection>& out, std::w
         return false;
     }
 
-    const std::wstring user = site.user.empty() ? L"anonymous" : site.user;
-    const std::wstring password = site.user.empty() ? L"anonymous@" : site.password;
+    const std::wstring user = target.user.empty() ? L"anonymous" : target.user;
+    const std::wstring password = target.user.empty() ? L"anonymous@" : target.password;
     if (!SendCommand(s, L"USER " + user, reply, error)) return false;
     if (reply.code == 331) {
         if (!SendCommand(s, L"PASS " + password, reply, error)) return false;
