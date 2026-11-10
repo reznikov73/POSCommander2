@@ -226,6 +226,7 @@ struct ListerState {
     bool markdown = false;       // разметка MD вместо сырого текста
     bool rich = false;           // удалось создать RichEdit
     std::vector<std::pair<std::wstring, std::wstring>> links;   // текст ссылки → URL
+    std::vector<std::pair<int, std::wstring>> outline;          // заголовки Markdown: уровень, текст
     std::wstring findNeedle;     // последняя строка поиска
     HFONT font = nullptr;
     HWND edit = nullptr;
@@ -354,6 +355,7 @@ std::string RtfEscape(const std::wstring& s) {
 }
 
 std::vector<std::pair<std::wstring, std::wstring>>* g_mdLinks = nullptr;  // текст → URL, заполняется при конвертации
+std::vector<std::pair<int, std::wstring>>* g_mdOutline = nullptr;          // заголовки для оглавления
 
 // Инлайновая разметка: `код`, **жирный**, *курсив*, ~~зачёркнутый~~, [текст](url).
 // Ссылка отдаётся RTF-полем HYPERLINK: RichEdit сам помечает её как ссылку и
@@ -579,6 +581,7 @@ std::string MarkdownToRtf(const std::wstring& md) {
                 case 3: fs = 26; break;
                 default: fs = 22; break;
             }
+            if (g_mdOutline) g_mdOutline->emplace_back((int)hashes, line.substr(hashes + 1));
             char head[96]{};
             snprintf(head, sizeof(head), "\\pard\\sb240\\sa120\\f2\\b\\fs%d ", fs);
             out += head;
@@ -657,11 +660,15 @@ DWORD CALLBACK RtfStreamIn(DWORD_PTR cookie, LPBYTE buff, LONG cb, LONG* pcb) {
 }
 
 void ShowMarkdown(HWND edit, const std::wstring& text,
-                  std::vector<std::pair<std::wstring, std::wstring>>& links) {
+                  std::vector<std::pair<std::wstring, std::wstring>>& links,
+                  std::vector<std::pair<int, std::wstring>>& outline) {
     links.clear();
+    outline.clear();
     g_mdLinks = &links;
+    g_mdOutline = &outline;
     const std::string rtf = MarkdownToRtf(text);
     g_mdLinks = nullptr;
+    g_mdOutline = nullptr;
     RtfInput in{&rtf, 0};
     EDITSTREAM es{};
     es.dwCookie = (DWORD_PTR)&in;
@@ -704,6 +711,298 @@ void HighlightAll(HWND edit, const std::wstring& needle) {
         ft.chrg.cpMin = ft.chrgText.cpMax;
         ft.chrg.cpMax = -1;
         if (++guard > 5000) break;
+    }
+}
+
+enum class SyntaxLang { None, Cpp, Python, Json, Ini };
+
+SyntaxLang LangByExtension(const std::wstring& ext) {
+    if (ext == L".cpp" || ext == L".cc" || ext == L".c" || ext == L".h" || ext == L".hpp" || ext == L".cxx")
+        return SyntaxLang::Cpp;
+    if (ext == L".py") return SyntaxLang::Python;
+    if (ext == L".json") return SyntaxLang::Json;
+    if (ext == L".ini" || ext == L".cfg" || ext == L".conf") return SyntaxLang::Ini;
+    return SyntaxLang::None;
+}
+
+bool IsKeyword(SyntaxLang lang, const std::wstring& word) {
+    static const wchar_t* cppWords[] = {
+        L"alignas", L"alignof", L"auto", L"bool", L"break", L"case", L"catch", L"char", L"class", L"const",
+        L"constexpr", L"continue", L"default", L"delete", L"do", L"double", L"else", L"enum", L"explicit",
+        L"extern", L"false", L"float", L"for", L"friend", L"if", L"inline", L"int", L"long", L"namespace",
+        L"new", L"noexcept", L"nullptr", L"operator", L"private", L"protected", L"public", L"return", L"short",
+        L"signed", L"sizeof", L"static", L"struct", L"switch", L"template", L"this", L"throw", L"true", L"try",
+        L"typedef", L"typename", L"union", L"unsigned", L"using", L"virtual", L"void", L"volatile", L"while"};
+    static const wchar_t* pyWords[] = {
+        L"and",    L"as",     L"assert", L"async",  L"await",  L"break",   L"class",  L"continue", L"def",
+        L"del",    L"elif",   L"else",   L"except", L"False",  L"finally", L"for",    L"from",     L"global",
+        L"if",     L"import", L"in",     L"is",     L"lambda", L"None",    L"nonlocal", L"not",    L"or",
+        L"pass",   L"raise",  L"return", L"True",   L"try",    L"while",   L"with",   L"yield"};
+    static const wchar_t* jsonWords[] = {L"true", L"false", L"null"};
+
+    const wchar_t** list = nullptr;
+    size_t count = 0;
+    switch (lang) {
+        case SyntaxLang::Cpp: list = cppWords; count = sizeof(cppWords) / sizeof(cppWords[0]); break;
+        case SyntaxLang::Python: list = pyWords; count = sizeof(pyWords) / sizeof(pyWords[0]); break;
+        case SyntaxLang::Json: list = jsonWords; count = sizeof(jsonWords) / sizeof(jsonWords[0]); break;
+        default: return false;
+    }
+    for (size_t i = 0; i < count; ++i) {
+        if (word == list[i]) return true;
+    }
+    return false;
+}
+
+void PaintRange(HWND edit, long from, long to, COLORREF color) {
+    if (to <= from) return;
+    CHARRANGE range{from, to};
+    CHARFORMAT2W cf{};
+    cf.cbSize = sizeof(cf);
+    cf.dwMask = CFM_COLOR;
+    cf.crTextColor = color;
+    cf.dwEffects = 0;
+    SendMessageW(edit, EM_EXSETSEL, 0, (LPARAM)&range);
+    SendMessageW(edit, EM_SETCHARFORMAT, SCF_SELECTION, (LPARAM)&cf);
+}
+
+// Простая раскраска: комментарии, строки, числа и ключевые слова.
+void HighlightSyntax(HWND edit, const std::wstring& text, SyntaxLang lang) {
+    if (lang == SyntaxLang::None || text.empty()) return;
+    if (text.size() > 400 * 1024) return;             // очень большие файлы не раскрашиваем
+
+    const COLORREF kKeyword = RGB(0, 0, 190);
+    const COLORREF kString = RGB(0, 120, 60);
+    const COLORREF kComment = RGB(110, 120, 130);
+    const COLORREF kNumber = RGB(150, 60, 0);
+    const COLORREF kSection = RGB(120, 0, 120);
+
+    const bool cLike = lang == SyntaxLang::Cpp;
+    size_t i = 0;
+    int guard = 0;
+
+    while (i < text.size() && guard < 20000) {
+        const wchar_t c = text[i];
+
+        // комментарии
+        if (cLike && c == L'/' && i + 1 < text.size() && text[i + 1] == L'/') {
+            size_t end = text.find(L'\n', i);
+            if (end == std::wstring::npos) end = text.size();
+            PaintRange(edit, (long)i, (long)end, kComment);
+            ++guard;
+            i = end;
+            continue;
+        }
+        if (cLike && c == L'/' && i + 1 < text.size() && text[i + 1] == L'*') {
+            size_t end = text.find(L"*/", i + 2);
+            end = (end == std::wstring::npos) ? text.size() : end + 2;
+            PaintRange(edit, (long)i, (long)end, kComment);
+            ++guard;
+            i = end;
+            continue;
+        }
+        if (lang == SyntaxLang::Python && c == L'#') {
+            size_t end = text.find(L'\n', i);
+            if (end == std::wstring::npos) end = text.size();
+            PaintRange(edit, (long)i, (long)end, kComment);
+            ++guard;
+            i = end;
+            continue;
+        }
+        if (lang == SyntaxLang::Ini && (c == L';' || c == L'#')) {
+            size_t end = text.find(L'\n', i);
+            if (end == std::wstring::npos) end = text.size();
+            PaintRange(edit, (long)i, (long)end, kComment);
+            ++guard;
+            i = end;
+            continue;
+        }
+
+        // строки
+        if (c == L'"' || c == L'\'') {
+            size_t j = i + 1;
+            while (j < text.size() && text[j] != c) {
+                if (text[j] == L'\\' && j + 1 < text.size()) ++j;
+                if (text[j] == L'\n') break;
+                ++j;
+            }
+            if (j < text.size() && text[j] == c) ++j;
+            PaintRange(edit, (long)i, (long)j, kString);
+            ++guard;
+            i = j;
+            continue;
+        }
+
+        // секция ini
+        if (lang == SyntaxLang::Ini && c == L'[') {
+            size_t end = text.find(L']', i);
+            if (end != std::wstring::npos) {
+                PaintRange(edit, (long)i, (long)end + 1, kSection);
+                ++guard;
+                i = end + 1;
+                continue;
+            }
+        }
+
+        // числа
+        if (c >= L'0' && c <= L'9') {
+            size_t j = i;
+            while (j < text.size() && ((text[j] >= L'0' && text[j] <= L'9') || text[j] == L'.' ||
+                                       text[j] == L'x' || (text[j] >= L'a' && text[j] <= L'f') ||
+                                       (text[j] >= L'A' && text[j] <= L'F'))) {
+                ++j;
+            }
+            PaintRange(edit, (long)i, (long)j, kNumber);
+            ++guard;
+            i = j;
+            continue;
+        }
+
+        // слова
+        if ((c >= L'a' && c <= L'z') || (c >= L'A' && c <= L'Z') || c == L'_') {
+            size_t j = i;
+            while (j < text.size() && ((text[j] >= L'a' && text[j] <= L'z') || (text[j] >= L'A' && text[j] <= L'Z') ||
+                                       (text[j] >= L'0' && text[j] <= L'9') || text[j] == L'_')) {
+                ++j;
+            }
+            const std::wstring word = text.substr(i, j - i);
+            if (IsKeyword(lang, word)) PaintRange(edit, (long)i, (long)j, kKeyword);
+            ++guard;
+            i = j;
+            continue;
+        }
+
+        ++i;
+    }
+
+    CHARRANGE none{0, 0};
+    SendMessageW(edit, EM_EXSETSEL, 0, (LPARAM)&none);
+}
+
+// ---- оглавление Markdown ----
+struct OutlineState {
+    HWND hwnd = nullptr;
+    HWND list = nullptr;
+    int chosen = -1;
+    bool done = false;
+};
+
+OutlineState g_outline;
+
+void LayoutOutline(HWND hwnd) {
+    RECT rc{};
+    GetClientRect(hwnd, &rc);
+    MoveWindow(g_outline.list, 8, 8, rc.right - 16, rc.bottom - 16, TRUE);
+}
+
+LRESULT CALLBACK OutlineProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    switch (msg) {
+        case WM_CREATE: {
+            g_outline.hwnd = hwnd;
+            g_outline.list = CreateWindowExW(WS_EX_CLIENTEDGE, L"LISTBOX", L"",
+                                             WS_CHILD | WS_VISIBLE | WS_VSCROLL | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT,
+                                             0, 0, 10, 10, hwnd, (HMENU)1, nullptr, nullptr);
+            SendMessageW(g_outline.list, WM_SETFONT, (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE);
+            LayoutOutline(hwnd);
+            return 0;
+        }
+        case WM_SIZE:
+            LayoutOutline(hwnd);
+            return 0;
+        case WM_COMMAND:
+            if (LOWORD(wp) == 1 && HIWORD(wp) == LBN_DBLCLK) {
+                g_outline.chosen = (int)SendMessageW(g_outline.list, LB_GETCURSEL, 0, 0);
+                g_outline.done = true;
+                return 0;
+            }
+            break;
+        case WM_KEYDOWN:
+            if (wp == VK_RETURN) {
+                g_outline.chosen = (int)SendMessageW(g_outline.list, LB_GETCURSEL, 0, 0);
+                g_outline.done = true;
+                return 0;
+            }
+            if (wp == VK_ESCAPE) {
+                g_outline.done = true;
+                return 0;
+            }
+            break;
+        case WM_CLOSE:
+            g_outline.done = true;
+            return 0;
+        default:
+            break;
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+void JumpToHeading(HWND parent, ListerState* st, const std::wstring& heading) {
+    FINDTEXTEXW ft{};
+    ft.lpstrText = (LPWSTR)heading.c_str();
+    ft.chrg.cpMin = 0;
+    ft.chrg.cpMax = -1;
+    if (SendMessageW(st->edit, EM_FINDTEXTEXW, FR_DOWN, (LPARAM)&ft) < 0) return;
+
+    SendMessageW(st->edit, EM_EXSETSEL, 0, (LPARAM)&ft.chrgText);
+    SendMessageW(st->edit, EM_SCROLLCARET, 0, 0);
+    SetFocus(st->edit);
+    (void)parent;
+}
+
+void ShowOutline(HWND parent, ListerState* st) {
+    if (!st || st->outline.empty()) {
+        MessageBeep(MB_ICONINFORMATION);
+        return;
+    }
+
+    static bool registered = false;
+    if (!registered) {
+        WNDCLASSEXW wc{};
+        wc.cbSize = sizeof(wc);
+        wc.lpfnWndProc = OutlineProc;
+        wc.hInstance = g_inst;
+        wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+        wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+        wc.lpszClassName = L"POSOutline2";
+        RegisterClassExW(&wc);
+        registered = true;
+    }
+
+    g_outline = OutlineState{};
+
+    RECT prc{};
+    GetWindowRect(parent, &prc);
+    const int w = 520, h = 420;
+    HWND hwnd = CreateWindowExW(WS_EX_DLGMODALFRAME, L"POSOutline2", L"Оглавление",
+                                WS_POPUP | WS_CAPTION | WS_SYSMENU, prc.left + 60, prc.top + 60, w, h, parent,
+                                nullptr, g_inst, nullptr);
+    if (!hwnd) return;
+
+    for (const auto& kv : st->outline) {
+        std::wstring line;
+        for (int i = 1; i < kv.first; ++i) line += L"    ";
+        line += kv.second;
+        SendMessageW(g_outline.list, LB_ADDSTRING, 0, (LPARAM)line.c_str());
+    }
+
+    EnableWindow(parent, FALSE);
+    ShowWindow(hwnd, SW_SHOW);
+    SetFocus(g_outline.list);
+    SendMessageW(g_outline.list, LB_SETCURSEL, 0, 0);
+
+    MSG msg;
+    while (!g_outline.done && GetMessageW(&msg, nullptr, 0, 0) > 0) {
+        if (!IsDialogMessageW(hwnd, &msg)) {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+    DestroyWindow(hwnd);
+    EnableWindow(parent, TRUE);
+    SetActiveWindow(parent);
+
+    if (g_outline.chosen >= 0 && g_outline.chosen < (int)st->outline.size()) {
+        JumpToHeading(parent, st, st->outline[g_outline.chosen].second);
     }
 }
 
@@ -778,9 +1077,14 @@ void RefreshLister(HWND hwnd, ListerState* st) {
             body += L"\r\n… файл обрезан";
         }
         if (st->markdown && st->rich) {
-            ShowMarkdown(st->edit, body, st->links);
+            ShowMarkdown(st->edit, body, st->links, st->outline);
         } else {
             SetWindowTextW(st->edit, body.c_str());
+            const size_t dot = st->path.find_last_of(L'.');
+            if (dot != std::wstring::npos) {
+                const SyntaxLang lang = LangByExtension(Lower(st->path.substr(dot)));
+                HighlightSyntax(st->edit, body, lang);
+            }
         }
     }
     SendMessageW(st->edit, EM_SETSEL, 0, 0);
@@ -799,7 +1103,7 @@ void RefreshLister(HWND hwnd, ListerState* st) {
     if (st->hint) {
         SetWindowTextW(st->hint,
                         L"1 ANSI · 2 OEM · 3 UTF-8 · 4 UTF-16 · T текст · M markdown · H hex · "
-                        L"Ctrl+F поиск · F3 далее · Shift+F3 назад · F4 редактор · ESC закрыть");
+                        L"Ctrl+F поиск · F3 далее · Shift+F3 назад · G оглавление · F4 редактор · ESC закрыть");
     }
 }
 
@@ -832,6 +1136,10 @@ LRESULT CALLBACK ListerEditProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         }
         if (st && wParam == 'F' && (GetKeyState(VK_CONTROL) & 0x8000)) {
             FindInLister(parent, st, true);
+            return 0;
+        }
+        if (st && wParam == 'G') {
+            ShowOutline(parent, st);
             return 0;
         }
         if (st) {
