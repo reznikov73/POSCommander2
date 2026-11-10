@@ -1,4 +1,5 @@
 #include "settings.h"
+#include "util.h"
 
 namespace {
 
@@ -163,6 +164,21 @@ void LoadSettings() {
     if (s.uiFontPt < 8) s.uiFontPt = 8;
     if (s.uiFontPt > 14) s.uiFontPt = 14;
     s.syntaxHighlight = ReadInt(L"View", L"Syntax", 1) != 0;
+
+    s.toolbarItems.clear();
+    {
+        const std::wstring raw = ReadStr(L"Toolbar", L"Items", L"");
+        std::wstring cur;
+        for (wchar_t ch : raw) {
+            if (ch == L',' || ch == L';') {
+                if (!Trim(cur).empty()) s.toolbarItems.push_back(Trim(cur));
+                cur.clear();
+            } else {
+                cur += ch;
+            }
+        }
+        if (!Trim(cur).empty()) s.toolbarItems.push_back(Trim(cur));
+    }
     s.sortColumn = ReadInt(L"View", L"SortColumn", 0);
     s.sortReverse = ReadInt(L"View", L"SortReverse", 0) != 0;
 
@@ -233,6 +249,15 @@ void SaveSettings() {
     WriteInt(L"View", L"ShowHidden", s.showHidden ? 1 : 0);
     WriteInt(L"View", L"UiFontPt", s.uiFontPt);
     WriteInt(L"View", L"Syntax", s.syntaxHighlight ? 1 : 0);
+
+    {
+        std::wstring joined;
+        for (size_t i = 0; i < s.toolbarItems.size(); ++i) {
+            if (i) joined += L",";
+            joined += s.toolbarItems[i];
+        }
+        WriteStr(L"Toolbar", L"Items", joined);
+    }
     WriteInt(L"View", L"SortColumn", s.sortColumn);
     WriteInt(L"View", L"SortReverse", s.sortReverse ? 1 : 0);
     WriteInt(L"View", L"ColName", s.colWidth[0]);

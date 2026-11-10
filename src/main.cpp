@@ -151,30 +151,42 @@ const int ID_TB_FIRST = 1100;
 struct TbDef { const wchar_t* text; int command; bool separator; };
 // Тулбар как в TC: 17 кнопок 24x24 в группах с вертикальными сепараторами.
 // F3-F8 продублированы иконками — как в Total Commander.
-const TbDef kToolbar[] = {
-    {L"Назад",                       IDM_NAV_BACK,      false},
-    {L"Вперёд",                      IDM_NAV_FORWARD,   false},
-    {L"Вверх",                       IDM_NAV_UP,        false},
-    {L"Дерево каталогов",             IDM_TREE,           false},
-    {L"",                            0,                 true},
-    {L"Просмотр (F3)",                IDM_VIEW,           false},
-    {L"Правка (F4)",                  IDM_EDIT,           false},
-    {L"Копирование (F5)",            IDM_COPY,           false},
-    {L"Перемещение (F6)",            IDM_MOVE,           false},
-    {L"Новый каталог (F7)",          IDM_MKDIR,          false},
-    {L"Удаление (F8)",               IDM_DELETE,         false},
-    {L"",                            0,                 true},
-    {L"Упаковать (Alt+F5)",          IDM_PACK,           false},
-    {L"Распаковать",                 IDM_UNPACK,         false},
-    {L"Пакетное переименование (Ctrl+M)", IDM_BATCH_RENAME, false},
-    {L"",                            0,                 true},
-    {L"Поиск файлов",                IDM_SEARCH,         false},
-    {L"Синхронизация каталогов",      IDM_SYNC,           false},
-    {L"Обновить (Ctrl+R)",           IDM_REFRESH,        false},
-    {L"",                            0,                 true},
-    {L"Свойства (Alt+Enter)",        IDM_PROPERTIES,     false},
+// Каталог команд, которые можно вынести на тулбар: имя для INI, подпись, команда.
+struct TbNamed { const wchar_t* name; const wchar_t* text; int command; bool separator; };
+
+const TbNamed kToolbarCatalog[] = {
+    {L"back", L"Назад", IDM_NAV_BACK, false},
+    {L"forward", L"Вперёд", IDM_NAV_FORWARD, false},
+    {L"up", L"Вверх", IDM_NAV_UP, false},
+    {L"tree", L"Дерево каталогов", IDM_TREE, false},
+    {L"view", L"Просмотр (F3)", IDM_VIEW, false},
+    {L"edit", L"Правка (F4)", IDM_EDIT, false},
+    {L"copy", L"Копирование (F5)", IDM_COPY, false},
+    {L"move", L"Перемещение (F6)", IDM_MOVE, false},
+    {L"mkdir", L"Новый каталог (F7)", IDM_MKDIR, false},
+    {L"delete", L"Удаление (F8)", IDM_DELETE, false},
+    {L"pack", L"Упаковать (Alt+F5)", IDM_PACK, false},
+    {L"unpack", L"Распаковать", IDM_UNPACK, false},
+    {L"rename", L"Пакетное переименование (Ctrl+M)", IDM_BATCH_RENAME, false},
+    {L"find", L"Поиск файлов", IDM_SEARCH, false},
+    {L"sync", L"Синхронизация каталогов", IDM_SYNC, false},
+    {L"refresh", L"Обновить (Ctrl+R)", IDM_REFRESH, false},
+    {L"props", L"Свойства (Alt+Enter)", IDM_PROPERTIES, false},
+    {L"dupes", L"Поиск дубликатов", IDM_DUPES, false},
+    {L"diff", L"Сравнить файлы", IDM_DIFF, false},
+    {L"undo", L"Отменить переименование", IDM_UNDO_RENAME, false},
+    {L"prefs", L"Параметры", IDM_PREFS, false},
+    {L"newtab", L"Открыть в новой вкладке", IDM_OPEN_NEW_TAB, false},
+    {L"copypath", L"Копировать путь", IDM_COPY_PATH, false},
+    {L"sep", L"", 0, true},
 };
-const int kToolbarCount = (int)(sizeof(kToolbar) / sizeof(kToolbar[0]));
+
+// Набор по умолчанию — как в Total Commander.
+const wchar_t* kToolbarDefault[] = {L"back",  L"forward", L"up",     L"tree", L"sep", L"view",   L"edit",
+                                    L"copy",  L"move",    L"mkdir",  L"delete", L"sep", L"pack", L"unpack",
+                                    L"rename", L"sep",    L"find",   L"sync", L"refresh", L"sep", L"props"};
+
+const int kMaxToolbar = 64;
 
 class App;
 class PanelDropTarget;
@@ -545,6 +557,7 @@ private:
     Panel* OtherPanel();
     void Dispatch(int id);
     void UpdatePromptLabel();
+    void BuildToolbar();
     void OpenCursor();
     void ApplyUiSettings();
     void OpenCursorInNewTab();
@@ -619,7 +632,9 @@ private:
     HWND tip_ = nullptr;                // подсказки кнопок тулбара
     HWND quickView_ = nullptr;          // Ctrl+Q: просмотр на неактивной панели
     int quickViewSide_ = -1;
-    HWND toolbar_[kToolbarCount]{};
+    HWND toolbar_[kMaxToolbar]{};
+    std::vector<TbDef> toolbarDefs_;   // состав тулбара из настроек
+    int toolbarCount_ = 0;
     Panel left_{0};
     Panel right_{1};
     int activeSide_ = 0;
@@ -905,6 +920,37 @@ void App::ApplyUiSettings() {
     right_.Reload();
 }
 
+// Состав тулбара: по умолчанию набор как в TC, иначе — список из [Toolbar] Items.
+void App::BuildToolbar() {
+    toolbarDefs_.clear();
+
+    auto add = [this](const std::wstring& name) {
+        const std::wstring key = Lower(Trim(name));
+        if (key.empty()) return;
+        for (const auto& c : kToolbarCatalog) {
+            if (key == c.name) {
+                if ((int)toolbarDefs_.size() < kMaxToolbar) {
+                    toolbarDefs_.push_back(TbDef{c.text, c.command, c.separator});
+                }
+                return;
+            }
+        }
+        LogDebug(L"toolbar: неизвестная команда '" + key + L"'");
+    };
+
+    const auto& custom = GetSettings().toolbarItems;
+    if (custom.empty()) {
+        for (const wchar_t* name : kToolbarDefault) add(name);
+    } else {
+        for (const auto& name : custom) add(name);
+    }
+    if (toolbarDefs_.empty()) {                 // ничего не распознали — откат к набору по умолчанию
+        for (const wchar_t* name : kToolbarDefault) add(name);
+    }
+    toolbarCount_ = (int)toolbarDefs_.size();
+    LogDebug(L"toolbar: кнопок " + std::to_wstring(toolbarCount_));
+}
+
 HFONT App::MakeUiFont() {
     LOGFONTW lf{};
     int pt = GetSettings().uiFontPt;
@@ -933,12 +979,13 @@ void App::CreateChildren() {
                               WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWN | CBS_AUTOHSCROLL,
                               0, 0, 10, 10, hwnd_, (HMENU)(INT_PTR)ID_PROMPT, g_inst, nullptr);
 
-    for (int i = 0; i < kToolbarCount; i++) {
+    BuildToolbar();
+    for (int i = 0; i < toolbarCount_; i++) {
         toolbar_[i] = CreateWindowExW(0, L"BUTTON", L"",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, 0, 0, 10, 10,
                                       hwnd_, (HMENU)(INT_PTR)(ID_TB_FIRST + i), g_inst, nullptr);
         // Кнопкам (не сепараторам) — subclass для hover-подсветки, как в TC.
-        if (!kToolbar[i].separator) SetWindowSubclass(toolbar_[i], TbBtnProc, 5, (DWORD_PTR)this);
+        if (!toolbarDefs_[i].separator) SetWindowSubclass(toolbar_[i], TbBtnProc, 5, (DWORD_PTR)this);
     }
 
     // Кнопка «Терминал» справа от командной строки: запускает cmd в каталоге активной панели.
@@ -961,14 +1008,14 @@ void App::CreateChildren() {
                            WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX, CW_USEDEFAULT, CW_USEDEFAULT,
                            CW_USEDEFAULT, CW_USEDEFAULT, hwnd_, nullptr, g_inst, nullptr);
     if (tip_) {
-        for (int i = 0; i < kToolbarCount; i++) {
-            if (kToolbar[i].separator) continue;   // сепараторам подсказки не нужны
+        for (int i = 0; i < toolbarCount_; i++) {
+            if (toolbarDefs_[i].separator) continue;   // сепараторам подсказки не нужны
             TOOLINFOW ti{};
             ti.cbSize = sizeof(ti);
             ti.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
             ti.hwnd = hwnd_;
             ti.uId = (UINT_PTR)toolbar_[i];
-            ti.lpszText = (LPWSTR)kToolbar[i].text;
+            ti.lpszText = (LPWSTR)toolbarDefs_[i].text;
             SendMessageW(tip_, TTM_ADDTOOLW, 0, (LPARAM)&ti);
         }
     }
@@ -1085,13 +1132,13 @@ void App::Layout() {
     int rightW = width - rightX;
     if (rightW < Scale(120, dpi_)) rightW = Scale(120, dpi_);
 
-    HDWP dwp = BeginDeferWindowPos(10 + kToolbarCount);
+    HDWP dwp = BeginDeferWindowPos(10 + toolbarCount_);
     if (dwp) {
         int x = 0;
         const int bh = Scale(24, dpi_);              // кнопка 24×24, как в TC
         const int by = (tbH - bh) / 2;
-        for (int i = 0; i < kToolbarCount; i++) {
-            const int w = kToolbar[i].separator ? Scale(7, dpi_) : bh;
+        for (int i = 0; i < toolbarCount_; i++) {
+            const int w = toolbarDefs_[i].separator ? Scale(7, dpi_) : bh;
             dwp = DeferWindowPos(dwp, toolbar_[i], nullptr, x, by, w, bh, SWP_NOZORDER);
             x += w + Scale(2, dpi_);
         }
@@ -1749,10 +1796,10 @@ void App::DrawFlatButton(DRAWITEMSTRUCT* dis) {
     const bool disabled = (dis->itemState & ODS_DISABLED) != 0;
 
     const int id = (int)dis->CtlID;
-    const bool isTool = id >= ID_TB_FIRST && id < ID_TB_FIRST + kToolbarCount;
+    const bool isTool = id >= ID_TB_FIRST && id < ID_TB_FIRST + toolbarCount_;
     const int idx = isTool ? id - ID_TB_FIRST : -1;
 
-    if (isTool && kToolbar[idx].separator) {
+    if (isTool && toolbarDefs_[idx].separator) {
         // Сепаратор: вертикальная линия по центру, как в TC.
         HBRUSH fill = CreateSolidBrush(GetSysColor(COLOR_BTNFACE));
         FillRect(dc, &rc, fill);
@@ -1785,7 +1832,7 @@ void App::DrawFlatButton(DRAWITEMSTRUCT* dis) {
             DeleteObject(pen);
         }
 
-        if (HICON icon = ToolIcon(kToolbar[idx].command)) {
+        if (HICON icon = ToolIcon(toolbarDefs_[idx].command)) {
             const int sz = Scale(16, dpi_);
             const int x = (rc.left + rc.right - sz) / 2;
             const int y = (rc.top + rc.bottom - sz) / 2 + (pressed ? 1 : 0);
@@ -3548,7 +3595,7 @@ LRESULT App::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             auto dis = reinterpret_cast<DRAWITEMSTRUCT*>(lParam);
             if (dis && dis->CtlType == ODT_BUTTON) {
                 const int id = (int)dis->CtlID;
-                if ((id >= ID_TB_FIRST && id < ID_TB_FIRST + kToolbarCount) ||
+                if ((id >= ID_TB_FIRST && id < ID_TB_FIRST + toolbarCount_) ||
                     (id >= ID_FKEY_FIRST && id < ID_FKEY_FIRST + kFKeyCount)) {
                     DrawFlatButton(dis);
                     return TRUE;
@@ -3570,9 +3617,9 @@ LRESULT App::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 OpenCursor();
                 return 0;
             }
-            if (id >= ID_TB_FIRST && id < ID_TB_FIRST + kToolbarCount) {
+            if (id >= ID_TB_FIRST && id < ID_TB_FIRST + toolbarCount_) {
                 // Сепараторы — не кнопки, команду не диспатчат.
-                if (kToolbar[id - ID_TB_FIRST].command) Dispatch(kToolbar[id - ID_TB_FIRST].command);
+                if (toolbarDefs_[id - ID_TB_FIRST].command) Dispatch(toolbarDefs_[id - ID_TB_FIRST].command);
                 return 0;
             }
             if (id >= ID_FKEY_FIRST && id < ID_FKEY_FIRST + kFKeyCount) {

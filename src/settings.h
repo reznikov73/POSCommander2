@@ -17,6 +17,7 @@ struct Settings {
     bool showHidden = true;
     int uiFontPt = 9;                    // размер шрифта интерфейса
     bool syntaxHighlight = true;         // подсветка синтаксиса в просмотрщике
+    std::vector<std::wstring> toolbarItems;   // состав тулбара (имена из каталога), пусто = по умолчанию
     int colWidth[4] = {240, 70, 100, 120};   // Имя, Тип, Размер, Дата
     int sortColumn = 0;
     bool sortReverse = false;
