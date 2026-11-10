@@ -1,0 +1,47 @@
+name: build
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  mingw:
+    name: MinGW-w64 (Release)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Установить MSYS2 и инструменты
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+
+      - name: Конфигурация
+        shell: msys2 {0}
+        run: >-
+          cmake -S . -B build-ci -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_CXX_COMPILER=g++
+          -DCMAKE_RC_COMPILER=windres
+
+      - name: Сборка
+        shell: msys2 {0}
+        run: cmake --build build-ci
+
+      - name: Проверить, что exe создан
+        shell: msys2 {0}
+        run: test -f build-ci/PosFiles.exe && ls -lh build-ci/PosFiles.exe
+
+      - name: Артефакт
+        uses: actions/upload-artifact@v4
+        with:
+          name: PosFiles-mingw
+          path: build-ci/PosFiles.exe
+          if-no-files-found: error
