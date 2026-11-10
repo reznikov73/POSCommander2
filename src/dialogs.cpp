@@ -790,11 +790,12 @@ void HighlightSyntax(HWND edit, const std::wstring& text, SyntaxLang lang) {
     // Палитра как в Visual Studio: синие ключевые слова, тёмно-красные строки,
     // зелёные комментарии, бирюзовые числа и встроенные функции.
     const COLORREF kKeyword = RGB(0, 0, 255);
-    const COLORREF kString = RGB(163, 21, 21);
+    const COLORREF kString = RGB(140, 40, 40);
     const COLORREF kComment = RGB(0, 128, 0);
     const COLORREF kNumber = RGB(9, 134, 88);
     const COLORREF kSection = RGB(38, 127, 153);
     const COLORREF kBuiltin = RGB(38, 127, 153);
+    const COLORREF kJsonKey = RGB(4, 81, 165);     // ключ JSON — синий, как в VS Code
 
     const bool cLike = lang == SyntaxLang::Cpp;
     size_t i = 0;
@@ -858,7 +859,15 @@ void HighlightSyntax(HWND edit, const std::wstring& text, SyntaxLang lang) {
                 ++j;
             }
             if (j < text.size() && text[j] == c) ++j;
-            PaintRange(edit, (long)i, (long)j, kString);
+
+            // В JSON строка перед двоеточием — это ключ, а не значение.
+            bool isKey = false;
+            if (lang == SyntaxLang::Json) {
+                size_t k = j;
+                while (k < text.size() && (text[k] == L' ' || text[k] == L'\t')) ++k;
+                isKey = k < text.size() && text[k] == L':';
+            }
+            PaintRange(edit, (long)i, (long)j, isKey ? kJsonKey : kString);
             ++guard;
             i = j;
             continue;
