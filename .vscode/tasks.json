@@ -62,7 +62,7 @@
     {
       "label": "Самопроверка",
       "type": "shell",
-      "command": "& \"${workspaceFolder}\\build\\PosFiles.exe\" --selftest; if (Test-Path \"$env:TEMP\\posfiles-selftest.txt\") { Get-Content \"$env:TEMP\\posfiles-selftest.txt\" }",
+      "command": "$p = Start-Process \"${workspaceFolder}\\build\\PosFiles.exe\" -ArgumentList '--selftest' -Wait -PassThru; Write-Host \"exit=$($p.ExitCode)\"; if (Test-Path \"$env:TEMP\\posfiles-selftest.txt\") { Get-Content \"$env:TEMP\\posfiles-selftest.txt\" }",
       "options": {
         "cwd": "${workspaceFolder}"
       },
