@@ -9,6 +9,7 @@
 
 #include "archive.h"
 #include "ftp.h"
+#include "ops.h"
 #include "settings.h"
 #include "dialogs.h"
 
@@ -561,7 +562,7 @@ void Panel::DrawTabButton(DRAWITEMSTRUCT* dis) {
     const bool activeTab = (index == tab_);
     const bool locked = TabLocked(index);
 
-    HBRUSH fill = CreateSolidBrush(activeTab ? RGB(255, 255, 255) : RGB(226, 223, 218));
+    HBRUSH fill = CreateSolidBrush(RGB(255, 255, 255));
     FillRect(dc, &rc, fill);
     DeleteObject(fill);
 
@@ -572,16 +573,24 @@ void Panel::DrawTabButton(DRAWITEMSTRUCT* dis) {
     LineTo(dc, rc.left, rc.top + 1);
     LineTo(dc, rc.right - 1, rc.top + 1);
     LineTo(dc, rc.right - 1, rc.bottom - 1);
-    if (activeTab) {
-        MoveToEx(dc, rc.left, rc.bottom - 1, nullptr);
-        LineTo(dc, rc.right - 1, rc.bottom - 1);
-    }
+    // Все вкладки белые; активная дополнительно подчёркнута синей полосой.
+    MoveToEx(dc, rc.left, rc.bottom - 1, nullptr);
+    LineTo(dc, rc.right - 1, rc.bottom - 1);
     SelectObject(dc, oldBrush);
     SelectObject(dc, oldPen);
     DeleteObject(pen);
 
+    if (activeTab) {
+        HPEN accent = CreatePen(PS_SOLID, 2, RGB(0, 120, 215));
+        HGDIOBJ op = SelectObject(dc, accent);
+        MoveToEx(dc, rc.left, rc.bottom - 1, nullptr);
+        LineTo(dc, rc.right - 1, rc.bottom - 1);
+        SelectObject(dc, op);
+        DeleteObject(accent);
+    }
+
     SetBkMode(dc, TRANSPARENT);
-    SetTextColor(dc, activeTab ? RGB(0, 0, 0) : RGB(70, 70, 70));
+    SetTextColor(dc, RGB(0, 0, 0));
     HGDIOBJ oldFont = SelectObject(dc, font_ ? font_ : (HFONT)GetStockObject(DEFAULT_GUI_FONT));
 
     int textLeft = rc.left + Scale(6, dpi_);
@@ -1818,6 +1827,7 @@ bool Panel::LoadFtpListing(const std::wstring& url, const std::wstring& focus) {
 
 bool Panel::Navigate(const std::wstring& dir, const std::wstring& focus, bool keepCursor) {
     lastError_.clear();
+    if (renameEdit_ && IsWindowVisible(renameEdit_) && !renameEnding_) CancelInlineRename();
 
     // FTP-URL: отдельный источник списка, обычные пути к нему не применимы.
     if (IsFtpUrl(dir)) {
@@ -2100,6 +2110,147 @@ void Panel::SetCursorIndex(int index) {
         ListView_RedrawItems(list_, index, index);
     }
     ListView_EnsureVisible(list_, index, FALSE);
+}
+
+bool Panel::BeginInlineRename() {
+    if (ftp_ || inArchive_) return false;
+    const int index = CursorIndex();
+    if (index < 0 || index >= (int)entries_.size()) return false;
+    Entry& e = entries_[index];
+    if (e.isUp) return false;
+
+    if (renameEdit_ && IsWindowVisible(renameEdit_) && !renameEnding_) CancelInlineRename();
+
+    if (!renameEdit_) {
+        renameEdit_ = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+                                      WS_CHILD | ES_AUTOHSCROLL | ES_LEFT, 0, 0, 10, 10,
+                                      list_, (HMENU)9001, g_inst, nullptr);
+        if (!renameEdit_) return false;
+        SetWindowSubclass(renameEdit_, RenameEditProc, 3, (DWORD_PTR)this);
+        SendMessageW(renameEdit_, WM_SETFONT,
+                     (WPARAM)(font_ ? font_ : (HFONT)GetStockObject(DEFAULT_GUI_FONT)), TRUE);
+    }
+
+    RECT row{};
+    if (!ListView_GetItemRect(list_, index, &row, LVIR_BOUNDS)) {
+        LogDebug(L"inline rename: no item rect");
+        return false;
+    }
+    int columnW = ListView_GetColumnWidth(list_, 0);
+    if (columnW <= 0) columnW = row.right - row.left;
+    const int iconW = Scale(20, dpi_);
+    POINT origin{row.left + iconW, row.top};
+    int width = columnW - iconW - Scale(4, dpi_);
+    if (width < Scale(60, dpi_)) width = Scale(60, dpi_);
+    int height = row.bottom - row.top + Scale(2, dpi_);
+    if (height < Scale(18, dpi_)) height = Scale(18, dpi_);
+
+    renameEnding_ = false;
+    renameIndex_ = index;
+    SetWindowTextW(renameEdit_, e.name.c_str());
+    // Курсор ставим в конец имени: выделение в EDIT на белом фоне
+    // выглядит как «пропавшие» символы, поэтому не выделяем автоматически.
+    const int selEnd = (int)e.name.size();
+    SetWindowPos(renameEdit_, HWND_TOP, origin.x, origin.y - Scale(1, dpi_), width, height,
+                 SWP_SHOWWINDOW);
+    SetFocus(renameEdit_);
+    SendMessageW(renameEdit_, EM_SETSEL, selEnd, selEnd);
+    InvalidateRect(renameEdit_, nullptr, TRUE);
+    UpdateWindow(renameEdit_);
+    return true;
+}
+
+bool Panel::IsInlineRenaming() const {
+    return renameEdit_ && IsWindowVisible(renameEdit_);
+}
+
+void Panel::CommitInlineRename() {
+    if (!renameEdit_ || renameIndex_ < 0 || renameEnding_) return;
+    if (renameIndex_ >= (int)entries_.size()) {
+        CancelInlineRename();
+        return;
+    }
+    wchar_t buf[1024]{};
+    GetWindowTextW(renameEdit_, buf, 1024);
+    const std::wstring name = Trim(buf);
+    Entry& e = entries_[renameIndex_];
+    if (name.empty() || name == e.name) {
+        CancelInlineRename();
+        return;
+    }
+    if (name.find_first_of(L"\\/:*?\"<>|") != std::wstring::npos || name.back() == L'.' ||
+        name.back() == L' ') {
+        // Пока открыт MessageBox, EDIT теряет фокус; не даём WM_KILLFOCUS
+        // повторно войти в CommitInlineRename.
+        renameEnding_ = true;
+        MessageBoxW(GetAncestor(hwnd_, GA_ROOT), L"Имя содержит недопустимые символы или заканчивается точкой/пробелом.",
+                    L"Переименование", MB_ICONWARNING | MB_OK);
+        renameEnding_ = false;
+        SetFocus(renameEdit_);
+        SendMessageW(renameEdit_, EM_SETSEL, 0, -1);
+        return;
+    }
+
+    const std::wstring from = FullPathOf(e);
+    const std::wstring to = JoinPath(path_, name);
+    DWORD err = 0;
+    if (!RenamePath(from, to, err)) {
+        renameEnding_ = true;
+        MessageBoxW(GetAncestor(hwnd_, GA_ROOT), (L"Не удалось переименовать:\n" + ErrText(err)).c_str(),
+                    L"Переименование", MB_ICONERROR | MB_OK);
+        renameEnding_ = false;
+        SetFocus(renameEdit_);
+        SendMessageW(renameEdit_, EM_SETSEL, 0, -1);
+        return;
+    }
+
+    LogDebug(L"inline rename '" + e.name + L"' -> '" + name + L"'");
+    renameEnding_ = true;
+    ShowWindow(renameEdit_, SW_HIDE);
+    renameIndex_ = -1;
+    if (!Navigate(path_, name)) Reload();
+    renameEnding_ = false;
+    SetFocus(list_);
+}
+
+void Panel::CancelInlineRename() {
+    if (!renameEdit_) return;
+    renameEnding_ = true;
+    ShowWindow(renameEdit_, SW_HIDE);
+    renameIndex_ = -1;
+    renameEnding_ = false;
+    SetFocus(list_);
+}
+
+LRESULT CALLBACK Panel::RenameEditProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
+                                       UINT_PTR, DWORD_PTR ref) {
+    auto* self = reinterpret_cast<Panel*>(ref);
+    if (!self) return DefSubclassProc(hwnd, msg, wParam, lParam);
+
+    switch (msg) {
+        case WM_KEYDOWN:
+            if (wParam == VK_RETURN) {
+                self->CommitInlineRename();
+                return 0;
+            }
+            if (wParam == VK_ESCAPE) {
+                self->CancelInlineRename();
+                return 0;
+            }
+            break;
+        case WM_GETDLGCODE:
+            return DLGC_WANTALLKEYS;
+        case WM_KILLFOCUS:
+            if (!self->renameEnding_) self->CommitInlineRename();
+            break;
+        case WM_NCDESTROY:
+            RemoveWindowSubclass(hwnd, RenameEditProc, 3);
+            if (self->renameEdit_ == hwnd) self->renameEdit_ = nullptr;
+            break;
+        default:
+            break;
+    }
+    return DefSubclassProc(hwnd, msg, wParam, lParam);
 }
 
 Entry* Panel::Cursor() {
@@ -3080,7 +3231,12 @@ LRESULT Panel::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 SetTextColor(dc, RGB(90, 90, 90));       // приглушённая сводка справа статуса
                 return (LRESULT)(HBRUSH)(COLOR_BTNFACE + 1);
             }
-            if (msg == WM_CTLCOLOREDIT) return (LRESULT)(HBRUSH)(COLOR_WINDOW + 1);
+            if (msg == WM_CTLCOLOREDIT) {
+                SetBkMode(dc, OPAQUE);
+                SetTextColor(dc, RGB(0, 0, 0));
+                SetBkColor(dc, RGB(255, 255, 255));
+                return (LRESULT)GetStockObject(WHITE_BRUSH);
+            }
 
             SetBkMode(dc, TRANSPARENT);
             SetTextColor(dc, GetSysColor(COLOR_BTNTEXT));

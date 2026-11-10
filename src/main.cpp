@@ -1431,6 +1431,20 @@ void App::DoRename() {
     Panel* panel = ActivePanel();
     Entry* e = panel->Cursor();
     if (!e || e->isUp) return;
+
+    // Локально — правка имени прямо в строке, как в TC. Для FTP оставляем диалог.
+    if (!panel->InFtp() && !panel->InArchive()) {
+        // Начинаем после возврата из Dispatch: иначе возврат фокуса в список
+        // сразу закроет только что созданный EDIT.
+        PostMessageW(hwnd_, WM_APP + 305, (WPARAM)panel->Side(), 0);
+        return;
+    }
+    if (panel->InArchive()) {
+        MessageBoxW(hwnd_, L"Переименование внутри архива не поддерживается.", L"Переименование",
+                    MB_ICONINFORMATION | MB_OK);
+        return;
+    }
+
     std::wstring name = e->name;
     if (!InputBox(hwnd_, L"Переименование", L"Новое имя:", name, false)) return;
     name = Trim(name);
@@ -2922,7 +2936,8 @@ void App::Dispatch(int id) {
             break;
     }
     // Возвращаем фокус в список — как в Total Commander после команды.
-    if (GetFocus() != prompt_) ActivePanel()->FocusList();
+    // Но не выдёргиваем его из inline-переименования (F2).
+    if (!ActivePanel()->IsInlineRenaming() && GetFocus() != prompt_) ActivePanel()->FocusList();
     UpdatePromptLabel();
 }
 
@@ -3356,6 +3371,14 @@ LRESULT App::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             // или поле пути. Синхронно снимаем активность с другой панели.
             if ((int)wParam != activeSide_) SetActivePanel((int)wParam);
             return 0;
+
+        case WM_APP + 305: {
+            // Начать inline-переименование после завершения Dispatch (иначе
+            // возврат фокуса в список закроет EDIT).
+            Panel* p = ((int)wParam == 0) ? &left_ : &right_;
+            p->BeginInlineRename();
+            return 0;
+        }
 
         case WM_APP + 401:
             RunNextJob();

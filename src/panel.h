@@ -64,6 +64,9 @@ public:
     void InvertMarks();
     // Shift+стрелки: диапазон от якоря до index, с корректным сокращением назад.
     void ShiftMarkTo(int index);
+    // F2: редактирование имени прямо в списке (локальные файлы/папки).
+    bool BeginInlineRename();
+    bool IsInlineRenaming() const;
     // Режим: 0 — отметить, 1 — снять, 2 — инвертировать (Num + / - / *).
     size_t MarkByMask(const std::wstring& maskText, int mode);
     void MarkRange(int from, int to);
@@ -139,6 +142,9 @@ private:
 
     void ApplyEntries(const std::wstring& focus, int fallbackIndex);
     void ResetShiftMark();
+    void CommitInlineRename();
+    void CancelInlineRename();
+    static LRESULT CALLBACK RenameEditProc(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
     void ShowShellContextMenu(int screenX, int screenY);
     void CreateTree();
     void FillTreeRoot();
@@ -207,6 +213,9 @@ private:
     bool clickCtrl_ = false;       // Ctrl был зажат в момент клика
     int shiftAnchor_ = -1;         // начало диапазона, отмеченного Shift+стрелками
     std::set<int> shiftMarked_;    // индексы, отмеченные этим диапазоном
+    HWND renameEdit_ = nullptr;    // EDIT поверх имени при F2
+    int renameIndex_ = -1;
+    bool renameEnding_ = false;
 
     std::vector<HoverLevel> hover_;
     int hoverChars_ = -1;              // компонент пути под курсором
