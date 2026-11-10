@@ -114,16 +114,25 @@ std::wstring SettingsFilePath() {
     if (slash != std::wstring::npos) path.resize(slash + 1);
     cached = path + L"PosFiles.ini";
 
-    // Переезд со старых имён файла настроек: если нового ещё нет, а старый лежит
-    // рядом — копируем, чтобы позиция окна и вкладки не потерялись.
+    // Переезд со старых имён: при первом запуске PosFiles.ini переименовывается
+    // из старого файла (позиция окна и вкладки сохраняются). Старые имена после
+    // успешной миграции удаляем, чтобы не путались с новым.
+    const wchar_t* legacyNames[] = {L"POS Commander.ini", L"POSCommander2.ini"};
     if (GetFileAttributesW(cached.c_str()) == INVALID_FILE_ATTRIBUTES) {
-        const wchar_t* legacyNames[] = {L"POS Commander.ini", L"POSCommander2.ini"};
         for (const wchar_t* name : legacyNames) {
             const std::wstring legacy = path + name;
-            if (GetFileAttributesW(legacy.c_str()) != INVALID_FILE_ATTRIBUTES) {
-                CopyFileW(legacy.c_str(), cached.c_str(), FALSE);
+            if (GetFileAttributesW(legacy.c_str()) == INVALID_FILE_ATTRIBUTES) continue;
+            if (MoveFileW(legacy.c_str(), cached.c_str())) break;
+            if (CopyFileW(legacy.c_str(), cached.c_str(), FALSE)) {
+                DeleteFileW(legacy.c_str());
                 break;
             }
+        }
+    }
+    if (GetFileAttributesW(cached.c_str()) != INVALID_FILE_ATTRIBUTES) {
+        for (const wchar_t* name : legacyNames) {
+            const std::wstring legacy = path + name;
+            if (GetFileAttributesW(legacy.c_str()) != INVALID_FILE_ATTRIBUTES) DeleteFileW(legacy.c_str());
         }
     }
     return cached;
