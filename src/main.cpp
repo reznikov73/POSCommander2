@@ -8,6 +8,7 @@
 #include "settings.h"
 #include "search.h"
 #include "dupes.h"
+#include "rename.h"
 #include "archive.h"
 #include "sync.h"
 #include "ftp.h"
@@ -2487,7 +2488,6 @@ void App::BatchRename() {
                     L"FTP", MB_ICONINFORMATION | MB_OK);
         return;
     }
-
     if (panel->InArchive()) {
         MessageBoxW(hwnd_, L"Переименование внутри архива не поддерживается.", kTitle, MB_ICONINFORMATION);
         return;
@@ -2496,65 +2496,12 @@ void App::BatchRename() {
     std::vector<std::wstring> names = panel->SelectedNames();
     if (names.empty()) return;
 
-    std::wstring pattern = L"{name}_{n}";
-    if (!InputBox(hwnd_, L"Пакетное переименование",
-                  L"Шаблон: {name} — имя, {n} — номер (с 1):", pattern, false)) {
-        return;
+    const int renamed = BatchRenameDialog(hwnd_, panel->Path(), names);
+    if (renamed > 0) {
+        panel->ClearMarks();
+        panel->Reload();
+        UpdatePromptLabel();
     }
-    pattern = Trim(pattern);
-    if (pattern.empty()) return;
-
-    const int digits = (int)std::to_wstring(names.size()).size();
-    int done = 0;
-    int failed = 0;
-    std::wstring firstError;
-
-    for (size_t i = 0; i < names.size(); ++i) {
-        const std::wstring& oldName = names[i];
-
-        std::wstring base = oldName;
-        std::wstring ext;
-        const size_t dot = oldName.find_last_of(L'.');
-        if (dot != std::wstring::npos && dot > 0) {
-            base = oldName.substr(0, dot);
-            ext = oldName.substr(dot);
-        }
-
-        std::wstring number = std::to_wstring(i + 1);
-        while ((int)number.size() < digits) number.insert(number.begin(), L'0');
-
-        std::wstring newName = pattern;
-        auto replaceAll = [&](const std::wstring& what, const std::wstring& with) {
-            size_t pos = 0;
-            while ((pos = newName.find(what, pos)) != std::wstring::npos) {
-                newName.replace(pos, what.size(), with);
-                pos += with.size();
-            }
-        };
-        replaceAll(L"{name}", base);
-        replaceAll(L"{n}", number);
-
-        if (newName.empty() || newName == oldName) continue;
-        newName += ext;
-
-        DWORD err = 0;
-        const std::wstring from = JoinPath(panel->Path(), oldName);
-        const std::wstring to = JoinPath(panel->Path(), newName);
-        if (RenamePath(from, to, err)) {
-            ++done;
-        } else {
-            ++failed;
-            if (firstError.empty()) firstError = oldName + L": " + ErrText(err);
-        }
-    }
-
-    panel->ClearMarks();
-    panel->Reload();
-    UpdatePromptLabel();
-
-    std::wstring report = L"Переименовано: " + std::to_wstring(done);
-    if (failed) report += L"\nНе удалось: " + std::to_wstring(failed) + L"\n" + firstError;
-    MessageBoxW(hwnd_, report.c_str(), L"Пакетное переименование", MB_ICONINFORMATION);
 }
 
 void App::AddBookmark() {
