@@ -1,11 +1,15 @@
 #include "search.h"
 
 #include "ops.h"
+#include "settings.h"
 #include "util.h"
 
 #include <commctrl.h>
 #include <shellapi.h>
+#include <shlobj.h>
+#include <windowsx.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cstdio>
 #include <mutex>
@@ -22,14 +26,27 @@ const int kDirId = 11;
 const int kTextId = 12;
 const int kCaseId = 13;
 const int kSubdirsId = 14;
-const int kStartId = 20;
-const int kCancelId = 21;
+const int kHiddenId = 15;
+const int kStopId = 20;
+const int kBrowseId = 22;
+const int kOpenDirId = 23;
 const int kListId = 30;
 const int kStatusId = 31;
-const int kBrowseId = 22;
+const int kHintId = 32;
+const int kDriveIdBase = 200;      // 200..225 — кнопки корней
+const int kMenuOpenDir = 1;
+const int kMenuCopyPath = 2;
 
 const int kTimerId = 1;
 const size_t kMaxResults = 50000;
+
+struct Result {
+    std::wstring path;
+    std::wstring name;
+    std::wstring dir;
+    ULONGLONG size = 0;
+    FILETIME mtime{};
+};
 
 struct SearchState {
     HWND hwnd = nullptr;
@@ -38,9 +55,20 @@ struct SearchState {
     HWND text = nullptr;
     HWND caseCheck = nullptr;
     HWND subdirs = nullptr;
+    HWND hiddenCheck = nullptr;
     HWND list = nullptr;
     HWND status = nullptr;
+    HWND hint = nullptr;
+    HWND startBtn = nullptr;
+    HWND stopBtn = nullptr;
+    HWND browseBtn = nullptr;
+    HWND openDirBtn = nullptr;
+    HWND labelMask = nullptr;
+    HWND labelDir = nullptr;
+    HWND labelText = nullptr;
+    HWND labelRoots = nullptr;
     HFONT font = nullptr;
+    HFONT fontSmall = nullptr;
 
     std::thread worker;
     std::atomic<bool> stop{false};
@@ -48,11 +76,17 @@ struct SearchState {
     std::atomic<int> scanned{0};
 
     std::mutex mutex;
-    std::vector<std::wstring> pending;   // найдено, но ещё не показано
-    size_t shown = 0;
+    std::vector<Result> pending;   // найдено, но ещё не показано
+    std::vector<Result> rows;      // всё, что уже в списке
+    int sortCol = -1;
+    bool sortAsc = true;
 
     std::wstring chosen;
 };
+
+void FillResults(SearchState* st);
+void UpdateStatus(SearchState* st);
+void LayoutSearch(SearchState* st);
 
 // ---------- поиск ----------
 
@@ -100,7 +134,8 @@ bool FileContainsText(const std::wstring& path, const std::wstring& needle, bool
 }
 
 void WalkDirectory(SearchState* st, const std::wstring& dir, const std::vector<std::wstring>& masks,
-                   const std::wstring& needle, bool caseSensitive, bool recurse, int depth) {
+                   const std::wstring& needle, bool caseSensitive, bool recurse, bool includeHidden,
+                   int depth) {
     if (st->stop.load() || depth > 32) return;
 
     std::wstring pattern = JoinPath(dir, L"*");
@@ -115,15 +150,15 @@ void WalkDirectory(SearchState* st, const std::wstring& dir, const std::vector<s
         if (wcscmp(data.cFileName, L".") == 0 || wcscmp(data.cFileName, L"..") == 0) continue;
 
         const bool isDir = (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
-        std::wstring name = data.cFileName;
-        std::wstring full = JoinPath(dir, name);
+        const std::wstring name = data.cFileName;
+        const std::wstring full = JoinPath(dir, name);
 
         if (isDir) {
             if (recurse && !(data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)) subdirs.push_back(full);
             continue;
         }
-
         if (data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) continue;
+        if (!includeHidden && (data.dwFileAttributes & (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM))) continue;
 
         bool nameMatches = false;
         for (auto& m : masks) {
@@ -139,7 +174,15 @@ void WalkDirectory(SearchState* st, const std::wstring& dir, const std::vector<s
 
         {
             std::lock_guard<std::mutex> lock(st->mutex);
-            if (st->pending.size() + st->shown < kMaxResults) st->pending.push_back(full);
+            if (st->rows.size() + st->pending.size() < kMaxResults) {
+                Result r;
+                r.path = full;
+                r.name = name;
+                r.dir = dir;
+                r.size = ((ULONGLONG)data.nFileSizeHigh << 32) | data.nFileSizeLow;
+                r.mtime = data.ftLastWriteTime;
+                st->pending.push_back(std::move(r));
+            }
         }
     } while (FindNextFileW(find, &data));
 
@@ -147,8 +190,48 @@ void WalkDirectory(SearchState* st, const std::wstring& dir, const std::vector<s
 
     for (auto& sub : subdirs) {
         if (st->stop.load()) break;
-        WalkDirectory(st, sub, masks, needle, caseSensitive, recurse, depth + 1);
+        WalkDirectory(st, sub, masks, needle, caseSensitive, recurse, includeHidden, depth + 1);
     }
+}
+
+void SavePrefs(SearchState* st) {
+    const std::wstring ini = SettingsFilePath();
+    if (ini.empty()) return;
+
+    wchar_t buf[512]{};
+    GetWindowTextW(st->mask, buf, 512);
+    WritePrivateProfileStringW(L"Search", L"Mask", buf, ini.c_str());
+    GetWindowTextW(st->dir, buf, 512);
+    WritePrivateProfileStringW(L"Search", L"Dir", buf, ini.c_str());
+    GetWindowTextW(st->text, buf, 512);
+    WritePrivateProfileStringW(L"Search", L"Text", buf, ini.c_str());
+
+    wchar_t flags[8]{};
+    swprintf(flags, 8, L"%d%d%d",
+             SendMessageW(st->subdirs, BM_GETCHECK, 0, 0) == BST_CHECKED ? 1 : 0,
+             SendMessageW(st->caseCheck, BM_GETCHECK, 0, 0) == BST_CHECKED ? 1 : 0,
+             SendMessageW(st->hiddenCheck, BM_GETCHECK, 0, 0) == BST_CHECKED ? 1 : 0);
+    WritePrivateProfileStringW(L"Search", L"Flags", flags, ini.c_str());
+}
+
+void ReadPrefs(SearchState* st, const std::wstring& startDir) {
+    const std::wstring ini = SettingsFilePath();
+    wchar_t buf[512]{};
+
+    GetPrivateProfileStringW(L"Search", L"Mask", L"*", buf, 512, ini.c_str());
+    SetWindowTextW(st->mask, buf[0] ? buf : L"*");
+
+    GetPrivateProfileStringW(L"Search", L"Dir", L"", buf, 512, ini.c_str());
+    SetWindowTextW(st->dir, buf[0] ? buf : startDir.c_str());
+
+    GetPrivateProfileStringW(L"Search", L"Text", L"", buf, 512, ini.c_str());
+    SetWindowTextW(st->text, buf);
+
+    GetPrivateProfileStringW(L"Search", L"Flags", L"100", buf, 8, ini.c_str());
+    const std::wstring flags = buf;
+    SendMessageW(st->subdirs, BM_SETCHECK, flags.size() > 0 && flags[0] == L'1' ? BST_CHECKED : BST_UNCHECKED, 0);
+    SendMessageW(st->caseCheck, BM_SETCHECK, flags.size() > 1 && flags[1] == L'1' ? BST_CHECKED : BST_UNCHECKED, 0);
+    SendMessageW(st->hiddenCheck, BM_SETCHECK, flags.size() > 2 && flags[2] == L'1' ? BST_CHECKED : BST_UNCHECKED, 0);
 }
 
 void StartWorker(SearchState* st) {
@@ -162,35 +245,51 @@ void StartWorker(SearchState* st) {
     wchar_t dirBuf[MAX_PATH * 4]{};
     GetWindowTextW(st->dir, dirBuf, MAX_PATH * 4);
     std::wstring startDir = Trim(dirBuf);
-    if (startDir.empty()) return;
+    if (startDir.empty()) {
+        MessageBoxW(st->hwnd, L"Укажите, где искать: выберите корень или папку.", L"Поиск файлов",
+                    MB_ICONINFORMATION | MB_OK);
+        SetFocus(st->dir);
+        return;
+    }
+    if (GetFileAttributesW(startDir.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        MessageBoxW(st->hwnd, (L"Такой папки нет:\n" + startDir).c_str(), L"Поиск файлов",
+                    MB_ICONWARNING | MB_OK);
+        SetFocus(st->dir);
+        return;
+    }
 
     wchar_t textBuf[512]{};
     GetWindowTextW(st->text, textBuf, 512);
     std::wstring needle = Trim(textBuf);
     const bool caseSensitive = SendMessageW(st->caseCheck, BM_GETCHECK, 0, 0) == BST_CHECKED;
     const bool recurse = SendMessageW(st->subdirs, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    const bool hidden = SendMessageW(st->hiddenCheck, BM_GETCHECK, 0, 0) == BST_CHECKED;
     if (!caseSensitive && !needle.empty()) needle = Lower(needle);
 
     auto masks = SplitMasks(maskText);
     if (masks.empty()) masks.push_back(L"*");
 
+    SavePrefs(st);
+
     {
         std::lock_guard<std::mutex> lock(st->mutex);
         st->pending.clear();
-        st->shown = 0;
+        st->rows.clear();
     }
     ListView_DeleteAllItems(st->list);
+    st->sortCol = -1;
+    st->sortAsc = true;
+
     st->stop.store(false);
     st->scanned.store(0);
     st->running.store(true);
-    SetWindowTextW(st->status, L"Идёт поиск…");
-    EnableWindow(st->mask, FALSE);
-    EnableWindow(st->dir, FALSE);
-    EnableWindow(st->text, FALSE);
+    EnableWindow(st->startBtn, FALSE);
+    EnableWindow(st->stopBtn, TRUE);
+    UpdateStatus(st);
 
     if (st->worker.joinable()) st->worker.join();
-    st->worker = std::thread([st, startDir, masks, needle, caseSensitive, recurse]() {
-        WalkDirectory(st, startDir, masks, needle, caseSensitive, recurse, 0);
+    st->worker = std::thread([st, startDir, masks, needle, caseSensitive, recurse, hidden]() {
+        WalkDirectory(st, startDir, masks, needle, caseSensitive, recurse, hidden, 0);
         st->running.store(false);
         PostMessageW(st->hwnd, WM_APP + 202, 0, 0);
     });
@@ -198,84 +297,188 @@ void StartWorker(SearchState* st) {
 
 // ---------- интерфейс ----------
 
-void LayoutSearch(SearchState* st) {
-    RECT rc{};
-    GetClientRect(st->hwnd, &rc);
-    const int w = rc.right - rc.left;
-    const int pad = 8;
-    const int rowH = 24;
-    const int btnW = 120;
-
-    int y = pad;
-    MoveWindow(st->mask, 90, y, w - 90 - pad - btnW - pad, rowH, TRUE);
-    MoveWindow(GetDlgItem(st->hwnd, kStartId), w - pad - btnW, y, btnW, rowH, TRUE);
-    y += rowH + 6;
-
-    MoveWindow(st->dir, 90, y, w - 90 - pad - btnW - pad, rowH, TRUE);
-    MoveWindow(GetDlgItem(st->hwnd, kBrowseId), w - pad - btnW, y, btnW, rowH, TRUE);
-    y += rowH + 6;
-
-    MoveWindow(st->text, 90, y, w - 90 - pad, rowH, TRUE);
-    y += rowH + 6;
-
-    MoveWindow(st->caseCheck, 90, y, 220, 20, TRUE);
-    MoveWindow(st->subdirs, 320, y, 260, 20, TRUE);
-    y += 26;
-
-    MoveWindow(st->status, pad, y, w - 2 * pad, 20, TRUE);
-    y += 24;
-
-    const int listH = (rc.bottom - y - pad - rowH - 6 > 60) ? (rc.bottom - y - pad - rowH - 6) : 60;
-    MoveWindow(st->list, pad, y, w - 2 * pad, listH, TRUE);
-    y += listH + 6;
-
-    MoveWindow(GetDlgItem(st->hwnd, kCancelId), w - pad - btnW, y, btnW, rowH, TRUE);
-}
-
 HWND MakeChild(HWND parent, const wchar_t* cls, const wchar_t* text, DWORD style, int id) {
     return CreateWindowExW(0, cls, text, WS_CHILD | WS_VISIBLE | style, 0, 0, 10, 10, parent,
                            (HMENU)(INT_PTR)id, g_inst, nullptr);
 }
 
-void FillResults(SearchState* st) {
-    std::vector<std::wstring> batch;
+void LayoutSearch(SearchState* st) {
+    RECT rc{};
+    GetClientRect(st->hwnd, &rc);
+    const int w = rc.right - rc.left;
+    const int h = rc.bottom - rc.top;
+    const int pad = 10;
+    const int labelW = 88;
+    const int editX = pad + labelW + 8;
+    const int rowH = 24;
+    const int right = w - pad;
+    const int browseW = 128;
+
+    int y = 12;
+    MoveWindow(st->labelMask, pad, y + 4, labelW, 18, TRUE);
+    MoveWindow(st->mask, editX, y, right - editX, rowH, TRUE);
+    MoveWindow(st->hint, editX, y + rowH + 2, right - editX, 16, TRUE);
+
+    y += rowH + 20;
+    MoveWindow(st->labelDir, pad, y + 4, labelW, 18, TRUE);
+    MoveWindow(st->dir, editX, y, right - editX - browseW - 8, rowH, TRUE);
+    MoveWindow(st->browseBtn, right - browseW, y, browseW, rowH, TRUE);
+
+    y += rowH + 8;
+    MoveWindow(st->labelRoots, pad, y + 3, labelW, 18, TRUE);
+    int x = editX;
+    for (int i = 0; i < 26; ++i) {
+        HWND hb = GetDlgItem(st->hwnd, kDriveIdBase + i);
+        if (!hb) continue;
+        MoveWindow(hb, x, y, 38, 22, TRUE);
+        x += 42;
+    }
+
+    y += 30;
+    MoveWindow(st->labelText, pad, y + 4, labelW, 18, TRUE);
+    MoveWindow(st->text, editX, y, right - editX, rowH, TRUE);
+
+    y += rowH + 8;
+    MoveWindow(st->subdirs, editX, y, 150, 20, TRUE);
+    MoveWindow(st->caseCheck, editX + 160, y, 170, 20, TRUE);
+    MoveWindow(st->hiddenCheck, editX + 340, y, 190, 20, TRUE);
+
+    y += 28;
+    const int startW = 160;
+    const int stopW = 92;
+    MoveWindow(st->startBtn, right - startW, y, startW, rowH, TRUE);
+    MoveWindow(st->stopBtn, right - startW - 8 - stopW, y, stopW, rowH, TRUE);
+    MoveWindow(st->status, pad, y + 4, right - startW - 8 - stopW - pad - 12, 18, TRUE);
+
+    y += rowH + 8;
+    const int bottomY = h - pad - rowH;
+    const int listH = (bottomY - 8 - y) > 60 ? (bottomY - 8 - y) : 60;
+    MoveWindow(st->list, pad, y, w - 2 * pad, listH, TRUE);
+
+    MoveWindow(st->openDirBtn, pad, bottomY, 170, rowH, TRUE);
+    MoveWindow(GetDlgItem(st->hwnd, IDCANCEL), right - 140, bottomY, 140, rowH, TRUE);
+}
+
+void UpdateStatus(SearchState* st) {
+    size_t found = 0;
     {
         std::lock_guard<std::mutex> lock(st->mutex);
-        if (!st->pending.empty()) {
-            batch.swap(st->pending);
-        }
+        found = st->rows.size();
     }
-    for (auto& path : batch) {
-        std::wstring name = path.substr(path.find_last_of(L'\\') + 1);
-        std::wstring dir = path.substr(0, path.find_last_of(L'\\'));
-        LVITEMW item{};
-        item.mask = LVIF_TEXT;
-        item.iItem = (int)st->shown;
-        item.pszText = (LPWSTR)name.c_str();
-        int index = ListView_InsertItem(st->list, &item);
-        if (index >= 0) ListView_SetItemText(st->list, index, 1, (LPWSTR)dir.c_str());
-        st->shown++;
-    }
-    if (!batch.empty()) ListView_EnsureVisible(st->list, (int)st->shown - 1, FALSE);
-
     wchar_t buf[256]{};
-    swprintf(buf, 256, L"Найдено: %zu   ·   просмотрено файлов: %d%s", st->shown, st->scanned.load(),
+    swprintf(buf, 256, L"Найдено: %zu   ·   просмотрено файлов: %d%s", found, st->scanned.load(),
              st->running.load() ? L"   ·   идёт поиск" : L"");
     SetWindowTextW(st->status, buf);
 }
 
-void ChooseAndClose(SearchState* st) {
-    int sel = ListView_GetNextItem(st->list, -1, LVNI_SELECTED);
-    if (sel < 0) sel = 0;
-    if (ListView_GetItemCount(st->list) == 0) return;
+void FillResults(SearchState* st) {
+    std::vector<Result> batch;
+    {
+        std::lock_guard<std::mutex> lock(st->mutex);
+        if (!st->pending.empty()) batch.swap(st->pending);
+    }
+    if (batch.empty()) {
+        UpdateStatus(st);
+        return;
+    }
 
-    wchar_t name[512]{};
-    wchar_t dir[MAX_PATH * 4]{};
-    ListView_GetItemText(st->list, sel, 0, name, 512);
-    ListView_GetItemText(st->list, sel, 1, dir, MAX_PATH * 4);
-    st->chosen = std::wstring(dir) + L"\\" + name;
-    LogDebug(L"search choose row=" + std::to_wstring(sel) + L" path='" + st->chosen + L"'");
+    size_t base = 0;
+    {
+        std::lock_guard<std::mutex> lock(st->mutex);
+        base = st->rows.size();
+        st->rows.insert(st->rows.end(), batch.begin(), batch.end());
+    }
+
+    for (size_t i = 0; i < batch.size(); ++i) {
+        const Result& r = batch[i];
+        LVITEMW item{};
+        item.mask = LVIF_TEXT | LVIF_PARAM;
+        item.iItem = (int)(base + i);
+        item.iSubItem = 0;
+        item.pszText = (LPWSTR)r.name.c_str();
+        item.lParam = (LPARAM)(base + i);
+        const int index = ListView_InsertItem(st->list, &item);
+        if (index < 0) continue;
+        ListView_SetItemText(st->list, index, 1, (LPWSTR)r.dir.c_str());
+        std::wstring size = FmtSize(r.size);
+        ListView_SetItemText(st->list, index, 2, (LPWSTR)size.c_str());
+        std::wstring date = FmtDate(r.mtime);
+        ListView_SetItemText(st->list, index, 3, (LPWSTR)date.c_str());
+    }
+    UpdateStatus(st);
+}
+
+int CALLBACK CompareResults(LPARAM a, LPARAM b, LPARAM ctx) {
+    auto* st = reinterpret_cast<SearchState*>(ctx);
+    const size_t ia = (size_t)a;
+    const size_t ib = (size_t)b;
+    if (ia >= st->rows.size() || ib >= st->rows.size()) return 0;
+    const Result& x = st->rows[ia];
+    const Result& y = st->rows[ib];
+
+    int cmp = 0;
+    switch (st->sortCol) {
+        case 0: cmp = CompareNatural(x.name, y.name); break;
+        case 1: cmp = CompareNatural(x.dir, y.dir); break;
+        case 2: cmp = (x.size < y.size) ? -1 : (x.size > y.size ? 1 : 0); break;
+        case 3: cmp = CompareFileTime(&x.mtime, &y.mtime); break;
+        default: cmp = 0; break;
+    }
+    if (cmp == 0) cmp = CompareNatural(x.name, y.name);
+    return st->sortAsc ? cmp : -cmp;
+}
+
+Result* SelectedResult(SearchState* st) {
+    int sel = ListView_GetNextItem(st->list, -1, LVNI_SELECTED);
+    if (sel < 0 && ListView_GetItemCount(st->list) > 0) sel = 0;
+    if (sel < 0) return nullptr;
+
+    LVITEMW item{};
+    item.mask = LVIF_PARAM;
+    item.iItem = sel;
+    if (!ListView_GetItem(st->list, &item)) return nullptr;
+    const size_t index = (size_t)item.lParam;
+    if (index >= st->rows.size()) return nullptr;
+    return &st->rows[index];
+}
+
+void ChooseAndClose(SearchState* st, bool directoryOnly) {
+    Result* r = SelectedResult(st);
+    if (!r) return;
+    st->chosen = directoryOnly ? r->dir + L"\\" : r->path;
+    LogDebug(L"search choose '" + st->chosen + L"'");
     DestroyWindow(st->hwnd);
+}
+
+void CopySelectedPath(SearchState* st) {
+    Result* r = SelectedResult(st);
+    if (!r) return;
+    if (!OpenClipboard(st->hwnd)) return;
+    EmptyClipboard();
+    const size_t bytes = (r->path.size() + 1) * sizeof(wchar_t);
+    HGLOBAL mem = GlobalAlloc(GMEM_MOVEABLE, bytes);
+    if (mem) {
+        void* dst = GlobalLock(mem);
+        if (dst) {
+            memcpy(dst, r->path.c_str(), bytes);
+            GlobalUnlock(mem);
+            SetClipboardData(CF_UNICODETEXT, mem);
+        }
+    }
+    CloseClipboard();
+}
+
+void BrowseForFolder(SearchState* st) {
+    BROWSEINFOW bi{};
+    bi.hwndOwner = st->hwnd;
+    bi.lpszTitle = L"Где искать";
+    bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE | BIF_EDITBOX;
+
+    LPITEMIDLIST pidl = SHBrowseForFolderW(&bi);
+    if (!pidl) return;
+    wchar_t path[MAX_PATH * 4]{};
+    if (SHGetPathFromIDListW(pidl, path)) SetWindowTextW(st->dir, path);
+    CoTaskMemFree(pidl);
 }
 
 LRESULT CALLBACK SearchProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -291,16 +494,30 @@ LRESULT CALLBACK SearchProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             st->font = CreateFontW(-Scale(15, WindowDpi(hwnd)), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                                    DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
                                    DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+            st->fontSmall = CreateFontW(-Scale(12, WindowDpi(hwnd)), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                                        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                                        DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+
+            st->labelMask = MakeChild(hwnd, L"STATIC", L"Искать:", SS_LEFT, 0);
+            st->labelDir = MakeChild(hwnd, L"STATIC", L"Место:", SS_LEFT, 0);
+            st->labelRoots = MakeChild(hwnd, L"STATIC", L"Корни:", SS_LEFT, 0);
+            st->labelText = MakeChild(hwnd, L"STATIC", L"С текстом:", SS_LEFT, 0);
 
             st->mask = MakeChild(hwnd, L"EDIT", L"*", WS_BORDER | ES_AUTOHSCROLL | WS_TABSTOP, kMaskId);
-            st->dir = MakeChild(hwnd, L"EDIT", st ? L"" : L"", WS_BORDER | ES_AUTOHSCROLL | WS_TABSTOP, kDirId);
+            st->dir = MakeChild(hwnd, L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL | WS_TABSTOP, kDirId);
             st->text = MakeChild(hwnd, L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL | WS_TABSTOP, kTextId);
+            st->hint = MakeChild(hwnd, L"STATIC", L"Через ; можно задать несколько масок: *.txt;*.md",
+                                 SS_LEFT, kHintId);
+
+            st->browseBtn = MakeChild(hwnd, L"BUTTON", L"Обзор…", BS_PUSHBUTTON | WS_TABSTOP, kBrowseId);
             st->caseCheck = MakeChild(hwnd, L"BUTTON", L"Учитывать регистр", BS_AUTOCHECKBOX | WS_TABSTOP, kCaseId);
             st->subdirs = MakeChild(hwnd, L"BUTTON", L"В подкаталогах", BS_AUTOCHECKBOX | WS_TABSTOP, kSubdirsId);
-            SendMessageW(st->subdirs, BM_SETCHECK, BST_CHECKED, 0);
-            MakeChild(hwnd, L"BUTTON", L"Начать поиск", BS_PUSHBUTTON | WS_TABSTOP, kStartId);
-            MakeChild(hwnd, L"BUTTON", L"Отмена", BS_PUSHBUTTON | WS_TABSTOP, kCancelId);
-            MakeChild(hwnd, L"BUTTON", L"Диски…", BS_PUSHBUTTON | WS_TABSTOP, kBrowseId);
+            st->hiddenCheck = MakeChild(hwnd, L"BUTTON", L"Скрытые и системные", BS_AUTOCHECKBOX | WS_TABSTOP,
+                                        kHiddenId);
+            st->startBtn = MakeChild(hwnd, L"BUTTON", L"Начать поиск", BS_DEFPUSHBUTTON | WS_TABSTOP, IDOK);
+            st->stopBtn = MakeChild(hwnd, L"BUTTON", L"Стоп", BS_PUSHBUTTON | WS_TABSTOP, kStopId);
+            st->openDirBtn = MakeChild(hwnd, L"BUTTON", L"Открыть каталог", BS_PUSHBUTTON | WS_TABSTOP, kOpenDirId);
+            MakeChild(hwnd, L"BUTTON", L"Закрыть", BS_PUSHBUTTON | WS_TABSTOP, IDCANCEL);
 
             st->list = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
                                        WS_CHILD | WS_VISIBLE | WS_TABSTOP | LVS_REPORT | LVS_SHOWSELALWAYS,
@@ -309,20 +526,42 @@ LRESULT CALLBACK SearchProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
             LVCOLUMNW col{};
             col.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
-            col.cx = 260; col.iSubItem = 0; col.pszText = (LPWSTR)L"Файл";
+            col.cx = 300; col.iSubItem = 0; col.pszText = (LPWSTR)L"Файл";
             ListView_InsertColumn(st->list, 0, &col);
-            col.cx = 520; col.iSubItem = 1; col.pszText = (LPWSTR)L"Каталог";
+            col.cx = 380; col.iSubItem = 1; col.pszText = (LPWSTR)L"Каталог";
             ListView_InsertColumn(st->list, 1, &col);
+            col.cx = 90; col.iSubItem = 2; col.pszText = (LPWSTR)L"Размер";
+            ListView_InsertColumn(st->list, 2, &col);
+            col.cx = 130; col.iSubItem = 3; col.pszText = (LPWSTR)L"Дата";
+            ListView_InsertColumn(st->list, 3, &col);
 
             st->status = MakeChild(hwnd, L"STATIC", L"Готов к поиску", SS_LEFT, kStatusId);
 
-            for (HWND h : {st->mask, st->dir, st->text, st->caseCheck, st->subdirs, st->list, st->status,
-                           GetDlgItem(hwnd, kStartId), GetDlgItem(hwnd, kCancelId), GetDlgItem(hwnd, kBrowseId)}) {
-                if (h && st->font) SendMessageW(h, WM_SETFONT, (WPARAM)st->font, TRUE);
+            int slot = 0;
+            for (const auto& drive : GetDrives()) {
+                if (slot >= 26) break;
+                std::wstring label;
+                label.push_back(drive.letter);
+                label += L":";
+                CreateWindowExW(0, L"BUTTON", label.c_str(), WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                                0, 0, 10, 10, hwnd, (HMENU)(INT_PTR)(kDriveIdBase + slot), g_inst, nullptr);
+                ++slot;
             }
 
+            for (HWND h : {st->labelMask, st->labelDir, st->labelRoots, st->labelText, st->mask, st->dir,
+                           st->text, st->caseCheck, st->subdirs, st->hiddenCheck, st->list, st->status,
+                           st->startBtn, st->stopBtn, st->browseBtn, st->openDirBtn,
+                           GetDlgItem(hwnd, IDCANCEL)}) {
+                if (h && st->font) SendMessageW(h, WM_SETFONT, (WPARAM)st->font, TRUE);
+            }
+            if (st->hint && st->fontSmall) SendMessageW(st->hint, WM_SETFONT, (WPARAM)st->fontSmall, TRUE);
+            for (int i = 0; i < 26; ++i) {
+                if (HWND h = GetDlgItem(hwnd, kDriveIdBase + i))
+                    SendMessageW(h, WM_SETFONT, (WPARAM)st->fontSmall, TRUE);
+            }
+
+            EnableWindow(st->stopBtn, FALSE);
             SetTimer(hwnd, kTimerId, 120, nullptr);
-            SetFocus(st->mask);
             return 0;
         }
 
@@ -337,37 +576,48 @@ LRESULT CALLBACK SearchProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         case WM_APP + 202:
             if (st) {
                 FillResults(st);
-                EnableWindow(st->mask, TRUE);
-                EnableWindow(st->dir, TRUE);
-                EnableWindow(st->text, TRUE);
+                EnableWindow(st->startBtn, TRUE);
+                EnableWindow(st->stopBtn, FALSE);
+                UpdateStatus(st);
             }
             return 0;
 
         case WM_COMMAND: {
-            int id = LOWORD(wParam);
+            const int id = LOWORD(wParam);
             if (!st) break;
-            if (id == kStartId) {
-                StartWorker(st);
+
+            if (id == IDOK) {
+                if (GetFocus() == st->list) ChooseAndClose(st, false);
+                else StartWorker(st);
                 return 0;
             }
-            if (id == kCancelId) {
+            if (id == IDCANCEL) {
                 st->stop.store(true);
                 DestroyWindow(hwnd);
                 return 0;
             }
-            if (id == kBrowseId) {
-                // Быстрый выбор корня: первый доступный диск.
-                auto drives = GetDrives();
-                if (!drives.empty()) {
-                    std::wstring root;
-                    root.push_back(drives[0].letter);
-                    root += L":\\";
-                    SetWindowTextW(st->dir, root.c_str());
-                }
+            if (id == kStopId) {
+                st->stop.store(true);
+                EnableWindow(st->stopBtn, FALSE);
+                SetWindowTextW(st->status, L"Останавливаю поиск…");
                 return 0;
             }
-            if (id == kListId && HIWORD(wParam) == LBN_DBLCLK) {
-                ChooseAndClose(st);
+            if (id == kBrowseId) {
+                BrowseForFolder(st);
+                return 0;
+            }
+            if (id == kOpenDirId) {
+                ChooseAndClose(st, true);
+                return 0;
+            }
+            if (id >= kDriveIdBase && id < kDriveIdBase + 26) {
+                wchar_t root[8]{};
+                GetWindowTextW(reinterpret_cast<HWND>(lParam), root, 8);
+                if (root[0]) {
+                    std::wstring path = root;
+                    if (path.back() != L'\\') path += L'\\';
+                    SetWindowTextW(st->dir, path.c_str());
+                }
                 return 0;
             }
             break;
@@ -375,20 +625,53 @@ LRESULT CALLBACK SearchProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
         case WM_NOTIFY: {
             auto* info = reinterpret_cast<NMHDR*>(lParam);
-            if (st && info && info->idFrom == kListId) {
-                if (info->code == NM_DBLCLK || info->code == NM_RETURN) {
-                    ChooseAndClose(st);
+            if (!st || !info || info->idFrom != kListId) break;
+
+            if (info->code == NM_DBLCLK || info->code == NM_RETURN) {
+                ChooseAndClose(st, false);
+                return 0;
+            }
+            if (info->code == LVN_KEYDOWN) {
+                auto* key = reinterpret_cast<NMLVKEYDOWN*>(lParam);
+                if (key->wVKey == VK_RETURN) {
+                    ChooseAndClose(st, false);
                     return 0;
                 }
-                if (info->code == LVN_KEYDOWN) {
-                    auto* key = reinterpret_cast<NMLVKEYDOWN*>(lParam);
-                    if (key->wVKey == VK_RETURN) {
-                        ChooseAndClose(st);
-                        return 0;
-                    }
+            }
+            if (info->code == LVN_COLUMNCLICK) {
+                auto* click = reinterpret_cast<NMLISTVIEW*>(lParam);
+                if (st->sortCol == click->iSubItem) {
+                    st->sortAsc = !st->sortAsc;
+                } else {
+                    st->sortCol = click->iSubItem;
+                    st->sortAsc = true;
                 }
+                ListView_SortItems(st->list, CompareResults, (LPARAM)st);
+                return 0;
             }
             break;
+        }
+
+        case WM_CONTEXTMENU: {
+            if (!st || reinterpret_cast<HWND>(wParam) != st->list) break;
+            if (!SelectedResult(st)) return 0;
+
+            HMENU menu = CreatePopupMenu();
+            AppendMenuW(menu, MF_STRING, kMenuOpenDir, L"Открыть каталог");
+            AppendMenuW(menu, MF_STRING, kMenuCopyPath, L"Скопировать путь");
+            POINT pt{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+            if (pt.x == -1 && pt.y == -1) {
+                RECT rc{};
+                GetWindowRect(st->list, &rc);
+                pt.x = rc.left + 20;
+                pt.y = rc.top + 20;
+            }
+            const int cmd =
+                (int)TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd, nullptr);
+            DestroyMenu(menu);
+            if (cmd == kMenuOpenDir) ChooseAndClose(st, true);
+            if (cmd == kMenuCopyPath) CopySelectedPath(st);
+            return 0;
         }
 
         case WM_CLOSE:
@@ -399,10 +682,13 @@ LRESULT CALLBACK SearchProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         case WM_DESTROY:
             if (st) {
                 st->stop.store(true);
+                SavePrefs(st);
                 if (st->worker.joinable()) st->worker.join();
                 KillTimer(hwnd, kTimerId);
                 if (st->font) DeleteObject(st->font);
+                if (st->fontSmall) DeleteObject(st->fontSmall);
                 st->font = nullptr;
+                st->fontSmall = nullptr;
                 SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
             }
             return 0;
@@ -435,28 +721,15 @@ std::wstring SearchDialog(HWND owner, const std::wstring& startDir) {
 
     RECT ownerRect{0, 0, 900, 600};
     if (owner && IsWindow(owner)) GetWindowRect(owner, &ownerRect);
-    int width = 900;
-    int height = 620;
+    const int width = 940;
+    const int height = 640;
 
     HWND hwnd = CreateWindowExW(WS_EX_APPWINDOW, kSearchClass, L"Поиск файлов",
-                                WS_OVERLAPPEDWINDOW | WS_VISIBLE, ownerRect.left + 60, ownerRect.top + 60,
+                                WS_OVERLAPPEDWINDOW | WS_VISIBLE, ownerRect.left + 60, ownerRect.top + 40,
                                 width, height, nullptr, nullptr, g_inst, &state);
     if (!hwnd) return {};
 
-    // Заголовки полей и начальные значения — после создания, чтобы не усложнять шаблон.
-    SetWindowTextW(state.mask, L"*");
-    SetWindowTextW(state.dir, startDir.c_str());
-
-    HWND labelMask = CreateWindowExW(0, L"STATIC", L"Искать файлы:", WS_CHILD | WS_VISIBLE | SS_LEFT,
-                                     8, 10, 78, 20, hwnd, nullptr, g_inst, nullptr);
-    HWND labelDir = CreateWindowExW(0, L"STATIC", L"Место поиска:", WS_CHILD | WS_VISIBLE | SS_LEFT,
-                                    8, 40, 78, 20, hwnd, nullptr, g_inst, nullptr);
-    HWND labelText = CreateWindowExW(0, L"STATIC", L"С текстом:", WS_CHILD | WS_VISIBLE | SS_LEFT,
-                                     8, 70, 78, 20, hwnd, nullptr, g_inst, nullptr);
-    for (HWND h : {labelMask, labelDir, labelText}) {
-        if (state.font) SendMessageW(h, WM_SETFONT, (WPARAM)state.font, TRUE);
-    }
-
+    ReadPrefs(&state, startDir);
     LayoutSearch(&state);
 
     bool ownerWasEnabled = owner && IsWindow(owner) && IsWindowEnabled(owner);
@@ -466,8 +739,10 @@ std::wstring SearchDialog(HWND owner, const std::wstring& startDir) {
 
     MSG msg{};
     while (IsWindow(hwnd) && GetMessageW(&msg, nullptr, 0, 0) > 0) {
-        TranslateMessage(&msg);
-        DispatchMessageW(&msg);
+        if (!IsDialogMessageW(hwnd, &msg)) {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
     }
 
     if (ownerWasEnabled && IsWindow(owner)) {
