@@ -16,8 +16,9 @@ cmake --build --preset mingw-release
 .\build\PosFiles.exe --selftest     # 58 проверок, сейчас 0 провалов
 ```
 
-- Настройки: `PosFiles.ini` рядом с exe (при первом запуске копируется из
-  старого `POS Commander.ini` или `POSCommander2.ini`, если тот лежит рядом).
+- Настройки: `PosFiles.ini` рядом с exe (при первом запуске переносится из
+  старого `POS Commander.ini` или `POSCommander2.ini`, если тот лежит рядом;
+  после успешной миграции старые файлы удаляются).
 
 ## Что сделано (последние вехи)
 
