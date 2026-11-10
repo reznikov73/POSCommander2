@@ -689,6 +689,11 @@ void Panel::ActivateTab(int index) {
     if (index < 0 || index >= (int)tabs_.size()) return;
     tab_ = index;
     Navigate(tabs_[tab_]);
+    // Кнопки вкладок рисуем сами: без явного сброса прежняя активная остаётся
+    // белой, и «активными» выглядят все, по которым уже кликали.
+    for (HWND btn : tabButtons_) {
+        if (btn) InvalidateRect(btn, nullptr, TRUE);
+    }
 }
 
 void Panel::NextTab() {
