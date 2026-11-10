@@ -668,6 +668,44 @@ void ShowMarkdown(HWND edit, const std::wstring& text,
     SendMessageW(edit, EM_STREAMIN, SF_RTF, (LPARAM)&es);
 }
 
+// Снимаем подсветку со всего текста: фон возвращается к автоматическому.
+void ClearHighlights(HWND edit) {
+    CHARRANGE all{0, -1};
+    SendMessageW(edit, EM_EXSETSEL, 0, (LPARAM)&all);
+    CHARFORMAT2W cf{};
+    cf.cbSize = sizeof(cf);
+    cf.dwMask = CFM_BACKCOLOR;
+    cf.dwEffects = CFE_AUTOBACKCOLOR;
+    SendMessageW(edit, EM_SETCHARFORMAT, SCF_SELECTION, (LPARAM)&cf);
+}
+
+// Красим все вхождения строки поиска, а не только текущее.
+void HighlightAll(HWND edit, const std::wstring& needle) {
+    ClearHighlights(edit);
+    if (needle.empty()) return;
+
+    CHARFORMAT2W cf{};
+    cf.cbSize = sizeof(cf);
+    cf.dwMask = CFM_BACKCOLOR;
+    cf.crBackColor = RGB(255, 235, 130);
+    cf.dwEffects = 0;
+
+    FINDTEXTEXW ft{};
+    ft.lpstrText = (LPWSTR)needle.c_str();
+    ft.chrg.cpMin = 0;
+    ft.chrg.cpMax = -1;
+
+    int guard = 0;
+    while (SendMessageW(edit, EM_FINDTEXTEXW, FR_DOWN, (LPARAM)&ft) >= 0) {
+        SendMessageW(edit, EM_EXSETSEL, 0, (LPARAM)&ft.chrgText);
+        SendMessageW(edit, EM_SETCHARFORMAT, SCF_SELECTION, (LPARAM)&cf);
+        if (ft.chrgText.cpMax <= ft.chrg.cpMin) break;
+        ft.chrg.cpMin = ft.chrgText.cpMax;
+        ft.chrg.cpMax = -1;
+        if (++guard > 5000) break;
+    }
+}
+
 std::wstring RangeText(HWND edit, CHARRANGE chrg) {
     const int len = chrg.cpMax - chrg.cpMin;
     if (len <= 0 || len > 4096) return {};
@@ -719,7 +757,9 @@ void FindInLister(HWND parent, ListerState* st, bool ask, bool backward = false)
         MessageBeep(MB_ICONINFORMATION);
         return;
     }
-    SendMessageW(st->edit, EM_EXSETSEL, 0, (LPARAM)&ft.chrgText);
+    const CHARRANGE hit = ft.chrgText;
+    HighlightAll(st->edit, needle);
+    SendMessageW(st->edit, EM_EXSETSEL, 0, (LPARAM)&hit);
     SendMessageW(st->edit, EM_SCROLLCARET, 0, 0);
 }
 
