@@ -5,6 +5,8 @@
 #include <cstdio>
 
 #include <commctrl.h>
+#include <richedit.h>
+#include <cstring>
 
 namespace {
 
@@ -219,6 +221,8 @@ struct ListerState {
     std::vector<BYTE> raw;
     UINT codepage = CP_ACP;      // текущая кодировка
     bool hex = false;            // режим дампа
+    bool markdown = false;       // разметка MD вместо сырого текста
+    bool rich = false;           // удалось создать RichEdit
     HFONT font = nullptr;
     HWND edit = nullptr;
     HWND hint = nullptr;
@@ -302,28 +306,289 @@ std::wstring HexDump(const std::vector<BYTE>& raw, size_t limit) {
     return out;
 }
 
+// Win32 EDIT и RichEdit понимают только CRLF: одиночные LF/CR склеивают строки
+// (именно поэтому README с LF раньше показывался одной длинной строкой).
+std::wstring NormalizeEol(const std::wstring& text) {
+    std::wstring out;
+    out.reserve(text.size() + text.size() / 16);
+    for (size_t i = 0; i < text.size(); ++i) {
+        const wchar_t c = text[i];
+        if (c == L'\r') {
+            out += L"\r\n";
+            if (i + 1 < text.size() && text[i + 1] == L'\n') ++i;
+        } else if (c == L'\n') {
+            out += L"\r\n";
+        } else {
+            out += c;
+        }
+    }
+    return out;
+}
+
+std::string RtfEscape(const std::wstring& s) {
+    std::string out;
+    for (wchar_t c : s) {
+        switch (c) {
+            case L'\\': out += "\\\\"; break;
+            case L'{': out += "\\{"; break;
+            case L'}': out += "\\}"; break;
+            case L'\t': out += "\\tab "; break;
+            case L'\r': break;
+            case L'\n': out += "\\line "; break;
+            default:
+                if (c < 128) {
+                    out.push_back((char)c);
+                } else {
+                    char buf[16]{};
+                    snprintf(buf, sizeof(buf), "\\u%d?", (int)(short)c);
+                    out += buf;
+                }
+                break;
+        }
+    }
+    return out;
+}
+
+// Инлайновая разметка: `код`, **жирный**, *курсив*, ~~зачёркнутый~~, [текст](url).
+std::string InlineRtf(const std::wstring& s) {
+    std::string out;
+    size_t i = 0;
+    while (i < s.size()) {
+        if (s[i] == L'`') {
+            const size_t end = s.find(L'`', i + 1);
+            if (end != std::wstring::npos) {
+                out += "\\f1\\highlight4 ";
+                out += RtfEscape(s.substr(i + 1, end - i - 1));
+                out += "\\highlight0\\f0 ";
+                i = end + 1;
+                continue;
+            }
+        }
+        if (i + 1 < s.size() && s[i] == L'*' && s[i + 1] == L'*') {
+            const size_t end = s.find(L"**", i + 2);
+            if (end != std::wstring::npos) {
+                out += "\\b ";
+                out += InlineRtf(s.substr(i + 2, end - i - 2));
+                out += "\\b0 ";
+                i = end + 2;
+                continue;
+            }
+        }
+        if (i + 1 < s.size() && s[i] == L'~' && s[i + 1] == L'~') {
+            const size_t end = s.find(L"~~", i + 2);
+            if (end != std::wstring::npos) {
+                out += "\\strike ";
+                out += InlineRtf(s.substr(i + 2, end - i - 2));
+                out += "\\strike0 ";
+                i = end + 2;
+                continue;
+            }
+        }
+        if (s[i] == L'*') {
+            const size_t end = s.find(L'*', i + 1);
+            if (end != std::wstring::npos && end > i + 1) {
+                out += "\\i ";
+                out += InlineRtf(s.substr(i + 1, end - i - 1));
+                out += "\\i0 ";
+                i = end + 1;
+                continue;
+            }
+        }
+        if (s[i] == L'[') {
+            const size_t close = s.find(L']', i + 1);
+            if (close != std::wstring::npos && close + 1 < s.size() && s[close + 1] == L'(') {
+                const size_t paren = s.find(L')', close + 2);
+                if (paren != std::wstring::npos) {
+                    out += "\\cf2\\ul ";
+                    out += RtfEscape(s.substr(i + 1, close - i - 1));
+                    out += "\\ulnone\\cf1 ";
+                    i = paren + 1;
+                    continue;
+                }
+            }
+        }
+        out += RtfEscape(std::wstring(1, s[i]));
+        ++i;
+    }
+    return out;
+}
+
+std::string MarkdownToRtf(const std::wstring& md) {
+    std::string out;
+    out += "{\\rtf1\\ansi\\ansicpg1251\\deff0";
+    out += "{\\fonttbl{\\f0\\fswiss\\fcharset204 Segoe UI;}"
+           "{\\f1\\fmodern\\fcharset204 Consolas;}"
+           "{\\f2\\fswiss\\fcharset204 Segoe UI Semibold;}}";
+    out += "{\\colortbl;\\red0\\green0\\blue0;\\red30\\green95\\blue168;"
+           "\\red120\\green126\\blue134;\\red243\\green243\\blue243;"
+           "\\red42\\green122\\blue42;}";
+    out += "\\viewkind4\\uc1\\pard\\f0\\fs20\\sl264\\slmult1 ";
+
+    bool fence = false;
+    size_t pos = 0;
+    while (pos <= md.size()) {
+        size_t end = md.find(L"\r\n", pos);
+        std::wstring line = md.substr(pos, end == std::wstring::npos ? std::wstring::npos : end - pos);
+        const bool last = (end == std::wstring::npos);
+        pos = last ? md.size() + 1 : end + 2;
+
+        while (!line.empty() && (line.back() == L' ' || line.back() == L'\t')) line.pop_back();
+
+        if (line.rfind(L"```", 0) == 0) {
+            fence = !fence;
+            if (fence) out += "\\pard\\f1\\fs18\\highlight4\\li0\\ri0 ";
+            else out += "\\pard\\highlight0\\f0\\fs20 ";
+            if (last) break;
+            continue;
+        }
+        if (fence) {
+            out += "\\pard\\f1\\fs18\\highlight4\\li0\\ri0 ";
+            out += RtfEscape(line);
+            out += "\\par ";
+            if (last) break;
+            continue;
+        }
+
+        // Заголовок
+        size_t hashes = 0;
+        while (hashes < line.size() && line[hashes] == L'#') ++hashes;
+        if (hashes >= 1 && hashes <= 6 && hashes < line.size() && line[hashes] == L' ') {
+            int fs = 20;
+            switch (hashes) {
+                case 1: fs = 36; break;
+                case 2: fs = 30; break;
+                case 3: fs = 26; break;
+                default: fs = 22; break;
+            }
+            char head[96]{};
+            snprintf(head, sizeof(head), "\\pard\\sb240\\sa120\\f2\\b\\fs%d ", fs);
+            out += head;
+            out += InlineRtf(line.substr(hashes + 1));
+            out += "\\b0\\f0\\fs20\\sb0\\sa0\\par ";
+            if (last) break;
+            continue;
+        }
+
+        // Горизонтальная линия
+        const bool hr = line.size() >= 3 && line.find_first_not_of(line[0]) == std::wstring::npos &&
+                        (line[0] == L'-' || line[0] == L'*' || line[0] == L'_');
+        if (hr) {
+            out += "\\pard\\brdrb\\brdrs\\brdrw10\\brdrcf3\\par ";
+            if (last) break;
+            continue;
+        }
+
+        // Списки
+        size_t indent = 0;
+        while (indent < line.size() && line[indent] == L' ') ++indent;
+        const std::wstring rest = line.substr(indent);
+        const bool bullet = rest.size() > 1 && (rest[0] == L'-' || rest[0] == L'*' || rest[0] == L'+') &&
+                            rest[1] == L' ';
+        size_t digits = 0;
+        while (digits < rest.size() && iswdigit(rest[digits])) ++digits;
+        const bool ordered = digits > 0 && digits + 1 < rest.size() && rest[digits] == L'.' && rest[digits + 1] == L' ';
+        if (bullet || ordered) {
+            const int left = 360 + (int)(indent / 2) * 240;
+            char head[96]{};
+            snprintf(head, sizeof(head), "\\pard\\li%d\\fi-180 ", left);
+            out += head;
+            if (bullet) {
+                out += "\\u8226?  ";
+                out += InlineRtf(rest.substr(2));
+            } else {
+                out += InlineRtf(rest.substr(0, digits));
+                out += ".  ";
+                out += InlineRtf(rest.substr(digits + 2));
+            }
+            out += "\\par ";
+            if (last) break;
+            continue;
+        }
+
+        // Цитата
+        if (!rest.empty() && rest[0] == L'>') {
+            out += "\\pard\\li360\\cf3 ";
+            out += InlineRtf(rest.substr(1));
+            out += "\\cf1\\li0\\par ";
+            if (last) break;
+            continue;
+        }
+
+        // Таблица: держим моноширинным, чтобы столбцы не разъезжались
+        if (rest.find(L'|') != std::wstring::npos) {
+            out += "\\pard\\f1\\fs18 ";
+            out += RtfEscape(rest);
+            out += "\\f0\\fs20\\par ";
+            if (last) break;
+            continue;
+        }
+
+        if (rest.empty()) {
+            out += "\\pard\\par ";
+            if (last) break;
+            continue;
+        }
+
+        out += "\\pard ";
+        out += InlineRtf(rest);
+        out += "\\par ";
+        if (last) break;
+    }
+
+    out += "}";
+    return out;
+}
+
+struct RtfInput {
+    const std::string* text;
+    size_t pos;
+};
+
+DWORD CALLBACK RtfStreamIn(DWORD_PTR cookie, LPBYTE buff, LONG cb, LONG* pcb) {
+    auto* in = reinterpret_cast<RtfInput*>(cookie);
+    const size_t left = in->text->size() - in->pos;
+    const size_t n = left < (size_t)cb ? left : (size_t)cb;
+    if (n) memcpy(buff, in->text->data() + in->pos, n);
+    in->pos += n;
+    *pcb = (LONG)n;
+    return 0;
+}
+
+void ShowMarkdown(HWND edit, const std::wstring& text) {
+    const std::string rtf = MarkdownToRtf(text);
+    RtfInput in{&rtf, 0};
+    EDITSTREAM es{};
+    es.dwCookie = (DWORD_PTR)&in;
+    es.pfnCallback = RtfStreamIn;
+    SendMessageW(edit, EM_STREAMIN, SF_RTF, (LPARAM)&es);
+}
+
 void RefreshLister(HWND hwnd, ListerState* st) {
     if (!st || !st->edit) return;
 
     const size_t kTextLimit = 4u * 1024 * 1024;
-    std::wstring body;
     if (st->hex) {
-        body = HexDump(st->raw, 64u * 1024);
+        const std::wstring dump = HexDump(st->raw, 64u * 1024);
+        SetWindowTextW(st->edit, dump.c_str());
     } else {
-        body = DecodeBytes(st->raw, st->codepage);
+        std::wstring body = NormalizeEol(DecodeBytes(st->raw, st->codepage));
         if (body.size() > kTextLimit) {
             body.resize(kTextLimit);
             body += L"\r\n… файл обрезан";
         }
+        if (st->markdown && st->rich) {
+            ShowMarkdown(st->edit, body);
+        } else {
+            SetWindowTextW(st->edit, body.c_str());
+        }
     }
-
-    SetWindowTextW(st->edit, body.c_str());
     SendMessageW(st->edit, EM_SETSEL, 0, 0);
     SendMessageW(st->edit, EM_SCROLLCARET, 0, 0);
 
     std::wstring name = st->path.substr(st->path.find_last_of(L'\\') + 1);
     std::wstring mode;
     if (st->hex) mode = L"hex";
+    else if (st->markdown && st->rich) mode = L"markdown";
     else if (st->codepage == CP_UTF8) mode = L"UTF-8";
     else if (st->codepage == 1200) mode = L"UTF-16";
     else if (st->codepage == CP_OEMCP) mode = L"OEM";
@@ -331,7 +596,8 @@ void RefreshLister(HWND hwnd, ListerState* st) {
 
     SetWindowTextW(hwnd, (L"Просмотр — " + name + L" · " + mode).c_str());
     if (st->hint) {
-        SetWindowTextW(st->hint, L"1 ANSI · 2 OEM · 3 UTF-8 · 4 UTF-16 · H hex · T текст · ESC закрыть");
+        SetWindowTextW(st->hint,
+                        L"1 ANSI · 2 OEM · 3 UTF-8 · 4 UTF-16 · T текст · M markdown · H hex · ESC закрыть");
     }
 }
 
@@ -354,8 +620,13 @@ LRESULT CALLBACK ListerEditProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 case '2': cp = CP_OEMCP; break;
                 case '3': cp = CP_UTF8; break;
                 case '4': cp = 1200; break;
-                case 'H': st->hex = !st->hex; RefreshLister(parent, st); return 0;
-                case 'T': st->hex = false; RefreshLister(parent, st); return 0;
+                case 'H': st->hex = true; RefreshLister(parent, st); return 0;
+                case 'T': st->hex = false; st->markdown = false; RefreshLister(parent, st); return 0;
+                case 'M':
+                    st->hex = false;
+                    st->markdown = !st->markdown;
+                    RefreshLister(parent, st);
+                    return 0;
                 default: switchCp = false; break;
             }
             if (switchCp) {
@@ -377,10 +648,18 @@ LRESULT CALLBACK ListerProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             st = reinterpret_cast<ListerState*>(cs->lpCreateParams);
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)st);
 
-            st->edit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
-                                       WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_HSCROLL | ES_MULTILINE |
-                                           ES_READONLY | ES_AUTOVSCROLL | ES_AUTOHSCROLL,
+            // RichEdit 4.1: нужен и для markdown, и для нормального переноса строк.
+            st->edit = CreateWindowExW(WS_EX_CLIENTEDGE, MSFTEDIT_CLASS, L"",
+                                       WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_READONLY |
+                                           ES_AUTOVSCROLL,
                                        0, 0, 10, 10, hwnd, (HMENU)1, g_inst, nullptr);
+            st->rich = st->edit != nullptr;
+            if (!st->edit) {
+                st->edit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+                                           WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_READONLY |
+                                               ES_AUTOVSCROLL,
+                                           0, 0, 10, 10, hwnd, (HMENU)1, g_inst, nullptr);
+            }
             st->hint = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_LEFT | SS_CENTERIMAGE,
                                        0, 0, 10, 10, hwnd, (HMENU)2, g_inst, nullptr);
 
@@ -578,11 +857,22 @@ void ShowLister(HWND owner, const std::wstring& path) {
         registered = true;
     }
 
+    static bool richLoaded = false;
+    if (!richLoaded) {
+        LoadLibraryW(L"msftedit.dll");
+        richLoaded = true;
+    }
+
     auto* st = new ListerState();
     st->path = path;
     st->raw = std::move(raw);
     st->codepage = DetectCodepage(st->raw);
     st->hex = LooksBinary(st->raw);
+
+    std::wstring ext = path.substr(path.find_last_of(L'.') == std::wstring::npos ? path.size()
+                                                                                 : path.find_last_of(L'.'));
+    ext = Lower(ext);
+    st->markdown = !st->hex && (ext == L".md" || ext == L".markdown" || ext == L".mdown");
 
     std::wstring name = path.substr(path.find_last_of(L'\\') + 1);
     std::wstring title = L"Просмотр — " + name;
