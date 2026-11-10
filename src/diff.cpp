@@ -26,6 +26,8 @@ const size_t kMaxDiffCells = 4u * 1000u * 1000u;
 struct Line {
     std::wstring text;
     int kind = 0;          // 0 равно, 1 удалено (слева), 2 добавлено (справа)
+    int hlStart = -1;      // границы отличающегося фрагмента внутри строки
+    int hlEnd = -1;
 };
 
 struct DiffState {
@@ -211,8 +213,37 @@ bool BuildDiff(const std::vector<std::wstring>& a, const std::vector<std::wstrin
         for (size_t k = 0; k < rows; ++k) {
             const bool hasDel = k < dels.size();
             const bool hasIns = k < ins.size();
-            mergedLeft.push_back({hasDel ? dels[k] : L"", hasDel ? 1 : 0});
-            mergedRight.push_back({hasIns ? ins[k] : L"", hasIns ? 2 : 0});
+
+            Line l;
+            l.text = hasDel ? dels[k] : L"";
+            l.kind = hasDel ? 1 : 0;
+            Line r;
+            r.text = hasIns ? ins[k] : L"";
+            r.kind = hasIns ? 2 : 0;
+
+            if (hasDel && hasIns) {
+                // Общий префикс и суффикс оставляем без акцента: подсвечиваем
+                // только реально отличающийся кусок, иначе разница в символ
+                // красит всю строку.
+                const std::wstring& a = l.text;
+                const std::wstring& b = r.text;
+                size_t head = 0;
+                while (head < a.size() && head < b.size() && a[head] == b[head]) ++head;
+                size_t tail = 0;
+                while (tail < a.size() - head && tail < b.size() - head &&
+                       a[a.size() - 1 - tail] == b[b.size() - 1 - tail]) {
+                    ++tail;
+                }
+                l.hlStart = (int)head;
+                l.hlEnd = (int)(a.size() - tail);
+                r.hlStart = (int)head;
+                r.hlEnd = (int)(b.size() - tail);
+                if (l.hlEnd <= l.hlStart) { l.hlStart = -1; l.hlEnd = -1; }
+                if (r.hlEnd <= r.hlStart) { r.hlStart = -1; r.hlEnd = -1; }
+            }
+
+            mergedLeft.push_back(std::move(l));
+            mergedRight.push_back(std::move(r));
         }
     }
 
@@ -241,13 +272,26 @@ void PaintSide(HWND edit, const std::vector<Line>& lines) {
     cf.dwMask = CFM_BACKCOLOR;
 
     for (size_t i = 0; i < lines.size(); ++i) {
-        if (lines[i].kind == 0) continue;
-        cf.crBackColor = lines[i].kind == 1 ? RGB(255, 214, 214) : RGB(214, 242, 214);
-        SendMessageW(edit, EM_EXSETSEL, 0, (LPARAM)&ranges[i]);
+        const Line& line = lines[i];
+        if (line.kind == 0) continue;
+
+        const CHARRANGE full = ranges[i];
+        cf.crBackColor = line.kind == 1 ? RGB(255, 236, 236) : RGB(236, 248, 236);
+        SendMessageW(edit, EM_EXSETSEL, 0, (LPARAM)&full);
         SendMessageW(edit, EM_SETCHARFORMAT, SCF_SELECTION, (LPARAM)&cf);
+
+        if (line.hlStart >= 0 && line.hlEnd > line.hlStart) {
+            CHARRANGE part{full.cpMin + line.hlStart, full.cpMin + line.hlEnd};
+            cf.crBackColor = line.kind == 1 ? RGB(255, 178, 178) : RGB(178, 228, 178);
+            SendMessageW(edit, EM_EXSETSEL, 0, (LPARAM)&part);
+            SendMessageW(edit, EM_SETCHARFORMAT, SCF_SELECTION, (LPARAM)&cf);
+        }
     }
 
-    SendMessageW(edit, EM_SETSEL, 0, 0);
+    // Снимаем выделение: иначе неактивное выделение рисуется серым и его
+    // принимают за подсветку.
+    CHARRANGE none{0, 0};
+    SendMessageW(edit, EM_EXSETSEL, 0, (LPARAM)&none);
     SendMessageW(edit, EM_SCROLLCARET, 0, 0);
 }
 
