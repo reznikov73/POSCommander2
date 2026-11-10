@@ -1,5 +1,7 @@
 #include "search.h"
 
+#include "dialogs.h"
+
 #include "ops.h"
 #include "settings.h"
 #include "util.h"
@@ -27,6 +29,11 @@ const int kTextId = 12;
 const int kCaseId = 13;
 const int kSubdirsId = 14;
 const int kHiddenId = 15;
+const int kMinSizeId = 16;      // фильтр: размер от, Кб
+const int kMaxSizeId = 17;      // размер до, Кб
+const int kDateFromId = 18;     // дата с, ДД.ММ.ГГГГ
+const int kDateToId = 19;       // дата по
+const int kTemplatesId = 24;    // кнопка «Шаблоны»
 const int kStopId = 20;
 const int kBrowseId = 22;
 const int kOpenDirId = 23;
@@ -63,6 +70,27 @@ struct SearchState {
     HWND stopBtn = nullptr;
     HWND browseBtn = nullptr;
     HWND openDirBtn = nullptr;
+    HWND templatesBtn = nullptr;
+    HWND minSize = nullptr;
+    HWND maxSize = nullptr;
+    HWND dateFrom = nullptr;
+    HWND dateTo = nullptr;
+    HWND labelFilter = nullptr;
+    HWND labelSize = nullptr;
+    HWND labelKb = nullptr;
+    HWND labelDate = nullptr;
+    HWND dash1 = nullptr;
+    HWND dash2 = nullptr;
+
+    // Разобранные фильтры: их читает поток поиска.
+    bool useMinSize = false;
+    bool useMaxSize = false;
+    ULONGLONG minSizeBytes = 0;
+    ULONGLONG maxSizeBytes = 0;
+    bool useDateFrom = false;
+    bool useDateTo = false;
+    FILETIME dateFromFt{};
+    FILETIME dateToFt{};
     HWND labelMask = nullptr;
     HWND labelDir = nullptr;
     HWND labelText = nullptr;
@@ -160,6 +188,13 @@ void WalkDirectory(SearchState* st, const std::wstring& dir, const std::vector<s
         if (data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) continue;
         if (!includeHidden && (data.dwFileAttributes & (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM))) continue;
 
+        // Фильтры по размеру и дате: до чтения содержимого, чтобы не тратить диск.
+        const ULONGLONG fsize = ((ULONGLONG)data.nFileSizeHigh << 32) | data.nFileSizeLow;
+        if (st->useMinSize && fsize < st->minSizeBytes) continue;
+        if (st->useMaxSize && fsize > st->maxSizeBytes) continue;
+        if (st->useDateFrom && CompareFileTime(&data.ftLastWriteTime, &st->dateFromFt) < 0) continue;
+        if (st->useDateTo && CompareFileTime(&data.ftLastWriteTime, &st->dateToFt) > 0) continue;
+
         bool nameMatches = false;
         for (auto& m : masks) {
             if (MatchMask(Lower(name), m)) {
@@ -194,6 +229,172 @@ void WalkDirectory(SearchState* st, const std::wstring& dir, const std::vector<s
     }
 }
 
+// «512» → 512 Кб. Пустая строка — фильтра нет.
+bool ParseSizeKb(const std::wstring& text, ULONGLONG& bytes) {
+    const std::wstring t = Trim(text);
+    if (t.empty()) return false;
+    wchar_t* end = nullptr;
+    const unsigned long long v = wcstoull(t.c_str(), &end, 10);
+    if (end == t.c_str()) return false;
+    bytes = v * 1024ull;
+    return true;
+}
+
+// «31.12.2026» → FILETIME (локальное время, конец дня для «по»).
+bool ParseDate(const std::wstring& text, FILETIME& ft, bool endOfDay) {
+    int d = 0, m = 0, y = 0;
+    if (swscanf(text.c_str(), L"%d.%d.%d", &d, &m, &y) != 3) return false;
+    if (d < 1 || d > 31 || m < 1 || m > 12 || y < 1900) return false;
+
+    SYSTEMTIME st{};
+    st.wDay = (WORD)d;
+    st.wMonth = (WORD)m;
+    st.wYear = (WORD)y;
+    st.wHour = endOfDay ? 23 : 0;
+    st.wMinute = endOfDay ? 59 : 0;
+    st.wSecond = endOfDay ? 59 : 0;
+
+    FILETIME local{};
+    if (!SystemTimeToFileTime(&st, &local)) return false;
+    return LocalFileTimeToFileTime(&local, &ft) != FALSE;
+}
+
+void ReadFilters(SearchState* st) {
+    wchar_t buf[64]{};
+    GetWindowTextW(st->minSize, buf, 64);
+    st->useMinSize = ParseSizeKb(buf, st->minSizeBytes);
+    GetWindowTextW(st->maxSize, buf, 64);
+    st->useMaxSize = ParseSizeKb(buf, st->maxSizeBytes);
+    GetWindowTextW(st->dateFrom, buf, 64);
+    st->useDateFrom = ParseDate(buf, st->dateFromFt, false);
+    GetWindowTextW(st->dateTo, buf, 64);
+    st->useDateTo = ParseDate(buf, st->dateToFt, true);
+}
+
+std::wstring TemplateValue(SearchState* st) {
+    wchar_t mask[512]{}, dir[MAX_PATH * 4]{}, text[512]{};
+    wchar_t minS[64]{}, maxS[64]{}, fromS[64]{}, toS[64]{};
+    GetWindowTextW(st->mask, mask, 512);
+    GetWindowTextW(st->dir, dir, MAX_PATH * 4);
+    GetWindowTextW(st->text, text, 512);
+    GetWindowTextW(st->minSize, minS, 64);
+    GetWindowTextW(st->maxSize, maxS, 64);
+    GetWindowTextW(st->dateFrom, fromS, 64);
+    GetWindowTextW(st->dateTo, toS, 64);
+
+    wchar_t flags[8]{};
+    swprintf(flags, 8, L"%d%d%d",
+             SendMessageW(st->subdirs, BM_GETCHECK, 0, 0) == BST_CHECKED ? 1 : 0,
+             SendMessageW(st->caseCheck, BM_GETCHECK, 0, 0) == BST_CHECKED ? 1 : 0,
+             SendMessageW(st->hiddenCheck, BM_GETCHECK, 0, 0) == BST_CHECKED ? 1 : 0);
+
+    std::wstring out = mask;
+    out += L"|"; out += dir;
+    out += L"|"; out += flags;
+    out += L"|"; out += text;
+    out += L"|"; out += minS;
+    out += L"|"; out += maxS;
+    out += L"|"; out += fromS;
+    out += L"|"; out += toS;
+    return out;
+}
+
+std::vector<std::wstring> SplitTemplateValue(const std::wstring& value) {
+    std::vector<std::wstring> parts;
+    std::wstring cur;
+    for (wchar_t c : value) {
+        if (c == L'|') {
+            parts.push_back(cur);
+            cur.clear();
+        } else {
+            cur += c;
+        }
+    }
+    parts.push_back(cur);
+    return parts;
+}
+
+void ApplyTemplate(SearchState* st, const std::wstring& value) {
+    const auto p = SplitTemplateValue(value);
+    auto at = [&p](size_t i) { return i < p.size() ? p[i] : std::wstring(); };
+
+    SetWindowTextW(st->mask, at(0).c_str());
+    SetWindowTextW(st->dir, at(1).c_str());
+    const std::wstring flags = at(2);
+    SendMessageW(st->subdirs, BM_SETCHECK, flags.size() > 0 && flags[0] == L'1' ? BST_CHECKED : BST_UNCHECKED, 0);
+    SendMessageW(st->caseCheck, BM_SETCHECK, flags.size() > 1 && flags[1] == L'1' ? BST_CHECKED : BST_UNCHECKED, 0);
+    SendMessageW(st->hiddenCheck, BM_SETCHECK, flags.size() > 2 && flags[2] == L'1' ? BST_CHECKED : BST_UNCHECKED, 0);
+    SetWindowTextW(st->text, at(3).c_str());
+    SetWindowTextW(st->minSize, at(4).c_str());
+    SetWindowTextW(st->maxSize, at(5).c_str());
+    SetWindowTextW(st->dateFrom, at(6).c_str());
+    SetWindowTextW(st->dateTo, at(7).c_str());
+}
+
+std::vector<std::pair<std::wstring, std::wstring>> LoadTemplates() {
+    std::vector<std::pair<std::wstring, std::wstring>> out;
+    const std::wstring ini = SettingsFilePath();
+    std::vector<wchar_t> buf(64 * 1024);
+    const DWORD n = GetPrivateProfileSectionW(L"SearchTemplates", buf.data(), (DWORD)buf.size(), ini.c_str());
+    if (!n) return out;
+
+    for (const wchar_t* p = buf.data(); *p; p += wcslen(p) + 1) {
+        const std::wstring line = p;
+        const size_t eq = line.find(L'=');
+        if (eq == std::wstring::npos) continue;
+        out.emplace_back(line.substr(0, eq), line.substr(eq + 1));
+    }
+    return out;
+}
+
+void SaveTemplateAs(SearchState* st) {
+    std::wstring name;
+    if (!InputBox(st->hwnd, L"Шаблон поиска", L"Название шаблона:", name, false)) return;
+    name = Trim(name);
+    if (name.empty()) return;
+    const std::wstring ini = SettingsFilePath();
+    const std::wstring value = TemplateValue(st);
+    WritePrivateProfileStringW(L"SearchTemplates", name.c_str(), value.c_str(), ini.c_str());
+}
+
+void DeleteTemplate(SearchState* st) {
+    auto items = LoadTemplates();
+    if (items.empty()) {
+        MessageBoxW(st->hwnd, L"Сохранённых шаблонов нет.", L"Шаблоны", MB_ICONINFORMATION | MB_OK);
+        return;
+    }
+    std::wstring name;
+    if (!InputBox(st->hwnd, L"Удалить шаблон", L"Название шаблона:", name, false)) return;
+    name = Trim(name);
+    if (name.empty()) return;
+    const std::wstring ini = SettingsFilePath();
+    WritePrivateProfileStringW(L"SearchTemplates", name.c_str(), nullptr, ini.c_str());
+}
+
+void ShowTemplatesMenu(SearchState* st) {
+    const auto items = LoadTemplates();
+
+    HMENU menu = CreatePopupMenu();
+    int cmd = 1;
+    for (const auto& kv : items) AppendMenuW(menu, MF_STRING, cmd++, kv.first.c_str());
+    if (!items.empty()) AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING, 900, L"Сохранить текущий…");
+    if (!items.empty()) AppendMenuW(menu, MF_STRING, 901, L"Удалить шаблон…");
+
+    POINT pt{};
+    GetCursorPos(&pt);
+    const int chosen = (int)TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, st->hwnd, nullptr);
+    DestroyMenu(menu);
+
+    if (chosen >= 1 && chosen < 900 && chosen - 1 < (int)items.size()) {
+        ApplyTemplate(st, items[chosen - 1].second);
+    } else if (chosen == 900) {
+        SaveTemplateAs(st);
+    } else if (chosen == 901) {
+        DeleteTemplate(st);
+    }
+}
+
 void SavePrefs(SearchState* st) {
     const std::wstring ini = SettingsFilePath();
     if (ini.empty()) return;
@@ -212,6 +413,16 @@ void SavePrefs(SearchState* st) {
              SendMessageW(st->caseCheck, BM_GETCHECK, 0, 0) == BST_CHECKED ? 1 : 0,
              SendMessageW(st->hiddenCheck, BM_GETCHECK, 0, 0) == BST_CHECKED ? 1 : 0);
     WritePrivateProfileStringW(L"Search", L"Flags", flags, ini.c_str());
+
+    auto put = [&ini](const wchar_t* key, HWND edit) {
+        wchar_t value[64]{};
+        GetWindowTextW(edit, value, 64);
+        WritePrivateProfileStringW(L"Search", key, value, ini.c_str());
+    };
+    put(L"MinSize", st->minSize);
+    put(L"MaxSize", st->maxSize);
+    put(L"DateFrom", st->dateFrom);
+    put(L"DateTo", st->dateTo);
 }
 
 void ReadPrefs(SearchState* st, const std::wstring& startDir) {
@@ -226,6 +437,16 @@ void ReadPrefs(SearchState* st, const std::wstring& startDir) {
 
     GetPrivateProfileStringW(L"Search", L"Text", L"", buf, 512, ini.c_str());
     SetWindowTextW(st->text, buf);
+
+    auto get = [&ini](const wchar_t* key, HWND edit) {
+        wchar_t value[64]{};
+        GetPrivateProfileStringW(L"Search", key, L"", value, 64, ini.c_str());
+        SetWindowTextW(edit, value);
+    };
+    get(L"MinSize", st->minSize);
+    get(L"MaxSize", st->maxSize);
+    get(L"DateFrom", st->dateFrom);
+    get(L"DateTo", st->dateTo);
 
     GetPrivateProfileStringW(L"Search", L"Flags", L"100", buf, 8, ini.c_str());
     const std::wstring flags = buf;
@@ -269,6 +490,7 @@ void StartWorker(SearchState* st) {
     auto masks = SplitMasks(maskText);
     if (masks.empty()) masks.push_back(L"*");
 
+    ReadFilters(st);
     SavePrefs(st);
 
     {
@@ -316,7 +538,8 @@ void LayoutSearch(SearchState* st) {
 
     int y = 12;
     MoveWindow(st->labelMask, pad, y + 4, labelW, 18, TRUE);
-    MoveWindow(st->mask, editX, y, right - editX, rowH, TRUE);
+    MoveWindow(st->mask, editX, y, right - editX - 112, rowH, TRUE);
+    MoveWindow(st->templatesBtn, right - 104, y, 104, rowH, TRUE);
     MoveWindow(st->hint, editX, y + rowH + 2, right - editX, 16, TRUE);
 
     y += rowH + 20;
@@ -337,6 +560,28 @@ void LayoutSearch(SearchState* st) {
     y += 30;
     MoveWindow(st->labelText, pad, y + 4, labelW, 18, TRUE);
     MoveWindow(st->text, editX, y, right - editX, rowH, TRUE);
+
+    y += rowH + 8;
+    // Строка фильтров: размер в Кб и дата в ДД.ММ.ГГГГ, пустое поле — без ограничения.
+    MoveWindow(st->labelFilter, pad, y + 3, labelW, 18, TRUE);
+    int fx = editX;
+    MoveWindow(st->labelSize, fx, y + 3, 52, 18, TRUE);
+    fx += 54;
+    MoveWindow(st->minSize, fx, y, 64, rowH, TRUE);
+    fx += 70;
+    MoveWindow(st->dash1, fx, y + 3, 12, 18, TRUE);
+    fx += 20;
+    MoveWindow(st->maxSize, fx, y, 64, rowH, TRUE);
+    fx += 70;
+    MoveWindow(st->labelKb, fx, y + 3, 26, 18, TRUE);
+    fx += 34;
+    MoveWindow(st->labelDate, fx, y + 3, 40, 18, TRUE);
+    fx += 46;
+    MoveWindow(st->dateFrom, fx, y, 92, rowH, TRUE);
+    fx += 100;
+    MoveWindow(st->dash2, fx, y + 3, 12, 18, TRUE);
+    fx += 20;
+    MoveWindow(st->dateTo, fx, y, 92, rowH, TRUE);
 
     y += rowH + 8;
     MoveWindow(st->subdirs, editX, y, 150, 20, TRUE);
@@ -506,10 +751,23 @@ LRESULT CALLBACK SearchProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             st->mask = MakeChild(hwnd, L"EDIT", L"*", WS_BORDER | ES_AUTOHSCROLL | WS_TABSTOP, kMaskId);
             st->dir = MakeChild(hwnd, L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL | WS_TABSTOP, kDirId);
             st->text = MakeChild(hwnd, L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL | WS_TABSTOP, kTextId);
-            st->hint = MakeChild(hwnd, L"STATIC", L"Через ; можно задать несколько масок: *.txt;*.md",
+            st->hint = MakeChild(hwnd, L"STATIC",
+                                 L"Через ; — несколько масок: *.txt;*.md · фильтр: размер в Кб, дата ДД.ММ.ГГГГ",
                                  SS_LEFT, kHintId);
 
             st->browseBtn = MakeChild(hwnd, L"BUTTON", L"Обзор…", BS_PUSHBUTTON | WS_TABSTOP, kBrowseId);
+            st->templatesBtn = MakeChild(hwnd, L"BUTTON", L"Шаблоны", BS_PUSHBUTTON | WS_TABSTOP, kTemplatesId);
+
+            st->labelFilter = MakeChild(hwnd, L"STATIC", L"Фильтр:", SS_LEFT, 0);
+            st->labelSize = MakeChild(hwnd, L"STATIC", L"размер", SS_LEFT, 0);
+            st->minSize = MakeChild(hwnd, L"EDIT", L"", WS_BORDER | ES_NUMBER | WS_TABSTOP, kMinSizeId);
+            st->dash1 = MakeChild(hwnd, L"STATIC", L"—", SS_CENTER, 0);
+            st->maxSize = MakeChild(hwnd, L"EDIT", L"", WS_BORDER | ES_NUMBER | WS_TABSTOP, kMaxSizeId);
+            st->labelKb = MakeChild(hwnd, L"STATIC", L"Кб", SS_LEFT, 0);
+            st->labelDate = MakeChild(hwnd, L"STATIC", L"дата", SS_LEFT, 0);
+            st->dateFrom = MakeChild(hwnd, L"EDIT", L"", WS_BORDER | WS_TABSTOP, kDateFromId);
+            st->dash2 = MakeChild(hwnd, L"STATIC", L"—", SS_CENTER, 0);
+            st->dateTo = MakeChild(hwnd, L"EDIT", L"", WS_BORDER | WS_TABSTOP, kDateToId);
             st->caseCheck = MakeChild(hwnd, L"BUTTON", L"Учитывать регистр", BS_AUTOCHECKBOX | WS_TABSTOP, kCaseId);
             st->subdirs = MakeChild(hwnd, L"BUTTON", L"В подкаталогах", BS_AUTOCHECKBOX | WS_TABSTOP, kSubdirsId);
             st->hiddenCheck = MakeChild(hwnd, L"BUTTON", L"Скрытые и системные", BS_AUTOCHECKBOX | WS_TABSTOP,
@@ -550,7 +808,9 @@ LRESULT CALLBACK SearchProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
             for (HWND h : {st->labelMask, st->labelDir, st->labelRoots, st->labelText, st->mask, st->dir,
                            st->text, st->caseCheck, st->subdirs, st->hiddenCheck, st->list, st->status,
-                           st->startBtn, st->stopBtn, st->browseBtn, st->openDirBtn,
+                           st->startBtn, st->stopBtn, st->browseBtn, st->openDirBtn, st->templatesBtn,
+                           st->labelFilter, st->labelSize, st->minSize, st->dash1, st->maxSize, st->labelKb,
+                           st->labelDate, st->dateFrom, st->dash2, st->dateTo,
                            GetDlgItem(hwnd, IDCANCEL)}) {
                 if (h && st->font) SendMessageW(h, WM_SETFONT, (WPARAM)st->font, TRUE);
             }
@@ -604,6 +864,10 @@ LRESULT CALLBACK SearchProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             }
             if (id == kBrowseId) {
                 BrowseForFolder(st);
+                return 0;
+            }
+            if (id == kTemplatesId) {
+                ShowTemplatesMenu(st);
                 return 0;
             }
             if (id == kOpenDirId) {
