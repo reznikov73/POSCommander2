@@ -142,6 +142,8 @@ private:
 
     void ApplyEntries(const std::wstring& focus, int fallbackIndex);
     void ResetShiftMark();
+    // Медленный клик по имени файла под курсором включает правку имени.
+    void QueueInlineRenameOnClick(HWND list, LPARAM lParam);
     void CommitInlineRename();
     void CancelInlineRename();
     static LRESULT CALLBACK RenameEditProc(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
@@ -215,6 +217,7 @@ private:
     std::set<int> shiftMarked_;    // индексы, отмеченные этим диапазоном
     HWND renameEdit_ = nullptr;    // EDIT поверх имени при F2
     int renameIndex_ = -1;
+    int clickRenameIndex_ = -1;    // элемент, по которому ждём «медленный клик»
     bool renameEnding_ = false;
 
     std::vector<HoverLevel> hover_;

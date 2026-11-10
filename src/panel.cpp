@@ -30,6 +30,7 @@ const UINT_PTR kPathClickTimer = 7;   // отложенный переход п�
 const UINT_PTR kHoverShowTimer = 8;   // показ списка содержимого каталога
 const UINT_PTR kHoverHideTimer = 9;   // скрытие списка
 const UINT_PTR kHoverCascadeTimer = 11;  // открытие подуровня при наведении на папку
+const UINT_PTR kRenameClickTimer = 12;    // медленный клик по имени: ждём, не двойной ли
 const wchar_t* kHoverClass = L"POSPathHover2";
 const int kListId = 2;
 const int kStatusId = 3;
@@ -552,7 +553,7 @@ LRESULT CALLBACK Panel::TabProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     return DefSubclassProc(hwnd, msg, wParam, lParam);
 }
 
-// Рисование вкладки: активная — светлая с рамкой, неактивная — серая.
+// Рисование вкладки: все белые, активная — синяя полоса по низу и тёмная рамка.
 void Panel::DrawTabButton(DRAWITEMSTRUCT* dis) {
     const int index = (int)dis->CtlID - kTabBase;
     if (index < 0 || index >= (int)tabs_.size()) return;
@@ -2112,19 +2113,47 @@ void Panel::SetCursorIndex(int index) {
     ListView_EnsureVisible(list_, index, FALSE);
 }
 
+// Правка имени по клику, как в TC: первый клик выделяет файл, повторный клик
+// по его имени включает правку. Ждём полный интервал двойного клика, чтобы
+// обычное открытие двойным щелчком не превращалось в переименование.
+void Panel::QueueInlineRenameOnClick(HWND list, LPARAM lParam) {
+    if (ftp_ || inArchive_ || IsInlineRenaming()) return;
+    KillTimer(list, kRenameClickTimer);
+    clickRenameIndex_ = -1;
+
+    LVHITTESTINFO ht{};
+    ht.pt.x = GET_X_LPARAM(lParam);
+    ht.pt.y = GET_Y_LPARAM(lParam);
+    if (ListView_SubItemHitTest(list, &ht) < 0) return;
+    // Только имя в первой колонке: по значку, размеру и дате правка не включается.
+    if (ht.iSubItem != 0 || !(ht.flags & LVHT_ONITEMLABEL)) return;
+    if (ht.iItem != CursorIndex()) return;
+
+    clickRenameIndex_ = ht.iItem;
+    SetTimer(list, kRenameClickTimer, GetDoubleClickTime(), nullptr);
+}
+
 bool Panel::BeginInlineRename() {
+    LogDebug(L"inline begin: ftp=" + std::to_wstring(ftp_ ? 1 : 0) +
+             L" archive=" + std::to_wstring(inArchive_ ? 1 : 0) +
+             L" entries=" + std::to_wstring(entries_.size()));
     if (ftp_ || inArchive_) return false;
     const int index = CursorIndex();
+    LogDebug(L"inline cursor=" + std::to_wstring(index));
     if (index < 0 || index >= (int)entries_.size()) return false;
     Entry& e = entries_[index];
+    LogDebug(L"inline entry='" + e.name + L"' up=" + std::to_wstring(e.isUp ? 1 : 0));
     if (e.isUp) return false;
 
     if (renameEdit_ && IsWindowVisible(renameEdit_) && !renameEnding_) CancelInlineRename();
 
     if (!renameEdit_) {
+        LogDebug(L"inline create: before");
         renameEdit_ = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
                                       WS_CHILD | ES_AUTOHSCROLL | ES_LEFT, 0, 0, 10, 10,
                                       list_, (HMENU)9001, g_inst, nullptr);
+        LogDebug(L"inline create: hwnd=" + std::to_wstring((long long)(intptr_t)renameEdit_) +
+                 L" err=" + std::to_wstring(GetLastError()));
         if (!renameEdit_) return false;
         SetWindowSubclass(renameEdit_, RenameEditProc, 3, (DWORD_PTR)this);
         SendMessageW(renameEdit_, WM_SETFONT,
@@ -2136,6 +2165,8 @@ bool Panel::BeginInlineRename() {
         LogDebug(L"inline rename: no item rect");
         return false;
     }
+    LogDebug(L"inline rect=" + std::to_wstring(row.left) + L"," + std::to_wstring(row.top) + L"," +
+             std::to_wstring(row.right) + L"," + std::to_wstring(row.bottom));
     int columnW = ListView_GetColumnWidth(list_, 0);
     if (columnW <= 0) columnW = row.right - row.left;
     const int iconW = Scale(20, dpi_);
@@ -2148,13 +2179,15 @@ bool Panel::BeginInlineRename() {
     renameEnding_ = false;
     renameIndex_ = index;
     SetWindowTextW(renameEdit_, e.name.c_str());
-    // Курсор ставим в конец имени: выделение в EDIT на белом фоне
-    // выглядит как «пропавшие» символы, поэтому не выделяем автоматически.
-    const int selEnd = (int)e.name.size();
+    // Выделяем имя без расширения, как в TC. Ставим выделение после SetFocus,
+    // чтобы EDIT рисовал его активным цветом, а не «пропадал» на белом фоне.
+    const size_t dot = e.name.find_last_of(L'.');
+    const int selEnd = (dot != std::wstring::npos && dot > 0) ? (int)dot : (int)e.name.size();
     SetWindowPos(renameEdit_, HWND_TOP, origin.x, origin.y - Scale(1, dpi_), width, height,
                  SWP_SHOWWINDOW);
+    LogDebug(L"inline pos: visible=" + std::to_wstring(IsWindowVisible(renameEdit_) ? 1 : 0));
     SetFocus(renameEdit_);
-    SendMessageW(renameEdit_, EM_SETSEL, selEnd, selEnd);
+    SendMessageW(renameEdit_, EM_SETSEL, 0, selEnd);
     InvalidateRect(renameEdit_, nullptr, TRUE);
     UpdateWindow(renameEdit_);
     return true;
@@ -2861,6 +2894,13 @@ LRESULT CALLBACK Panel::ListProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
     if (self && msg == WM_LBUTTONDOWN) {
         self->clickShift_ = (wParam & MK_SHIFT) != 0;
         self->clickCtrl_ = (wParam & MK_CONTROL) != 0;
+        self->QueueInlineRenameOnClick(hwnd, lParam);
+    }
+    if (self && msg == WM_TIMER && wParam == kRenameClickTimer) {
+        KillTimer(hwnd, kRenameClickTimer);
+        if (self->CursorIndex() == self->clickRenameIndex_) self->BeginInlineRename();
+        self->clickRenameIndex_ = -1;
+        return 0;
     }
     // Фокус пришёл списку неактивной панели (клик мышью) — активируем её,
     // как в TC. Активацию согласовываем через главное окно (WM_APP+303),
@@ -3349,7 +3389,10 @@ LRESULT Panel::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 }
 
                 case NM_DBLCLK: {
-                    // Двойной щелчок: попросить главное окно открыть элемент.
+                    // Двойной щелчок: отменяем отложенную правку имени и просим
+                    // главное окно открыть элемент.
+                    KillTimer(hwnd, kRenameClickTimer);
+                    clickRenameIndex_ = -1;
                     auto info = reinterpret_cast<NMITEMACTIVATE*>(lParam);
                     if (info->iItem >= 0) SetCursorIndex(info->iItem);
                     PostMessageW(GetParent(hwnd_), WM_COMMAND, MAKEWPARAM(0x8001, 0), (LPARAM)hwnd_);

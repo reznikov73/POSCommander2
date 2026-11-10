@@ -2952,6 +2952,16 @@ bool App::PreTranslate(const MSG& msg) {
         if (msg.wParam == VK_SHIFT || msg.wParam == VK_LSHIFT || msg.wParam == VK_RSHIFT) shiftHeld_ = false;
     }
 
+    // Правка имени в строке панели: весь ввод принадлежит EDIT. Иначе Enter
+    // ниже уходит в OpenCursor (файл открывается до применения имени), а WM_CHAR
+    // съедает быстрый поиск по буквам. Alt оставляем системе (Alt+F4).
+    if (left_.IsInlineRenaming() || right_.IsInlineRenaming()) {
+        const bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
+        if (!alt && (msg.message == WM_KEYDOWN || msg.message == WM_SYSKEYDOWN ||
+                     msg.message == WM_CHAR || msg.message == WM_SYSCHAR))
+            return false;
+    }
+
     // Пока идёт правка пути, Enter и Esc работают на поле, даже если фокус успел уйти.
     if (msg.message == WM_KEYDOWN || msg.message == WM_SYSKEYDOWN) {
         if (msg.wParam == VK_ESCAPE) {
