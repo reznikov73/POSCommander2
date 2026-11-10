@@ -1,5 +1,6 @@
 // Реализация диалогов без .rc: шаблон собирается в памяти.
 #include "dialogs.h"
+#include "settings.h"
 #include "util.h"
 
 #include <cstdio>
@@ -798,7 +799,7 @@ void RefreshLister(HWND hwnd, ListerState* st) {
     if (st->hint) {
         SetWindowTextW(st->hint,
                         L"1 ANSI · 2 OEM · 3 UTF-8 · 4 UTF-16 · T текст · M markdown · H hex · "
-                        L"Ctrl+F поиск · F3 далее · Shift+F3 назад · ESC закрыть");
+                        L"Ctrl+F поиск · F3 далее · Shift+F3 назад · F4 редактор · ESC закрыть");
     }
 }
 
@@ -817,6 +818,12 @@ LRESULT CALLBACK ListerEditProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             const bool back = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
             if (st && !st->findNeedle.empty()) FindInLister(parent, st, false, back);
             else if (st) FindInLister(parent, st, true, false);
+            return 0;
+        }
+        if (wParam == VK_F4 && st) {
+            // Открыть тот же файл в программе, связанной с расширением (обычно редактор).
+            HINSTANCE hr = ShellExecuteW(parent, L"open", st->path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+            if ((INT_PTR)hr <= 32) MessageBeep(MB_ICONWARNING);
             return 0;
         }
         if (st && wParam == VK_RETURN) {
@@ -938,6 +945,19 @@ LRESULT CALLBACK ListerProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             return 0;
         case WM_DESTROY:
             if (st) {
+                RECT wr{};
+                if (GetWindowRect(hwnd, &wr)) {
+                    const std::wstring iniPath = SettingsFilePath();
+                    wchar_t buf[32]{};
+                    swprintf(buf, 32, L"%d", (int)wr.left);
+                    WritePrivateProfileStringW(L"Lister", L"X", buf, iniPath.c_str());
+                    swprintf(buf, 32, L"%d", (int)wr.top);
+                    WritePrivateProfileStringW(L"Lister", L"Y", buf, iniPath.c_str());
+                    swprintf(buf, 32, L"%d", (int)(wr.right - wr.left));
+                    WritePrivateProfileStringW(L"Lister", L"W", buf, iniPath.c_str());
+                    swprintf(buf, 32, L"%d", (int)(wr.bottom - wr.top));
+                    WritePrivateProfileStringW(L"Lister", L"H", buf, iniPath.c_str());
+                }
                 if (st->font) DeleteObject(st->font);
                 delete st;
             }
@@ -1124,8 +1144,18 @@ void ShowLister(HWND owner, const std::wstring& path) {
     if (width < 500) width = 800;
     if (height < 400) height = 600;
 
+    // Свои координаты просмотрщик помнит отдельно от окна поиска.
+    const std::wstring iniPath = SettingsFilePath();
+    const int savedX = (int)GetPrivateProfileIntW(L"Lister", L"X", ownerRect.left + 40, iniPath.c_str());
+    const int savedY = (int)GetPrivateProfileIntW(L"Lister", L"Y", ownerRect.top + 40, iniPath.c_str());
+    const int savedW = (int)GetPrivateProfileIntW(L"Lister", L"W", width, iniPath.c_str());
+    const int savedH = (int)GetPrivateProfileIntW(L"Lister", L"H", height, iniPath.c_str());
+    const RECT frame = ClampWindowRect(RECT{savedX, savedY, savedX + savedW, savedY + savedH});
+    width = frame.right - frame.left;
+    height = frame.bottom - frame.top;
+
     HWND hwnd = CreateWindowExW(WS_EX_APPWINDOW, L"POSLister2", title.c_str(),
-                                WS_OVERLAPPEDWINDOW | WS_VISIBLE, ownerRect.left + 40, ownerRect.top + 40,
+                                WS_OVERLAPPEDWINDOW | WS_VISIBLE, frame.left, frame.top,
                                 width, height, nullptr, nullptr, g_inst, st);
     if (!hwnd) {
         delete st;

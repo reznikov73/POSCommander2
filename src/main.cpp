@@ -54,6 +54,8 @@ enum : int {
     IDM_NEWFILE = 190,
     IDM_QUICKVIEW = 191,
     IDM_SEARCH = 192,
+    IDM_OPEN_NEW_TAB = 206,
+    IDM_COPY_PATH = 207,
     IDM_NET_BROWSE = 193,
     IDM_NET_MAP = 194,
     IDM_NET_UNMAP = 195,
@@ -535,6 +537,8 @@ private:
     void Dispatch(int id);
     void UpdatePromptLabel();
     void OpenCursor();
+    void OpenCursorInNewTab();
+    void CopyCursorPaths();
     void GoUpActive();
     void DoCopyMove(bool move);
     void DoFtpCopyMove(bool move);
@@ -776,6 +780,9 @@ void App::BuildMenu() {
     AppendMenuW(file, MF_STRING, IDM_DELETE, L"&Удалить\tF8");
     AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(file, MF_STRING, IDM_PROPERTIES, L"С&войства\tAlt+Enter");
+    AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(file, MF_STRING, IDM_OPEN_NEW_TAB, L"Открыть в новой в&кладке\tCtrl+Enter");
+    AppendMenuW(file, MF_STRING, IDM_COPY_PATH, L"Копировать &путь\tCtrl+Shift+C");
     AppendMenuW(file, MF_STRING, IDM_DIRSIZE, L"Размер &каталога\tAlt+Shift+Enter");
     AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(file, MF_STRING, IDM_PACK, L"У&паковать…\tAlt+F5");
@@ -1148,6 +1155,53 @@ void App::UpdatePromptLabel() {
 
 void App::ShowError(const std::wstring& text) {
     MessageBoxW(hwnd_, text.c_str(), kTitle, MB_ICONERROR | MB_OK);
+}
+
+// Ctrl+Enter: элемент открывается в новой вкладке, текущая остаётся на месте.
+void App::OpenCursorInNewTab() {
+    Panel* panel = ActivePanel();
+    Entry* e = panel->Cursor();
+    if (!e || e->isUp) return;
+    if (panel->InFtp() || panel->InArchive()) {      // для FTP/архива новая вкладка не нужна
+        OpenCursor();
+        return;
+    }
+    if (e->isDir) {
+        panel->AddTabFor(JoinPath(panel->Path(), e->name), L"");
+    } else {
+        const std::wstring name = e->name;
+        panel->AddTabFor(panel->Path(), name);
+        panel->Navigate(panel->Path(), name);
+    }
+    panel->FocusList();
+}
+
+// Ctrl+Shift+C: пути отмеченных файлов (или текущего) в буфер обмена.
+void App::CopyCursorPaths() {
+    Panel* panel = ActivePanel();
+    if (!panel) return;
+    const std::vector<std::wstring> names = panel->SelectedNames();
+    if (names.empty()) return;
+
+    std::wstring text;
+    for (const auto& name : names) {
+        if (!text.empty()) text += L"\r\n";
+        text += JoinPath(panel->Path(), name);
+    }
+    if (!OpenClipboard(hwnd_)) return;
+    EmptyClipboard();
+    const size_t bytes = (text.size() + 1) * sizeof(wchar_t);
+    HGLOBAL mem = GlobalAlloc(GMEM_MOVEABLE, bytes);
+    if (mem) {
+        void* dst = GlobalLock(mem);
+        if (dst) {
+            memcpy(dst, text.c_str(), bytes);
+            GlobalUnlock(mem);
+            SetClipboardData(CF_UNICODETEXT, mem);
+        }
+    }
+    CloseClipboard();
+    LogDebug(L"copy path: " + std::to_wstring(names.size()) + L" шт.");
 }
 
 void App::OpenCursor() {
@@ -2693,6 +2747,12 @@ void App::Dispatch(int id) {
         case IDM_FTP_DISCONNECT:
             FtpDisconnectActive();
             break;
+        case IDM_OPEN_NEW_TAB:
+            OpenCursorInNewTab();
+            break;
+        case IDM_COPY_PATH:
+            CopyCursorPaths();
+            break;
         case IDM_SEARCH: {
             if (ActivePanel()->InFtp()) {
                 MessageBoxW(hwnd_, L"Поиск по FTP не поддерживается.", L"FTP", MB_ICONINFORMATION | MB_OK);
@@ -3166,6 +3226,16 @@ bool App::PreTranslate(const MSG& msg) {
 
     // Прочие Alt+... отдаём системе (Alt+F4 закроет окно, Alt+Tab переключит задачу).
     if (alt) return false;
+
+    // Ctrl+Enter и Ctrl+Shift+C обрабатываем отдельно: они не входят в switch ниже.
+    if (!inPrompt && ctrl && msg.wParam == VK_RETURN) {
+        OpenCursorInNewTab();
+        return true;
+    }
+    if (!inPrompt && ctrl && shift && msg.wParam == 'C') {
+        CopyCursorPaths();
+        return true;
+    }
 
     // Ctrl-комбинации обрабатываем до обычных клавиш: Ctrl+F8 не должен стать F8-удалением.
     if (ctrl) {

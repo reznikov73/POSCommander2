@@ -1285,6 +1285,27 @@ int CompareNatural(const std::wstring& a, const std::wstring& b) {
 }
 // ---------- диагностика ----------
 
+RECT ClampWindowRect(const RECT& r) {
+    RECT wa{};
+    SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0);
+
+    int w = r.right - r.left;
+    int h = r.bottom - r.top;
+    if (w > wa.right - wa.left) w = wa.right - wa.left;
+    if (h > wa.bottom - wa.top) h = wa.bottom - wa.top;
+    if (w < 320) w = 320;
+    if (h < 240) h = 240;
+
+    int x = r.left;
+    int y = r.top;
+    if (x + w > wa.right) x = wa.right - w;
+    if (y + h > wa.bottom) y = wa.bottom - h;
+    if (x < wa.left) x = wa.left;
+    if (y < wa.top) y = wa.top;
+
+    return RECT{x, y, x + w, y + h};
+}
+
 void LogDebug(const std::wstring& text) {
     // Диагностика включается только по переменной окружения POSFILES_DEBUG=1
     // иначе в %TEMP% ничего не пишется (как в TC: лишних файлов не создаём).

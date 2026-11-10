@@ -37,6 +37,9 @@ struct DriveItem {
 // Перечисление каталога. Возвращает false и код ошибки при отказе доступа.
 bool ListDir(const std::wstring& dir, bool showHidden, std::vector<Entry>& out, DWORD& error);
 
+// Прижимает прямоугольник окна к рабочей области, чтобы окно не открылось
+// за пределами экрана после смены разрешения.
+RECT ClampWindowRect(const RECT& r);
 // Диагностический лог в %TEMP%\posfiles-debug.log (append, UTF-8).
 void LogDebug(const std::wstring& text);
 // Суммарный размер содержимого каталога (рекурсивно, без переходов по ссылкам).

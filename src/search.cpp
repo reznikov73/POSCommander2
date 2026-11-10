@@ -683,6 +683,20 @@ LRESULT CALLBACK SearchProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             if (st) {
                 st->stop.store(true);
                 SavePrefs(st);
+
+                RECT wr{};
+                if (GetWindowRect(hwnd, &wr)) {
+                    const std::wstring iniPath = SettingsFilePath();
+                    wchar_t buf[32]{};
+                    swprintf(buf, 32, L"%d", (int)wr.left);
+                    WritePrivateProfileStringW(L"Search", L"X", buf, iniPath.c_str());
+                    swprintf(buf, 32, L"%d", (int)wr.top);
+                    WritePrivateProfileStringW(L"Search", L"Y", buf, iniPath.c_str());
+                    swprintf(buf, 32, L"%d", (int)(wr.right - wr.left));
+                    WritePrivateProfileStringW(L"Search", L"W", buf, iniPath.c_str());
+                    swprintf(buf, 32, L"%d", (int)(wr.bottom - wr.top));
+                    WritePrivateProfileStringW(L"Search", L"H", buf, iniPath.c_str());
+                }
                 if (st->worker.joinable()) st->worker.join();
                 KillTimer(hwnd, kTimerId);
                 if (st->font) DeleteObject(st->font);
@@ -721,11 +735,19 @@ std::wstring SearchDialog(HWND owner, const std::wstring& startDir) {
 
     RECT ownerRect{0, 0, 900, 600};
     if (owner && IsWindow(owner)) GetWindowRect(owner, &ownerRect);
-    const int width = 940;
-    const int height = 640;
+
+    // Позиция и размер запоминаются между вызовами.
+    const std::wstring iniPath = SettingsFilePath();
+    const int savedX = (int)GetPrivateProfileIntW(L"Search", L"X", ownerRect.left + 60, iniPath.c_str());
+    const int savedY = (int)GetPrivateProfileIntW(L"Search", L"Y", ownerRect.top + 40, iniPath.c_str());
+    const int savedW = (int)GetPrivateProfileIntW(L"Search", L"W", 940, iniPath.c_str());
+    const int savedH = (int)GetPrivateProfileIntW(L"Search", L"H", 640, iniPath.c_str());
+    const RECT frame = ClampWindowRect(RECT{savedX, savedY, savedX + savedW, savedY + savedH});
+    const int width = frame.right - frame.left;
+    const int height = frame.bottom - frame.top;
 
     HWND hwnd = CreateWindowExW(WS_EX_APPWINDOW, kSearchClass, L"Поиск файлов",
-                                WS_OVERLAPPEDWINDOW | WS_VISIBLE, ownerRect.left + 60, ownerRect.top + 40,
+                                WS_OVERLAPPEDWINDOW | WS_VISIBLE, frame.left, frame.top,
                                 width, height, nullptr, nullptr, g_inst, &state);
     if (!hwnd) return {};
 
