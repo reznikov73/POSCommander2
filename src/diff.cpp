@@ -257,12 +257,17 @@ void PaintSide(HWND edit, const std::vector<Line>& lines) {
     std::vector<CHARRANGE> ranges;
     ranges.reserve(lines.size());
 
+    // RichEdit хранит абзац как один CR, поэтому в его координатах каждая
+    // строка занимает len + 1 символ, а не len + 2. Считаем позиции сами,
+    // иначе подсветка уезжает на соседнюю строку.
+    LONG offset = 0;
     for (const auto& line : lines) {
-        const LONG start = (LONG)text.size();
-        text += line.text;
-        const LONG end = (LONG)text.size();
+        const LONG start = offset;
+        const LONG end = start + (LONG)line.text.size();
         ranges.push_back(CHARRANGE{start, end});
+        text += line.text;
         text += L"\r\n";
+        offset = end + 1;
     }
 
     SetWindowTextW(edit, text.c_str());
