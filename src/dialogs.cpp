@@ -681,7 +681,7 @@ std::wstring RangeText(HWND edit, CHARRANGE chrg) {
 }
 
 // Ctrl+F — спросить строку, Enter — искать дальше.
-void FindInLister(HWND parent, ListerState* st, bool ask) {
+void FindInLister(HWND parent, ListerState* st, bool ask, bool backward = false) {
     if (!st || !st->edit) return;
 
     std::wstring needle = st->findNeedle;
@@ -695,14 +695,25 @@ void FindInLister(HWND parent, ListerState* st, bool ask) {
     SendMessageW(st->edit, EM_EXGETSEL, 0, (LPARAM)&sel);
 
     FINDTEXTEXW ft{};
-    ft.chrg.cpMin = sel.cpMax;
-    ft.chrg.cpMax = -1;
     ft.lpstrText = (LPWSTR)needle.c_str();
-    LRESULT found = SendMessageW(st->edit, EM_FINDTEXTEXW, FR_DOWN, (LPARAM)&ft);
-    if (found < 0) {                       // дошли до конца — начинаем сначала
-        ft.chrg.cpMin = 0;
+    const WPARAM flags = backward ? 0 : FR_DOWN;
+    if (backward) {
+        ft.chrg.cpMin = 0;                 // ищем от начала до каретки
+        ft.chrg.cpMax = sel.cpMin;
+    } else {
+        ft.chrg.cpMin = sel.cpMax;
         ft.chrg.cpMax = -1;
-        found = SendMessageW(st->edit, EM_FINDTEXTEXW, FR_DOWN, (LPARAM)&ft);
+    }
+    LRESULT found = SendMessageW(st->edit, EM_FINDTEXTEXW, flags, (LPARAM)&ft);
+    if (found < 0) {                       // дошли до края — продолжаем с другого конца
+        if (backward) {
+            ft.chrg.cpMin = sel.cpMax;
+            ft.chrg.cpMax = -1;
+        } else {
+            ft.chrg.cpMin = 0;
+            ft.chrg.cpMax = -1;
+        }
+        found = SendMessageW(st->edit, EM_FINDTEXTEXW, flags, (LPARAM)&ft);
     }
     if (found < 0) {
         MessageBeep(MB_ICONINFORMATION);
@@ -747,7 +758,7 @@ void RefreshLister(HWND hwnd, ListerState* st) {
     if (st->hint) {
         SetWindowTextW(st->hint,
                         L"1 ANSI · 2 OEM · 3 UTF-8 · 4 UTF-16 · T текст · M markdown · H hex · "
-                        L"Ctrl+F поиск · Enter далее · ESC закрыть");
+                        L"Ctrl+F поиск · F3 далее · Shift+F3 назад · ESC закрыть");
     }
 }
 
@@ -758,8 +769,14 @@ LRESULT CALLBACK ListerEditProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         HWND parent = GetParent(hwnd);
         auto* st = reinterpret_cast<ListerState*>(GetWindowLongPtrW(parent, GWLP_USERDATA));
 
-        if (wParam == VK_ESCAPE || wParam == VK_F3 || wParam == VK_F10) {
+        if (wParam == VK_ESCAPE || wParam == VK_F10) {
             DestroyWindow(parent);
+            return 0;
+        }
+        if (wParam == VK_F3) {
+            const bool back = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+            if (st && !st->findNeedle.empty()) FindInLister(parent, st, false, back);
+            else if (st) FindInLister(parent, st, true, false);
             return 0;
         }
         if (st && wParam == VK_RETURN) {
@@ -847,8 +864,14 @@ LRESULT CALLBACK ListerProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             if (st && st->edit) SetFocus(st->edit);
             return 0;
         case WM_KEYDOWN:
-            if (wParam == VK_ESCAPE || wParam == VK_F3 || wParam == VK_F10) {
+            if (wParam == VK_ESCAPE || wParam == VK_F10) {
                 DestroyWindow(hwnd);
+                return 0;
+            }
+            if (wParam == VK_F3) {
+                const bool back = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+                if (st && !st->findNeedle.empty()) FindInLister(hwnd, st, false, back);
+                else if (st) FindInLister(hwnd, st, true, false);
                 return 0;
             }
             break;
