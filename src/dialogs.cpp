@@ -6,6 +6,7 @@
 
 #include <commctrl.h>
 #include <richedit.h>
+#include <commdlg.h>
 #include <cstring>
 
 namespace {
@@ -223,6 +224,8 @@ struct ListerState {
     bool hex = false;            // режим дампа
     bool markdown = false;       // разметка MD вместо сырого текста
     bool rich = false;           // удалось создать RichEdit
+    std::vector<std::pair<std::wstring, std::wstring>> links;   // текст ссылки → URL
+    std::wstring findNeedle;     // последняя строка поиска
     HFONT font = nullptr;
     HWND edit = nullptr;
     HWND hint = nullptr;
@@ -349,7 +352,11 @@ std::string RtfEscape(const std::wstring& s) {
     return out;
 }
 
+std::vector<std::pair<std::wstring, std::wstring>>* g_mdLinks = nullptr;  // текст → URL, заполняется при конвертации
+
 // Инлайновая разметка: `код`, **жирный**, *курсив*, ~~зачёркнутый~~, [текст](url).
+// Ссылка отдаётся RTF-полем HYPERLINK: RichEdit сам помечает её как ссылку и
+// присылает EN_LINK, поэтому клик по ней можно обработать.
 std::string InlineRtf(const std::wstring& s) {
     std::string out;
     size_t i = 0;
@@ -399,9 +406,14 @@ std::string InlineRtf(const std::wstring& s) {
             if (close != std::wstring::npos && close + 1 < s.size() && s[close + 1] == L'(') {
                 const size_t paren = s.find(L')', close + 2);
                 if (paren != std::wstring::npos) {
-                    out += "\\cf2\\ul ";
-                    out += RtfEscape(s.substr(i + 1, close - i - 1));
-                    out += "\\ulnone\\cf1 ";
+                    const std::wstring text = s.substr(i + 1, close - i - 1);
+                    const std::wstring url = s.substr(close + 2, paren - close - 2);
+                    if (g_mdLinks) g_mdLinks->push_back({text, url});
+                    out += "{\\field{\\*\\fldinst{HYPERLINK \"";
+                    out += RtfEscape(url);
+                    out += "\"}}{\\fldrslt{\\cf2\\ul ";
+                    out += InlineRtf(text);
+                    out += "}}}";
                     i = paren + 1;
                     continue;
                 }
@@ -413,7 +425,91 @@ std::string InlineRtf(const std::wstring& s) {
     return out;
 }
 
+std::vector<std::wstring> SplitTableRow(const std::wstring& line) {
+    std::wstring body = line;
+    while (!body.empty() && (body.front() == L'|' || body.front() == L' ')) body.erase(body.begin());
+    while (!body.empty() && (body.back() == L'|' || body.back() == L' ')) body.pop_back();
+
+    std::vector<std::wstring> cells;
+    std::wstring cur;
+    for (wchar_t c : body) {
+        if (c == L'|') {
+            cells.push_back(cur);
+            cur.clear();
+        } else {
+            cur += c;
+        }
+    }
+    cells.push_back(cur);
+    for (auto& cell : cells) {
+        while (!cell.empty() && (cell.front() == L' ' || cell.front() == L'\t')) cell.erase(cell.begin());
+        while (!cell.empty() && (cell.back() == L' ' || cell.back() == L'\t')) cell.pop_back();
+    }
+    return cells;
+}
+
+// Настоящая таблица средствами RTF: сетка с рамками, шапка жирная.
+void EmitTable(std::string& out, const std::vector<std::vector<std::wstring>>& rows) {
+    if (rows.empty()) return;
+
+    size_t cols = 0;
+    for (const auto& row : rows) cols = row.size() > cols ? row.size() : cols;
+    if (cols == 0) return;
+
+    std::vector<size_t> weight(cols, 4);
+    for (const auto& row : rows) {
+        for (size_t c = 0; c < row.size(); ++c) {
+            const size_t len = row[c].size();
+            if (len > weight[c]) weight[c] = len < 48 ? len : 48;
+        }
+    }
+    size_t sum = 0;
+    for (size_t w : weight) sum += w;
+
+    std::vector<int> cellx(cols);
+    int acc = 0;
+    for (size_t c = 0; c < cols; ++c) {
+        acc += (int)((long long)9000 * (long long)weight[c] / (long long)sum);
+        cellx[c] = acc;
+    }
+    cellx[cols - 1] = 9000;
+
+    out += "\\pard\\par ";
+    for (size_t r = 0; r < rows.size(); ++r) {
+        out += "\\trowd\\trgaph60\\trleft0\\trrh0";
+        for (size_t c = 0; c < cols; ++c) {
+            char buf[64]{};
+            snprintf(buf, sizeof(buf), "\\clbrdrt\\brdrs\\brdrw6\\brdrcf3\\clbrdrb\\brdrs\\brdrw6\\brdrcf3"
+                                       "\\clbrdrl\\brdrs\\brdrw6\\brdrcf3\\clbrdrr\\brdrs\\brdrw6\\brdrcf3"
+                                       "\\cellx%d",
+                     cellx[c]);
+            out += buf;
+        }
+        out += "\\intbl ";
+        for (size_t c = 0; c < cols; ++c) {
+            if (r == 0) out += "\\b ";
+            out += InlineRtf(c < rows[r].size() ? rows[r][c] : L"");
+            if (r == 0) out += "\\b0 ";
+            out += "\\cell ";
+        }
+        out += "\\row ";
+    }
+    out += "\\pard\\f0\\fs20 ";
+}
+
 std::string MarkdownToRtf(const std::wstring& md) {
+    std::vector<std::wstring> lines;
+    size_t start = 0;
+    while (start <= md.size()) {
+        const size_t e = md.find(L"\r\n", start);
+        if (e == std::wstring::npos) {
+            lines.push_back(md.substr(start));
+            break;
+        }
+        lines.push_back(md.substr(start, e - start));
+        start = e + 2;
+    }
+
     std::string out;
     out += "{\\rtf1\\ansi\\ansicpg1251\\deff0";
     out += "{\\fonttbl{\\f0\\fswiss\\fcharset204 Segoe UI;}"
@@ -424,32 +520,54 @@ std::string MarkdownToRtf(const std::wstring& md) {
            "\\red42\\green122\\blue42;}";
     out += "\\viewkind4\\uc1\\pard\\f0\\fs20\\sl264\\slmult1 ";
 
-    bool fence = false;
-    size_t pos = 0;
-    while (pos <= md.size()) {
-        size_t end = md.find(L"\r\n", pos);
-        std::wstring line = md.substr(pos, end == std::wstring::npos ? std::wstring::npos : end - pos);
-        const bool last = (end == std::wstring::npos);
-        pos = last ? md.size() + 1 : end + 2;
+    auto is_table_row = [](const std::wstring& l) {
+        size_t pipes = 0;
+        for (wchar_t c : l) {
+            if (c == L'|') ++pipes;
+        }
+        return pipes >= 2;
+    };
+    auto is_table_sep = [](const std::wstring& l) {
+        if (l.find(L'-') == std::wstring::npos) return false;
+        return l.find_first_not_of(L"|-: ") == std::wstring::npos;
+    };
 
+    const size_t kCodeLimit = 200;      // длинные строки кода обрезаем, чтобы не рвались переносом
+    bool fence = false;
+    for (size_t i = 0; i < lines.size(); ++i) {
+        std::wstring line = lines[i];
         while (!line.empty() && (line.back() == L' ' || line.back() == L'\t')) line.pop_back();
 
         if (line.rfind(L"```", 0) == 0) {
             fence = !fence;
-            if (fence) out += "\\pard\\f1\\fs18\\highlight4\\li0\\ri0 ";
-            else out += "\\pard\\highlight0\\f0\\fs20 ";
-            if (last) break;
+            out += fence ? "\\pard\\f1\\fs18\\highlight4\\li0\\ri0 "
+                         : "\\pard\\highlight0\\f0\\fs20 ";
             continue;
         }
         if (fence) {
+            std::wstring code = line;
+            if (code.size() > kCodeLimit) {
+                code.resize(kCodeLimit);
+                code += L"…";
+            }
             out += "\\pard\\f1\\fs18\\highlight4\\li0\\ri0 ";
-            out += RtfEscape(line);
+            out += RtfEscape(code);
             out += "\\par ";
-            if (last) break;
             continue;
         }
 
-        // Заголовок
+        if (is_table_row(line)) {
+            std::vector<std::vector<std::wstring>> rows;
+            size_t j = i;
+            while (j < lines.size() && is_table_row(lines[j])) {
+                if (!is_table_sep(lines[j])) rows.push_back(SplitTableRow(lines[j]));
+                ++j;
+            }
+            EmitTable(out, rows);
+            i = j - 1;
+            continue;
+        }
+
         size_t hashes = 0;
         while (hashes < line.size() && line[hashes] == L'#') ++hashes;
         if (hashes >= 1 && hashes <= 6 && hashes < line.size() && line[hashes] == L' ') {
@@ -465,28 +583,25 @@ std::string MarkdownToRtf(const std::wstring& md) {
             out += head;
             out += InlineRtf(line.substr(hashes + 1));
             out += "\\b0\\f0\\fs20\\sb0\\sa0\\par ";
-            if (last) break;
             continue;
         }
 
-        // Горизонтальная линия
         const bool hr = line.size() >= 3 && line.find_first_not_of(line[0]) == std::wstring::npos &&
                         (line[0] == L'-' || line[0] == L'*' || line[0] == L'_');
         if (hr) {
             out += "\\pard\\brdrb\\brdrs\\brdrw10\\brdrcf3\\par ";
-            if (last) break;
             continue;
         }
 
-        // Списки
         size_t indent = 0;
         while (indent < line.size() && line[indent] == L' ') ++indent;
         const std::wstring rest = line.substr(indent);
         const bool bullet = rest.size() > 1 && (rest[0] == L'-' || rest[0] == L'*' || rest[0] == L'+') &&
                             rest[1] == L' ';
         size_t digits = 0;
-        while (digits < rest.size() && iswdigit(rest[digits])) ++digits;
-        const bool ordered = digits > 0 && digits + 1 < rest.size() && rest[digits] == L'.' && rest[digits + 1] == L' ';
+        while (digits < rest.size() && rest[digits] >= L'0' && rest[digits] <= L'9') ++digits;
+        const bool ordered = digits > 0 && digits + 1 < rest.size() && rest[digits] == L'.' &&
+                             rest[digits + 1] == L' ';
         if (bullet || ordered) {
             const int left = 360 + (int)(indent / 2) * 240;
             char head[96]{};
@@ -501,38 +616,24 @@ std::string MarkdownToRtf(const std::wstring& md) {
                 out += InlineRtf(rest.substr(digits + 2));
             }
             out += "\\par ";
-            if (last) break;
             continue;
         }
 
-        // Цитата
         if (!rest.empty() && rest[0] == L'>') {
             out += "\\pard\\li360\\cf3 ";
             out += InlineRtf(rest.substr(1));
             out += "\\cf1\\li0\\par ";
-            if (last) break;
-            continue;
-        }
-
-        // Таблица: держим моноширинным, чтобы столбцы не разъезжались
-        if (rest.find(L'|') != std::wstring::npos) {
-            out += "\\pard\\f1\\fs18 ";
-            out += RtfEscape(rest);
-            out += "\\f0\\fs20\\par ";
-            if (last) break;
             continue;
         }
 
         if (rest.empty()) {
             out += "\\pard\\par ";
-            if (last) break;
             continue;
         }
 
         out += "\\pard ";
         out += InlineRtf(rest);
         out += "\\par ";
-        if (last) break;
     }
 
     out += "}";
@@ -554,13 +655,61 @@ DWORD CALLBACK RtfStreamIn(DWORD_PTR cookie, LPBYTE buff, LONG cb, LONG* pcb) {
     return 0;
 }
 
-void ShowMarkdown(HWND edit, const std::wstring& text) {
+void ShowMarkdown(HWND edit, const std::wstring& text,
+                  std::vector<std::pair<std::wstring, std::wstring>>& links) {
+    links.clear();
+    g_mdLinks = &links;
     const std::string rtf = MarkdownToRtf(text);
+    g_mdLinks = nullptr;
     RtfInput in{&rtf, 0};
     EDITSTREAM es{};
     es.dwCookie = (DWORD_PTR)&in;
     es.pfnCallback = RtfStreamIn;
     SendMessageW(edit, EM_STREAMIN, SF_RTF, (LPARAM)&es);
+}
+
+std::wstring RangeText(HWND edit, CHARRANGE chrg) {
+    const int len = chrg.cpMax - chrg.cpMin;
+    if (len <= 0 || len > 4096) return {};
+    std::wstring buf((size_t)len + 1, L'\0');
+    TEXTRANGEW tr{};
+    tr.chrg = chrg;
+    tr.lpstrText = buf.data();
+    SendMessageW(edit, EM_GETTEXTRANGE, 0, (LPARAM)&tr);
+    buf.resize(wcslen(buf.c_str()));
+    return buf;
+}
+
+// Ctrl+F — спросить строку, Enter — искать дальше.
+void FindInLister(HWND parent, ListerState* st, bool ask) {
+    if (!st || !st->edit) return;
+
+    std::wstring needle = st->findNeedle;
+    if (ask) {
+        if (!InputBox(parent, L"Поиск по тексту", L"Найти:", needle, false)) return;
+        st->findNeedle = needle;
+    }
+    if (needle.empty()) return;
+
+    CHARRANGE sel{};
+    SendMessageW(st->edit, EM_EXGETSEL, 0, (LPARAM)&sel);
+
+    FINDTEXTEXW ft{};
+    ft.chrg.cpMin = sel.cpMax;
+    ft.chrg.cpMax = -1;
+    ft.lpstrText = (LPWSTR)needle.c_str();
+    LRESULT found = SendMessageW(st->edit, EM_FINDTEXTEXW, FR_DOWN, (LPARAM)&ft);
+    if (found < 0) {                       // дошли до конца — начинаем сначала
+        ft.chrg.cpMin = 0;
+        ft.chrg.cpMax = -1;
+        found = SendMessageW(st->edit, EM_FINDTEXTEXW, FR_DOWN, (LPARAM)&ft);
+    }
+    if (found < 0) {
+        MessageBeep(MB_ICONINFORMATION);
+        return;
+    }
+    SendMessageW(st->edit, EM_EXSETSEL, 0, (LPARAM)&ft.chrgText);
+    SendMessageW(st->edit, EM_SCROLLCARET, 0, 0);
 }
 
 void RefreshLister(HWND hwnd, ListerState* st) {
@@ -577,7 +726,7 @@ void RefreshLister(HWND hwnd, ListerState* st) {
             body += L"\r\n… файл обрезан";
         }
         if (st->markdown && st->rich) {
-            ShowMarkdown(st->edit, body);
+            ShowMarkdown(st->edit, body, st->links);
         } else {
             SetWindowTextW(st->edit, body.c_str());
         }
@@ -597,7 +746,8 @@ void RefreshLister(HWND hwnd, ListerState* st) {
     SetWindowTextW(hwnd, (L"Просмотр — " + name + L" · " + mode).c_str());
     if (st->hint) {
         SetWindowTextW(st->hint,
-                        L"1 ANSI · 2 OEM · 3 UTF-8 · 4 UTF-16 · T текст · M markdown · H hex · ESC закрыть");
+                        L"1 ANSI · 2 OEM · 3 UTF-8 · 4 UTF-16 · T текст · M markdown · H hex · "
+                        L"Ctrl+F поиск · Enter далее · ESC закрыть");
     }
 }
 
@@ -610,6 +760,14 @@ LRESULT CALLBACK ListerEditProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
         if (wParam == VK_ESCAPE || wParam == VK_F3 || wParam == VK_F10) {
             DestroyWindow(parent);
+            return 0;
+        }
+        if (st && wParam == VK_RETURN) {
+            FindInLister(parent, st, false);
+            return 0;
+        }
+        if (st && wParam == 'F' && (GetKeyState(VK_CONTROL) & 0x8000)) {
+            FindInLister(parent, st, true);
             return 0;
         }
         if (st) {
@@ -669,6 +827,7 @@ LRESULT CALLBACK ListerProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                                        CLEARTYPE_QUALITY, FIXED_PITCH | FF_MODERN, L"Consolas");
                 SendMessageW(st->edit, WM_SETFONT, (WPARAM)st->font, TRUE);
                 if (st->hint) SendMessageW(st->hint, WM_SETFONT, (WPARAM)st->font, TRUE);
+                SendMessageW(st->edit, EM_SETEVENTMASK, 0, ENM_LINK);
                 SetWindowSubclass(st->edit, ListerEditProc, 1, 0);
                 RefreshLister(hwnd, st);
             }
@@ -693,6 +852,24 @@ LRESULT CALLBACK ListerProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 return 0;
             }
             break;
+        case WM_NOTIFY: {
+            auto* nm = reinterpret_cast<NMHDR*>(lParam);
+            if (st && nm && nm->code == EN_LINK) {
+                auto* link = reinterpret_cast<ENLINK*>(lParam);
+                if (link->msg == WM_LBUTTONUP) {
+                    const std::wstring text = Trim(RangeText(st->edit, link->chrg));
+                    for (const auto& kv : st->links) {
+                        if (kv.first == text) {
+                            ShellExecuteW(hwnd, L"open", kv.second.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                            break;
+                        }
+                    }
+                }
+                return 0;
+            }
+            break;
+        }
+
         case WM_CLOSE:
             DestroyWindow(hwnd);
             return 0;
