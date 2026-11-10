@@ -10,6 +10,7 @@
 #include "dupes.h"
 #include "rename.h"
 #include "undo.h"
+#include "diff.h"
 #include "archive.h"
 #include "sync.h"
 #include "ftp.h"
@@ -61,6 +62,7 @@ enum : int {
     IDM_COPY_PATH = 207,
     IDM_DUPES = 208,
     IDM_UNDO_RENAME = 209,
+    IDM_DIFF = 210,
     IDM_NET_BROWSE = 193,
     IDM_NET_MAP = 194,
     IDM_NET_UNMAP = 195,
@@ -862,6 +864,7 @@ void App::BuildMenu() {
     AppendMenuW(tools, MF_STRING, IDM_DUPES, L"Поиск &дубликатов…");
     AppendMenuW(tools, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(tools, MF_STRING, IDM_UNDO_RENAME, L"Отменить переименование\tCtrl+Z");
+    AppendMenuW(tools, MF_STRING, IDM_DIFF, L"Сравнить &файлы…");
     AppendMenuW(tools, MF_STRING, IDM_BATCH_RENAME, L"&Пакетное переименование…\tCtrl+M");
     AppendMenuW(tools, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(tools, MF_STRING, IDM_SWAP, L"С&менить панели\tCtrl+U");
@@ -2709,6 +2712,22 @@ void App::Dispatch(int id) {
                 break;
             }
             FindDuplicates(hwnd_, ActivePanel()->Path());
+            break;
+        }
+        case IDM_DIFF: {
+            if (left_.InFtp() || right_.InFtp() || left_.InArchive() || right_.InArchive()) {
+                MessageBoxW(hwnd_, L"Сравнение работает только с локальными файлами.", L"Сравнение файлов",
+                            MB_ICONINFORMATION | MB_OK);
+                break;
+            }
+            Entry* le = left_.Cursor();
+            Entry* re = right_.Cursor();
+            if (!le || !re || le->isUp || re->isUp || le->isDir || re->isDir) {
+                MessageBoxW(hwnd_, L"Поставьте курсор на файл в каждой панели.", L"Сравнение файлов",
+                            MB_ICONINFORMATION | MB_OK);
+                break;
+            }
+            DiffFiles(hwnd_, JoinPath(left_.Path(), le->name), JoinPath(right_.Path(), re->name));
             break;
         }
         case IDM_UNDO_RENAME: {
