@@ -227,6 +227,7 @@ struct ListerState {
     bool rich = false;           // удалось создать RichEdit
     std::vector<std::pair<std::wstring, std::wstring>> links;   // текст ссылки → URL
     std::vector<std::pair<int, std::wstring>> outline;          // заголовки Markdown: уровень, текст
+    bool syntaxOn = true;        // подсветка синтаксиса включается/выключается клавишей C
     std::wstring findNeedle;     // последняя строка поиска
     HFONT font = nullptr;
     HWND edit = nullptr;
@@ -754,6 +755,21 @@ bool IsKeyword(SyntaxLang lang, const std::wstring& word) {
     return false;
 }
 
+bool IsBuiltin(SyntaxLang lang, const std::wstring& word) {
+    if (lang != SyntaxLang::Python) return false;
+    static const wchar_t* builtins[] = {
+        L"abs",   L"all",     L"any",    L"bin",    L"bool",   L"bytes",  L"dict",   L"dir",    L"enumerate",
+        L"eval",  L"float",   L"format", L"getattr", L"hasattr", L"hash",  L"id",     L"input",  L"int",
+        L"isinstance", L"issubclass", L"iter", L"len", L"list", L"map",  L"max",    L"min",    L"next",
+        L"object", L"open",   L"ord",    L"pow",    L"print",  L"range",  L"repr",   L"reversed", L"round",
+        L"set",   L"sorted",  L"str",    L"sum",    L"super",  L"tuple",  L"type",   L"zip",
+        L"ValueError", L"TypeError", L"KeyError", L"IndexError", L"Exception", L"ZeroDivisionError"};
+    for (const wchar_t* b : builtins) {
+        if (word == b) return true;
+    }
+    return false;
+}
+
 void PaintRange(HWND edit, long from, long to, COLORREF color) {
     if (to <= from) return;
     CHARRANGE range{from, to};
@@ -771,11 +787,14 @@ void HighlightSyntax(HWND edit, const std::wstring& text, SyntaxLang lang) {
     if (lang == SyntaxLang::None || text.empty()) return;
     if (text.size() > 400 * 1024) return;             // очень большие файлы не раскрашиваем
 
-    const COLORREF kKeyword = RGB(0, 0, 190);
-    const COLORREF kString = RGB(0, 120, 60);
-    const COLORREF kComment = RGB(110, 120, 130);
-    const COLORREF kNumber = RGB(150, 60, 0);
-    const COLORREF kSection = RGB(120, 0, 120);
+    // Палитра как в Visual Studio: синие ключевые слова, тёмно-красные строки,
+    // зелёные комментарии, бирюзовые числа и встроенные функции.
+    const COLORREF kKeyword = RGB(0, 0, 255);
+    const COLORREF kString = RGB(163, 21, 21);
+    const COLORREF kComment = RGB(0, 128, 0);
+    const COLORREF kNumber = RGB(9, 134, 88);
+    const COLORREF kSection = RGB(38, 127, 153);
+    const COLORREF kBuiltin = RGB(38, 127, 153);
 
     const bool cLike = lang == SyntaxLang::Cpp;
     size_t i = 0;
@@ -813,6 +832,18 @@ void HighlightSyntax(HWND edit, const std::wstring& text, SyntaxLang lang) {
             size_t end = text.find(L'\n', i);
             if (end == std::wstring::npos) end = text.size();
             PaintRange(edit, (long)i, (long)end, kComment);
+            ++guard;
+            i = end;
+            continue;
+        }
+
+        // тройные кавычки Python (docstring)
+        if (lang == SyntaxLang::Python && (c == L'"' || c == L'\'') && i + 2 < text.size() &&
+            text[i + 1] == c && text[i + 2] == c) {
+            const std::wstring closing = std::wstring(3, c);
+            size_t end = text.find(closing, i + 3);
+            end = (end == std::wstring::npos) ? text.size() : end + 3;
+            PaintRange(edit, (long)i, (long)end, kString);
             ++guard;
             i = end;
             continue;
@@ -866,7 +897,11 @@ void HighlightSyntax(HWND edit, const std::wstring& text, SyntaxLang lang) {
                 ++j;
             }
             const std::wstring word = text.substr(i, j - i);
-            if (IsKeyword(lang, word)) PaintRange(edit, (long)i, (long)j, kKeyword);
+            if (IsKeyword(lang, word)) {
+                PaintRange(edit, (long)i, (long)j, kKeyword);
+            } else if (IsBuiltin(lang, word)) {
+                PaintRange(edit, (long)i, (long)j, kBuiltin);
+            }
             ++guard;
             i = j;
             continue;
@@ -1081,7 +1116,7 @@ void RefreshLister(HWND hwnd, ListerState* st) {
         } else {
             SetWindowTextW(st->edit, body.c_str());
             const size_t dot = st->path.find_last_of(L'.');
-            if (dot != std::wstring::npos) {
+            if (st->syntaxOn && dot != std::wstring::npos) {
                 const SyntaxLang lang = LangByExtension(Lower(st->path.substr(dot)));
                 HighlightSyntax(st->edit, body, lang);
             }
@@ -1103,7 +1138,7 @@ void RefreshLister(HWND hwnd, ListerState* st) {
     if (st->hint) {
         SetWindowTextW(st->hint,
                         L"1 ANSI · 2 OEM · 3 UTF-8 · 4 UTF-16 · T текст · M markdown · H hex · "
-                        L"Ctrl+F поиск · F3 далее · Shift+F3 назад · G оглавление · F4 редактор · ESC закрыть");
+                        L"Ctrl+F поиск · F3 далее · G оглавление · C подсветка · F4 редактор · ESC закрыть");
     }
 }
 
@@ -1140,6 +1175,11 @@ LRESULT CALLBACK ListerEditProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         }
         if (st && wParam == 'G') {
             ShowOutline(parent, st);
+            return 0;
+        }
+        if (st && wParam == 'C') {
+            st->syntaxOn = !st->syntaxOn;
+            RefreshLister(parent, st);
             return 0;
         }
         if (st) {
