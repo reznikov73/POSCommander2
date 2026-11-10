@@ -797,6 +797,18 @@ void HighlightSyntax(HWND edit, const std::wstring& text, SyntaxLang lang) {
     const COLORREF kBuiltin = RGB(38, 127, 153);
     const COLORREF kJsonKey = RGB(4, 81, 165);     // ключ JSON — синий, как в VS Code
 
+    // RichEdit считает абзац одним CR, а мы индексируем исходный текст с CRLF.
+    // Без пересчёта раскраска уезжает на соседние слова (та же ловушка, что в diff).
+    std::vector<long> cp(text.size() + 1, 0);
+    {
+        long shift = 0;
+        for (size_t k = 0; k < text.size(); ++k) {
+            cp[k] = (long)k - shift;
+            if (text[k] == L'\r' && k + 1 < text.size() && text[k + 1] == L'\n') ++shift;
+        }
+        cp[text.size()] = (long)text.size() - shift;
+    }
+
     const bool cLike = lang == SyntaxLang::Cpp;
     size_t i = 0;
     int guard = 0;
@@ -808,7 +820,7 @@ void HighlightSyntax(HWND edit, const std::wstring& text, SyntaxLang lang) {
         if (cLike && c == L'/' && i + 1 < text.size() && text[i + 1] == L'/') {
             size_t end = text.find(L'\n', i);
             if (end == std::wstring::npos) end = text.size();
-            PaintRange(edit, (long)i, (long)end, kComment);
+            PaintRange(edit, cp[i], cp[end], kComment);
             ++guard;
             i = end;
             continue;
@@ -816,7 +828,7 @@ void HighlightSyntax(HWND edit, const std::wstring& text, SyntaxLang lang) {
         if (cLike && c == L'/' && i + 1 < text.size() && text[i + 1] == L'*') {
             size_t end = text.find(L"*/", i + 2);
             end = (end == std::wstring::npos) ? text.size() : end + 2;
-            PaintRange(edit, (long)i, (long)end, kComment);
+            PaintRange(edit, cp[i], cp[end], kComment);
             ++guard;
             i = end;
             continue;
@@ -824,7 +836,7 @@ void HighlightSyntax(HWND edit, const std::wstring& text, SyntaxLang lang) {
         if (lang == SyntaxLang::Python && c == L'#') {
             size_t end = text.find(L'\n', i);
             if (end == std::wstring::npos) end = text.size();
-            PaintRange(edit, (long)i, (long)end, kComment);
+            PaintRange(edit, cp[i], cp[end], kComment);
             ++guard;
             i = end;
             continue;
@@ -832,7 +844,7 @@ void HighlightSyntax(HWND edit, const std::wstring& text, SyntaxLang lang) {
         if (lang == SyntaxLang::Ini && (c == L';' || c == L'#')) {
             size_t end = text.find(L'\n', i);
             if (end == std::wstring::npos) end = text.size();
-            PaintRange(edit, (long)i, (long)end, kComment);
+            PaintRange(edit, cp[i], cp[end], kComment);
             ++guard;
             i = end;
             continue;
@@ -844,7 +856,7 @@ void HighlightSyntax(HWND edit, const std::wstring& text, SyntaxLang lang) {
             const std::wstring closing = std::wstring(3, c);
             size_t end = text.find(closing, i + 3);
             end = (end == std::wstring::npos) ? text.size() : end + 3;
-            PaintRange(edit, (long)i, (long)end, kString);
+            PaintRange(edit, cp[i], cp[end], kString);
             ++guard;
             i = end;
             continue;
@@ -867,7 +879,7 @@ void HighlightSyntax(HWND edit, const std::wstring& text, SyntaxLang lang) {
                 while (k < text.size() && (text[k] == L' ' || text[k] == L'\t')) ++k;
                 isKey = k < text.size() && text[k] == L':';
             }
-            PaintRange(edit, (long)i, (long)j, isKey ? kJsonKey : kString);
+            PaintRange(edit, cp[i], cp[j], isKey ? kJsonKey : kString);
             ++guard;
             i = j;
             continue;
@@ -877,7 +889,7 @@ void HighlightSyntax(HWND edit, const std::wstring& text, SyntaxLang lang) {
         if (lang == SyntaxLang::Ini && c == L'[') {
             size_t end = text.find(L']', i);
             if (end != std::wstring::npos) {
-                PaintRange(edit, (long)i, (long)end + 1, kSection);
+                PaintRange(edit, cp[i], cp[end + 1], kSection);
                 ++guard;
                 i = end + 1;
                 continue;
@@ -892,7 +904,7 @@ void HighlightSyntax(HWND edit, const std::wstring& text, SyntaxLang lang) {
                                        (text[j] >= L'A' && text[j] <= L'F'))) {
                 ++j;
             }
-            PaintRange(edit, (long)i, (long)j, kNumber);
+            PaintRange(edit, cp[i], cp[j], kNumber);
             ++guard;
             i = j;
             continue;
@@ -907,9 +919,9 @@ void HighlightSyntax(HWND edit, const std::wstring& text, SyntaxLang lang) {
             }
             const std::wstring word = text.substr(i, j - i);
             if (IsKeyword(lang, word)) {
-                PaintRange(edit, (long)i, (long)j, kKeyword);
+                PaintRange(edit, cp[i], cp[j], kKeyword);
             } else if (IsBuiltin(lang, word)) {
-                PaintRange(edit, (long)i, (long)j, kBuiltin);
+                PaintRange(edit, cp[i], cp[j], kBuiltin);
             }
             ++guard;
             i = j;
