@@ -159,6 +159,10 @@ void LoadSettings() {
     if (s.splitPercent > 85) s.splitPercent = 85;
 
     s.showHidden = ReadInt(L"View", L"ShowHidden", 1) != 0;
+    s.uiFontPt = ReadInt(L"View", L"UiFontPt", 9);
+    if (s.uiFontPt < 8) s.uiFontPt = 8;
+    if (s.uiFontPt > 14) s.uiFontPt = 14;
+    s.syntaxHighlight = ReadInt(L"View", L"Syntax", 1) != 0;
     s.sortColumn = ReadInt(L"View", L"SortColumn", 0);
     s.sortReverse = ReadInt(L"View", L"SortReverse", 0) != 0;
 
@@ -227,6 +231,8 @@ void SaveSettings() {
     WriteInt(L"Layout", L"SplitPercent", s.splitPercent);
 
     WriteInt(L"View", L"ShowHidden", s.showHidden ? 1 : 0);
+    WriteInt(L"View", L"UiFontPt", s.uiFontPt);
+    WriteInt(L"View", L"Syntax", s.syntaxHighlight ? 1 : 0);
     WriteInt(L"View", L"SortColumn", s.sortColumn);
     WriteInt(L"View", L"SortReverse", s.sortReverse ? 1 : 0);
     WriteInt(L"View", L"ColName", s.colWidth[0]);

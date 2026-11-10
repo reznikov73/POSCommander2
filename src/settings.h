@@ -15,6 +15,8 @@ struct Settings {
 
     int splitPercent = 50;
     bool showHidden = true;
+    int uiFontPt = 9;                    // размер шрифта интерфейса
+    bool syntaxHighlight = true;         // подсветка синтаксиса в просмотрщике
     int colWidth[4] = {240, 70, 100, 120};   // Имя, Тип, Размер, Дата
     int sortColumn = 0;
     bool sortReverse = false;

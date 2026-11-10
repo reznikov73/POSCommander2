@@ -11,6 +11,7 @@
 #include "rename.h"
 #include "undo.h"
 #include "diff.h"
+#include "prefs.h"
 #include "archive.h"
 #include "sync.h"
 #include "ftp.h"
@@ -63,6 +64,7 @@ enum : int {
     IDM_DUPES = 208,
     IDM_UNDO_RENAME = 209,
     IDM_DIFF = 210,
+    IDM_PREFS = 211,
     IDM_NET_BROWSE = 193,
     IDM_NET_MAP = 194,
     IDM_NET_UNMAP = 195,
@@ -544,6 +546,7 @@ private:
     void Dispatch(int id);
     void UpdatePromptLabel();
     void OpenCursor();
+    void ApplyUiSettings();
     void OpenCursorInNewTab();
     void CopyCursorPaths();
     void GoUpActive();
@@ -854,6 +857,8 @@ void App::BuildMenu() {
     AppendMenuW(menu_, MF_POPUP, (UINT_PTR)tabs, L"В&кладки");
 
     HMENU cfg = CreatePopupMenu();
+    AppendMenuW(cfg, MF_STRING, IDM_PREFS, L"&Параметры…");
+    AppendMenuW(cfg, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(cfg, MF_STRING, IDM_PLUGINS, L"&Плагины Total Commander…");
     AppendMenuW(cfg, MF_STRING, IDM_QUEUE, L"&Очередь операций…");
     AppendMenuW(menu_, MF_POPUP, (UINT_PTR)cfg, L"&Конфигурация");
@@ -880,9 +885,32 @@ void App::BuildMenu() {
     AppendMenuW(menu_, MF_POPUP, (UINT_PTR)help, L"&Помощь");
 }
 
+// Пересоздаёт шрифт интерфейса и раздаёт его панелям и статусным полям.
+void App::ApplyUiSettings() {
+    HFONT fresh = MakeUiFont();
+    if (!fresh) return;
+
+    if (font_) DeleteObject(font_);
+    font_ = fresh;
+
+    left_.SetFont(font_, dpi_);
+    right_.SetFont(font_, dpi_);
+    if (prompt_) SendMessageW(prompt_, WM_SETFONT, (WPARAM)font_, TRUE);
+    if (label_) SendMessageW(label_, WM_SETFONT, (WPARAM)font_, TRUE);
+
+    left_.SetShowHidden(showHidden_);
+    right_.SetShowHidden(showHidden_);
+    Layout();
+    left_.Reload();
+    right_.Reload();
+}
+
 HFONT App::MakeUiFont() {
     LOGFONTW lf{};
-    lf.lfHeight = -MulDiv(9, (int)dpi_, 72);
+    int pt = GetSettings().uiFontPt;
+    if (pt < 8) pt = 8;
+    if (pt > 14) pt = 14;
+    lf.lfHeight = -MulDiv(pt, (int)dpi_, 72);
     lf.lfWeight = FW_NORMAL;
     lf.lfCharSet = DEFAULT_CHARSET;
     lf.lfQuality = CLEARTYPE_QUALITY;
@@ -2712,6 +2740,12 @@ void App::Dispatch(int id) {
                 break;
             }
             FindDuplicates(hwnd_, ActivePanel()->Path());
+            break;
+        }
+        case IDM_PREFS: {
+            if (ShowPreferences(hwnd_)) {
+                ApplyUiSettings();
+            }
             break;
         }
         case IDM_DIFF: {

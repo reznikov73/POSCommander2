@@ -1502,6 +1502,7 @@ void ShowLister(HWND owner, const std::wstring& path) {
                                                                                  : path.find_last_of(L'.'));
     ext = Lower(ext);
     st->markdown = !st->hex && (ext == L".md" || ext == L".markdown" || ext == L".mdown");
+    st->syntaxOn = GetSettings().syntaxHighlight;
 
     std::wstring name = path.substr(path.find_last_of(L'\\') + 1);
     std::wstring title = L"Просмотр — " + name;
