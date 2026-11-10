@@ -4,6 +4,7 @@
 #include "common.h"
 
 #include <atomic>
+#include <memory>
 #include <mutex>
 #include <set>
 #include "util.h"
@@ -144,6 +145,9 @@ private:
     void ResetShiftMark();
     // Медленный клик по имени файла под курсором включает правку имени.
     void QueueInlineRenameOnClick(HWND list, LPARAM lParam);
+    // Наблюдение за каталогом: перезапуск после навигации, остановка для FTP/архивов.
+    void StartWatch();
+    void StopWatch();
     void CommitInlineRename();
     void CancelInlineRename();
     static LRESULT CALLBACK RenameEditProc(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
@@ -215,6 +219,8 @@ private:
     bool clickCtrl_ = false;       // Ctrl был зажат в момент клика
     int shiftAnchor_ = -1;         // начало диапазона, отмеченного Shift+стрелками
     std::set<int> shiftMarked_;    // индексы, отмеченные этим диапазоном
+    struct Watch;                  // дескрипторы ReadDirectoryChangesW
+    std::shared_ptr<Watch> watch_; // живёт, пока поток наблюдения не завершится
     HWND renameEdit_ = nullptr;    // EDIT поверх имени при F2
     int renameIndex_ = -1;
     int clickRenameIndex_ = -1;    // элемент, по которому ждём «медленный клик»

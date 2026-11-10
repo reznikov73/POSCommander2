@@ -3432,7 +3432,13 @@ LRESULT App::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_ACTIVATE:
-            if (LOWORD(wParam) == WA_INACTIVE) shiftHeld_ = false;
+            if (LOWORD(wParam) == WA_INACTIVE) {
+                shiftHeld_ = false;
+            } else if (ActivePanel()) {
+                // Вернулись в окно — перечитываем каталог, как TC: снаружи могли
+                // появиться или исчезнуть файлы, пока мы были не в фокусе.
+                ActivePanel()->Reload();
+            }
             break;
 
         case WM_SETFOCUS:

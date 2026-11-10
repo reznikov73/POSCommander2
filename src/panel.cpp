@@ -31,6 +31,8 @@ const UINT_PTR kHoverShowTimer = 8;   // показ списка содержи�
 const UINT_PTR kHoverHideTimer = 9;   // скрытие списка
 const UINT_PTR kHoverCascadeTimer = 11;  // открытие подуровня при наведении на папку
 const UINT_PTR kRenameClickTimer = 12;    // медленный клик по имени: ждём, не двойной ли
+const UINT_PTR kWatchDebounceTimer = 14;  // пауза после изменений в каталоге перед Reload
+const UINT kWatchMsg = WM_APP + 310;      // поток наблюдения: «в каталоге что-то изменилось»
 const wchar_t* kHoverClass = L"POSPathHover2";
 const int kListId = 2;
 const int kStatusId = 3;
@@ -1666,6 +1668,7 @@ void Panel::FocusList() {
 // Список содержимого архива для текущего внутреннего каталога.
 bool Panel::LoadArchiveListing(const std::wstring& focus) {
     lastError_.clear();
+    StopWatch();           // содержимое архива меняется не файловой системой
 
     std::vector<ArchiveEntry> all;
     if (!ListArchive(archiveFile_, all)) {
@@ -1738,6 +1741,7 @@ bool Panel::LoadArchiveListing(const std::wstring& focus) {
 
 bool Panel::LoadFtpListing(const std::wstring& url, const std::wstring& focus) {
     lastError_.clear();
+    StopWatch();           // за FTP-каталогом локальный watcher не следит
     const ULONGLONG started = GetTickCount64();
 
     FtpSite site;
@@ -1936,6 +1940,7 @@ bool Panel::Navigate(const std::wstring& dir, const std::wstring& focus, bool ke
     // История навигации: обычный переход добавляет точку, переход по истории — нет.
     PushHistoryPoint();
     (void)previousPath;
+    StartWatch();          // следим за новым каталогом
     return true;
 }
 
@@ -2116,6 +2121,78 @@ void Panel::SetCursorIndex(int index) {
         ListView_RedrawItems(list_, index, index);
     }
     ListView_EnsureVisible(list_, index, FALSE);
+}
+
+// Дескрипторы наблюдения. Закрываются в деструкторе, то есть после выхода потока:
+// поток держит shared_ptr, поэтому CancelIoEx и CloseHandle не гоняются с UI.
+struct Panel::Watch {
+    HANDLE dir = nullptr;
+    HANDLE stop = nullptr;
+    HANDLE change = nullptr;
+    std::wstring path;        // каталог, за которым следим
+
+    ~Watch() {
+        if (dir) CloseHandle(dir);
+        if (stop) CloseHandle(stop);
+        if (change) CloseHandle(change);
+    }
+};
+
+void Panel::StopWatch() {
+    if (!watch_) return;
+    if (watch_->stop) SetEvent(watch_->stop);
+    watch_.reset();          // сам объект доживёт до конца потока
+}
+
+// Перезапуск наблюдения за текущим каталогом. Для FTP и архивов наблюдение снимается.
+void Panel::StartWatch() {
+    // Reload внутри наблюдения вызывает Navigate: тот же каталог не пересоздаём,
+    // иначе на каждое изменение появлялся бы новый поток.
+    if (watch_ && watch_->path == path_) return;
+    StopWatch();
+    if (!hwnd_ || ftp_ || inArchive_ || path_.empty()) return;
+
+    auto w = std::make_shared<Watch>();
+    w->path = path_;
+    w->dir = CreateFileW(path_.c_str(), FILE_LIST_DIRECTORY,
+                         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                         OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED, nullptr);
+    if (w->dir == INVALID_HANDLE_VALUE) {
+        w->dir = nullptr;
+        LogDebug(L"watch: не открыть каталог " + path_);
+        return;
+    }
+    w->stop = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    w->change = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (!w->stop || !w->change) return;
+
+    watch_ = w;
+    const HWND target = hwnd_;
+    std::thread([w, target] {
+        std::vector<BYTE> buf(32 * 1024);
+        const DWORD filter = FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME |
+                             FILE_NOTIFY_CHANGE_SIZE | FILE_NOTIFY_CHANGE_LAST_WRITE;
+        for (;;) {
+            OVERLAPPED ov{};
+            ov.hEvent = w->change;
+            ResetEvent(w->change);
+            DWORD bytes = 0;
+            if (!ReadDirectoryChangesW(w->dir, buf.data(), (DWORD)buf.size(), FALSE, filter,
+                                       &bytes, &ov, nullptr)) {
+                break;
+            }
+            HANDLE handles[2] = {w->change, w->stop};
+            const DWORD wait = WaitForMultipleObjects(2, handles, FALSE, INFINITE);
+            if (wait != WAIT_OBJECT_0) {
+                CancelIoEx(w->dir, &ov);        // остановка: снимаем ожидающее чтение
+                break;
+            }
+            DWORD got = 0;
+            if (!GetOverlappedResult(w->dir, &ov, &got, FALSE)) break;
+            // got == 0 — переполнение буфера, всё равно просим полное обновление.
+            if (IsWindow(target)) PostMessageW(target, kWatchMsg, 0, 0);
+        }
+    }).detach();
 }
 
 // Правка имени по клику, как в TC: первый клик выделяет файл, повторный клик
@@ -3098,6 +3175,19 @@ LRESULT CALLBACK Panel::ProcStatic(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
 
 LRESULT Panel::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
+        case kWatchMsg:
+            // Каждое новое изменение откладывает обновление: пачка событий даёт один Reload.
+            SetTimer(hwnd, kWatchDebounceTimer, 350, nullptr);
+            return 0;
+
+        case WM_TIMER:
+            if (wParam == kWatchDebounceTimer) {
+                KillTimer(hwnd, kWatchDebounceTimer);
+                Reload();
+                return 0;
+            }
+            break;
+
         case WM_SIZE:
             Layout();
             return 0;
