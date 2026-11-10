@@ -22,6 +22,7 @@ const int kCopyLeftId = 303;       // ←
 const int kWrapId = 304;     // «Обновить»
 const int kOnlyDiffId = 305;       // только различия
 const int kCloseId = 306;
+const int kContentId = 307;        // сверять содержимое, а не только размер
 
 struct FileInfo {
     bool exists = false;
@@ -44,6 +45,7 @@ struct SyncState {
     HWND list = nullptr;
     HWND status = nullptr;
     HWND onlyDiff = nullptr;
+    HWND contentCheck = nullptr;
     HFONT font = nullptr;
     std::wstring leftRoot;
     std::wstring rightRoot;
@@ -138,6 +140,46 @@ bool CopyOne(const RelEntry& item, bool toRight, std::wstring& error) {
     return true;
 }
 
+// CRC32 по содержимому файла: нужен, чтобы не считать равными разные файлы
+// одного размера и одной даты.
+unsigned long Crc32File(const std::wstring& path, bool& ok) {
+    static unsigned long table[256];
+    static bool ready = false;
+    if (!ready) {
+        for (unsigned long i = 0; i < 256; ++i) {
+            unsigned long c = i;
+            for (int k = 0; k < 8; ++k) c = (c & 1) ? (0xEDB88320ul ^ (c >> 1)) : (c >> 1);
+            table[i] = c;
+        }
+        ready = true;
+    }
+
+    HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+    if (f == INVALID_HANDLE_VALUE) {
+        ok = false;
+        return 0;
+    }
+
+    std::vector<unsigned char> buf(64 * 1024);
+    unsigned long crc = 0xFFFFFFFFul;
+    DWORD read = 0;
+    ok = true;
+    while (ReadFile(f, buf.data(), (DWORD)buf.size(), &read, nullptr) && read > 0) {
+        for (DWORD i = 0; i < read; ++i) crc = table[(crc ^ buf[i]) & 0xFF] ^ (crc >> 8);
+    }
+    CloseHandle(f);
+    return crc ^ 0xFFFFFFFFul;
+}
+
+bool SameContent(const std::wstring& a, const std::wstring& b) {
+    bool okA = false, okB = false;
+    const unsigned long ca = Crc32File(a, okA);
+    const unsigned long cb = Crc32File(b, okB);
+    if (!okA || !okB) return true;      // не смогли прочитать — расхождением не считаем
+    return ca == cb;
+}
+
 void FillList() {
     if (!g_sync.list) return;
     SendMessageW(g_sync.list, WM_SETREDRAW, FALSE, 0);
@@ -190,6 +232,21 @@ void BuildItems() {
     }
     std::sort(keys.begin(), keys.end());
 
+    const bool contentMode =
+        g_sync.contentCheck && SendMessageW(g_sync.contentCheck, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    size_t compared = 0;
+    size_t totalPairs = 0;
+    if (contentMode) {
+        for (auto& key : keys) {
+            auto li = left.find(key);
+            auto ri = right.find(key);
+            if (li != left.end() && ri != right.end() && !li->second.second.isDir &&
+                li->second.second.size == ri->second.second.size) {
+                ++totalPairs;
+            }
+        }
+    }
+
     for (auto& key : keys) {
         RelEntry e;
         auto li = left.find(key);
@@ -201,6 +258,17 @@ void BuildItems() {
         if (ri != right.end()) {
             if (e.rel.empty()) e.rel = ri->second.first;
             e.right = ri->second.second;
+        }
+
+        if (contentMode && e.left.exists && e.right.exists && !e.left.isDir && !e.right.isDir &&
+            e.left.size == e.right.size) {
+            ++compared;
+            if ((compared % 16) == 0) {
+                wchar_t progress[128]{};
+                swprintf(progress, 128, L"Сверяю содержимое: %zu из %zu", compared, totalPairs);
+                SetWindowTextW(g_sync.status, progress);
+                UpdateWindow(g_sync.status);
+            }
         }
 
         if (e.left.exists && !e.right.exists) {
@@ -215,10 +283,25 @@ void BuildItems() {
         } else if (!e.left.isDir && e.left.size != e.right.size) {
             e.differs = true;
             e.status = L"размер";
-        } else if (!e.left.isDir && e.left.time.dwLowDateTime != e.right.time.dwLowDateTime &&
-                   e.left.time.dwHighDateTime != e.right.time.dwHighDateTime) {
-            e.differs = true;
-            e.status = L"дата";
+        } else if (!e.left.isDir) {
+            // Одинаковый размер ещё не значит одинаковое содержимое: сверяем CRC32.
+            const bool contentMode =
+                g_sync.contentCheck && SendMessageW(g_sync.contentCheck, BM_GETCHECK, 0, 0) == BST_CHECKED;
+            bool sameContent = true;
+            if (contentMode) {
+                sameContent = SameContent(JoinRoot(g_sync.leftRoot, e.rel), JoinRoot(g_sync.rightRoot, e.rel));
+            }
+            const bool sameTime = e.left.time.dwLowDateTime == e.right.time.dwLowDateTime &&
+                                  e.left.time.dwHighDateTime == e.right.time.dwHighDateTime;
+            if (!sameContent) {
+                e.differs = true;
+                e.status = L"содержимое";
+            } else if (!sameTime) {
+                e.differs = true;
+                e.status = contentMode ? L"дата (конт.=)" : L"дата";
+            } else {
+                e.status = L"совпадает";
+            }
         } else {
             e.status = L"совпадает";
         }
@@ -272,9 +355,12 @@ void SyncLayout(HWND hwnd) {
     MoveWindow(g_sync.list, pad, pad, rc.right - 2 * pad, bottom - pad * 2, TRUE);
     MoveWindow(GetDlgItem(hwnd, kCopyRightId), pad, bottom, 150, btnH, TRUE);
     MoveWindow(GetDlgItem(hwnd, kCopyLeftId), pad + 156, bottom, 150, btnH, TRUE);
-    MoveWindow(g_sync.onlyDiff, pad + 316, bottom + 4, 150, 20, TRUE);
+    // Статус слева, галочки правее: раньше статик шириной во всё окно
+    // перекрывал и «Только различия», и «Сверять содержимое».
+    MoveWindow(g_sync.status, pad, bottom + 4, 300, statusH, TRUE);
+    MoveWindow(g_sync.onlyDiff, pad + 316, bottom + 4, 132, 20, TRUE);
+    MoveWindow(g_sync.contentCheck, pad + 456, bottom + 4, 180, 20, TRUE);
     MoveWindow(GetDlgItem(hwnd, kCloseId), rc.right - pad - 90, bottom, 90, btnH, TRUE);
-    MoveWindow(g_sync.status, pad, rc.bottom - pad - statusH + 2, rc.right - 2 * pad - 100, statusH, TRUE);
 }
 
 LRESULT CALLBACK SyncProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -286,7 +372,7 @@ LRESULT CALLBACK SyncProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                                           hwnd, (HMENU)kListId, nullptr, nullptr);
             ListView_SetExtendedListViewStyle(g_sync.list, LVS_EX_FULLROWSELECT | LVS_EX_CHECKBOXES | LVS_EX_DOUBLEBUFFER);
             struct Col { const wchar_t* text; int width; };
-            const Col cols[] = {{L"Имя", 300}, {L"Левая панель", 110}, {L"Правая панель", 110}, {L"Состояние", 110}};
+            const Col cols[] = {{L"Имя", 280}, {L"Левая панель", 100}, {L"Правая панель", 100}, {L"Состояние", 150}};
             for (int i = 0; i < 4; ++i) {
                 LVCOLUMNW c{};
                 c.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
@@ -307,13 +393,17 @@ LRESULT CALLBACK SyncProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             g_sync.onlyDiff = CreateWindowExW(0, L"BUTTON", L"Только различия",
                                               WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
                                               0, 0, 10, 10, hwnd, (HMENU)kOnlyDiffId, nullptr, nullptr);
+            g_sync.contentCheck = CreateWindowExW(0, L"BUTTON", L"Сверять содержимое",
+                                                  WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
+                                                  0, 0, 10, 10, hwnd, (HMENU)kContentId, nullptr, nullptr);
             SendMessageW(g_sync.onlyDiff, BM_SETCHECK, BST_CHECKED, 0);
             CreateWindowExW(0, L"BUTTON", L"Закрыть", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
                             0, 0, 10, 10, hwnd, (HMENU)kCloseId, nullptr, nullptr);
 
             g_sync.font = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
-            for (HWND k : {g_sync.list, g_sync.status, g_sync.onlyDiff, GetDlgItem(hwnd, kCopyRightId),
-                           GetDlgItem(hwnd, kCopyLeftId), GetDlgItem(hwnd, kCloseId)}) {
+            for (HWND k : {g_sync.list, g_sync.status, g_sync.onlyDiff, g_sync.contentCheck,
+                           GetDlgItem(hwnd, kCopyRightId), GetDlgItem(hwnd, kCopyLeftId),
+                           GetDlgItem(hwnd, kCloseId)}) {
                 SendMessageW(k, WM_SETFONT, (WPARAM)g_sync.font, TRUE);
             }
             SyncLayout(hwnd);
@@ -329,6 +419,7 @@ LRESULT CALLBACK SyncProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (id == kCopyRightId) { CopyChecked(true); return 0; }
             if (id == kCopyLeftId) { CopyChecked(false); return 0; }
             if (id == kOnlyDiffId) { FillList(); return 0; }
+            if (id == kContentId) { BuildItems(); FillList(); return 0; }
             if (id == kCloseId) { g_sync.done = true; return 0; }
             break;
         }
