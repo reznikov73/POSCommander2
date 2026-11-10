@@ -1,4 +1,4 @@
-// Главное окно POS Commander: две панели, меню, командная строка, F-клавиши.
+// Главное окно PosFiles: две панели, меню, командная строка, F-клавиши.
 #include "common.h"
 #include "dialogs.h"
 #include "panel.h"
@@ -30,8 +30,8 @@ HINSTANCE g_inst = nullptr;
 
 namespace {
 
-const wchar_t* kMainClass = L"POSCommander2Main";
-const wchar_t* kTitle = L"POS Commander";
+const wchar_t* kMainClass = L"PosFilesMain";
+const wchar_t* kTitle = L"PosFiles";
 
 enum : int {
     IDM_VIEW = 100,
@@ -441,7 +441,7 @@ bool CopyFtpItem(FtpCopyCtx& c, const std::wstring& srcPath, const std::wstring&
         // FTP → FTP: через временный файл.
         wchar_t tmp[MAX_PATH]{};
         GetTempPathW(MAX_PATH, tmp);
-        std::wstring dir = std::wstring(tmp) + L"posc2-ftp-xfer";
+        std::wstring dir = std::wstring(tmp) + L"posfiles-ftp-xfer";
         CreateDirectoryW(dir.c_str(), nullptr);
         const std::wstring temp = dir + L"\\" + std::to_wstring(GetCurrentProcessId()) + L"-" +
                                   std::to_wstring(GetTickCount64()) + L"-" + std::to_wstring(c.files) + L".tmp";
@@ -985,7 +985,7 @@ void App::LoadPanels() {
     ActivePanel()->FocusList();
     UpdatePromptLabel();
 
-    // Временная диагностика этапа 4 (рамка курсора неактивной панели) — в %TEMP%\posc2-debug.log.
+    // Временная диагностика этапа 4 (рамка курсора неактивной панели) — в %TEMP%\posfiles-debug.log.
     wchar_t stamp[32]{};
     swprintf(stamp, 32, L"%hs %hs", __DATE__, __TIME__);
     LogDebug(L"старт: сборка " + std::wstring(stamp) + L", активная панель " +
@@ -2915,7 +2915,7 @@ void App::Dispatch(int id) {
             PostMessageW(hwnd_, WM_APP + 302, (WPARAM)panel->Side(), (LPARAM)panel->ActiveTab());
             break;
         case IDM_ABOUT:
-            MessageBoxW(hwnd_, L"POS Commander\nДвухпанельный файловый менеджер на Win32 API.\n\nC++ / MinGW · без внешних зависимостей",
+            MessageBoxW(hwnd_, L"PosFiles\nДвухпанельный файловый менеджер на Win32 API.\n\nC++ / MinGW · без внешних зависимостей",
                         L"О программе", MB_ICONINFORMATION | MB_OK);
             break;
         default:
@@ -3701,7 +3701,7 @@ std::wstring App::DownloadFtpToTemp(const std::wstring& url, const std::wstring&
 
     wchar_t tmp[MAX_PATH]{};
     GetTempPathW(MAX_PATH, tmp);
-    std::wstring dir = std::wstring(tmp) + L"posc2-ftp";
+    std::wstring dir = std::wstring(tmp) + L"posfiles-ftp";
     CreateDirectoryW(dir.c_str(), nullptr);
     dir += L"\\" + std::to_wstring(GetCurrentProcessId());
     CreateDirectoryW(dir.c_str(), nullptr);
@@ -3791,7 +3791,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR cmdLine, int) {
     if (app.Create(inst)) {
         code = app.Run();
     } else {
-        MessageBoxW(nullptr, L"Не удалось создать главное окно.", L"POS Commander", MB_ICONERROR);
+        MessageBoxW(nullptr, L"Не удалось создать главное окно.", L"PosFiles", MB_ICONERROR);
         code = 1;
     }
 

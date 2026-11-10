@@ -1272,18 +1272,19 @@ int CompareNatural(const std::wstring& a, const std::wstring& b) {
 // ---------- диагностика ----------
 
 void LogDebug(const std::wstring& text) {
-    // Диагностика включается только по переменной окружения POSC2_DEBUG=1,
+    // Диагностика включается только по переменной окружения POSFILES_DEBUG=1
     // иначе в %TEMP% ничего не пишется (как в TC: лишних файлов не создаём).
     static const bool enabled = [] {
         wchar_t v[8]{};
-        const DWORD n = GetEnvironmentVariableW(L"POSC2_DEBUG", v, 8);
+        DWORD n = GetEnvironmentVariableW(L"POSFILES_DEBUG", v, 8);
+        if (n == 0) n = GetEnvironmentVariableW(L"POSC2_DEBUG", v, 8);
         return n > 0 && v[0] != L'0';
     }();
     if (!enabled) return;
 
     wchar_t tmp[MAX_PATH]{};
     if (!GetTempPathW(MAX_PATH, tmp)) return;
-    std::wstring path = std::wstring(tmp) + L"posc2-debug.log";
+    std::wstring path = std::wstring(tmp) + L"posfiles-debug.log";
 
     SYSTEMTIME st{};
     GetLocalTime(&st);

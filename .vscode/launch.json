@@ -2,10 +2,10 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Отладка (gdb)",
+      "name": "Собрать и запустить (отладка)",
       "type": "cppdbg",
       "request": "launch",
-      "program": "${workspaceFolder}/build/POSCommander2.exe",
+      "program": "${workspaceFolder}/build/PosFiles.exe",
       "args": [],
       "stopAtEntry": false,
       "cwd": "${workspaceFolder}",
@@ -16,7 +16,40 @@
       "setupCommands": [
         { "description": "включить pretty-printing", "text": "-enable-pretty-printing", "ignoreFailures": true }
       ],
-      "preLaunchTask": "build"
+      "preLaunchTask": "Собрать"
+    },
+    {
+      "name": "Самопроверка (--selftest)",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/build/PosFiles.exe",
+      "args": ["--selftest"],
+      "stopAtEntry": false,
+      "cwd": "${workspaceFolder}",
+      "environment": [],
+      "externalConsole": false,
+      "MIMode": "gdb",
+      "miDebuggerPath": "C:/Tools/w64devkit/bin/gdb.exe",
+      "setupCommands": [
+        { "description": "включить pretty-printing", "text": "-enable-pretty-printing", "ignoreFailures": true }
+      ],
+      "preLaunchTask": "Собрать"
+    },
+    {
+      "name": "Запустить без отладки",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/build/PosFiles.exe",
+      "args": [],
+      "stopAtEntry": false,
+      "cwd": "${workspaceFolder}",
+      "externalConsole": true,
+      "MIMode": "gdb",
+      "miDebuggerPath": "C:/Tools/w64devkit/bin/gdb.exe",
+      "setupCommands": [
+        { "description": "включить pretty-printing", "text": "-enable-pretty-printing", "ignoreFailures": true }
+      ],
+      "preLaunchTask": "Собрать"
     }
   ]
 }

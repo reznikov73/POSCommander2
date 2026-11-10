@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Минимальный локальный FTP-сервер для проверки клиента POS Commander.
+"""Минимальный локальный FTP-сервер для проверки клиента PosFiles.
 
 Только для разработки: слушает 127.0.0.1, без шифрования, один корень.
 Поддерживает то, что реально нужно WinINet и нашему --ftp-test:
@@ -126,7 +126,7 @@ class FtpTestServer:
         sess = Session(conn=conn, addr=addr, root=self.root, user=self.user,
                        password=self.password, anonymous=self.anonymous, readonly=self.readonly)
         f = conn.makefile("rwb", buffering=0)
-        self.reply(f, "220 POS Commander test FTP ready")
+        self.reply(f, "220 PosFiles test FTP ready")
         try:
             while True:
                 line = f.readline()
@@ -244,7 +244,7 @@ class FtpTestServer:
             self.reply(f, "226 Abort ok")
             return True
         if cmd == "STAT":
-            self.reply(f, "211 POS Commander test FTP")
+            self.reply(f, "211 PosFiles test FTP")
             return True
 
         if not sess.logged_in:
@@ -612,7 +612,7 @@ class FtpTestServer:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Local FTP server for POS Commander tests")
+    ap = argparse.ArgumentParser(description="Local FTP server for PosFiles tests")
     ap.add_argument("--port", type=int, default=2121)
     ap.add_argument("--user", default="test")
     ap.add_argument("--password", default="test")
@@ -623,7 +623,7 @@ def main() -> int:
     ap.add_argument("--keep", action="store_true", help="do not delete temp root on exit")
     args = ap.parse_args()
 
-    root = args.root or tempfile.mkdtemp(prefix="posc2-ftp-")
+    root = args.root or tempfile.mkdtemp(prefix="posfiles-ftp-")
     os.makedirs(root, exist_ok=True)
     server = FtpTestServer(root, args.user, args.password, args.anonymous, args.readonly, args.port, args.mlsd)
     try:

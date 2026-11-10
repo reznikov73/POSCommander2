@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(POSCommander2 LANGUAGES CXX)
+project(PosFiles LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -9,7 +9,7 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
-add_executable(POSCommander2 WIN32
+add_executable(PosFiles WIN32
   src/main.cpp
   src/panel.cpp
   src/util.cpp
@@ -26,27 +26,27 @@ add_executable(POSCommander2 WIN32
   res/app.rc
 )
 
-target_include_directories(POSCommander2 PRIVATE src)
+target_include_directories(PosFiles PRIVATE src)
 
-target_compile_definitions(POSCommander2 PRIVATE
+target_compile_definitions(PosFiles PRIVATE
   UNICODE _UNICODE
   WIN32_LEAN_AND_MEAN NOMINMAX
   _WIN32_WINNT=0x0A00 WINVER=0x0A00
 )
 
-target_link_libraries(POSCommander2 PRIVATE
+target_link_libraries(PosFiles PRIVATE
   comctl32 shell32 shlwapi ole32 uuid mpr iphlpapi user32 gdi32 ws2_32
 )
 
 if(MSVC)
-  target_compile_options(POSCommander2 PRIVATE /W4 /utf-8 /permissive-)
-  target_link_options(POSCommander2 PRIVATE /MANIFEST:NO)
+  target_compile_options(PosFiles PRIVATE /W4 /utf-8 /permissive-)
+  target_link_options(PosFiles PRIVATE /MANIFEST:NO)
 else()
-  target_compile_options(POSCommander2 PRIVATE
+  target_compile_options(PosFiles PRIVATE
     -Wall -Wextra -Wno-unused-parameter
     -finput-charset=UTF-8 -fexec-charset=UTF-8
   )
-  target_link_options(POSCommander2 PRIVATE
+  target_link_options(PosFiles PRIVATE
     -municode -mwindows -static -static-libgcc -static-libstdc++
   )
 endif()
@@ -57,4 +57,4 @@ set_source_files_properties(res/app.rc PROPERTIES OBJECT_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/res/app.ico;${CMAKE_CURRENT_SOURCE_DIR}/res/folder.ico;${CMAKE_CURRENT_SOURCE_DIR}/res/folder_hidden.ico;${CMAKE_CURRENT_SOURCE_DIR}/res/arrow_up.ico;${CMAKE_CURRENT_SOURCE_DIR}/res/app.manifest"
 )
 
-set_target_properties(POSCommander2 PROPERTIES OUTPUT_NAME "POS Commander")
+set_target_properties(PosFiles PROPERTIES OUTPUT_NAME "PosFiles")

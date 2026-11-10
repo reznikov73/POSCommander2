@@ -37,7 +37,7 @@ struct DriveItem {
 // Перечисление каталога. Возвращает false и код ошибки при отказе доступа.
 bool ListDir(const std::wstring& dir, bool showHidden, std::vector<Entry>& out, DWORD& error);
 
-// Диагностический лог в %TEMP%\posc2-debug.log (append, UTF-8).
+// Диагностический лог в %TEMP%\posfiles-debug.log (append, UTF-8).
 void LogDebug(const std::wstring& text);
 // Суммарный размер содержимого каталога (рекурсивно, без переходов по ссылкам).
 ULONGLONG DirectorySize(const std::wstring& dir, const std::atomic<bool>* cancel = nullptr);

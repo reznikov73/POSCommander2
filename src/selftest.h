@@ -7,5 +7,5 @@
 int RunSelfTest();
 
 // Сквозная проверка FTP против указанного сервера: host:port:user:pass.
-// Возвращает число провалов; отчёт — %TEMP%\posc2-ftp-test.txt.
+// Возвращает число провалов; отчёт — %TEMP%\posfiles-ftp-test.txt.
 int RunFtpTest(const std::wstring& spec);

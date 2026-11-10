@@ -188,7 +188,7 @@ int WcxSelfTest(const std::wstring& dllPath, const std::wstring& archivePath) {
 
     wchar_t tmp[MAX_PATH]{};
     GetTempPathW(MAX_PATH, tmp);
-    const std::wstring outPath = std::wstring(tmp) + L"posc2-wcx.txt";
+    const std::wstring outPath = std::wstring(tmp) + L"posfiles-wcx.txt";
 
     HANDLE file = CreateFileW(outPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file != INVALID_HANDLE_VALUE) {

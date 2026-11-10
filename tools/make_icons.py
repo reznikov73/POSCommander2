@@ -1,4 +1,4 @@
-"""Иконки POSCommander 2 в стиле Total Commander.
+"""Иконки PosFiles в стиле Total Commander.
 
 Скрипт рисует res/folder.ico, res/folder_hidden.ico, res/arrow_up.ico и res/app.ico.
 Геометрия и цвета сняты попиксельно с эталонных вырезок из TC (16 px), затем

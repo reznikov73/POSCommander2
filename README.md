@@ -1,29 +1,33 @@
-# POS Commander
+# PosFiles
 
 Двухпанельный файловый менеджер в духе Total Commander. Чистый Win32 API, C++20, без внешних зависимостей.
+Продукт — **PosFiles**; репозиторий исторически называется `POSCommander2`.
 
-Цель — скорость и сходство с TC: запуск до окна ~60–120 мс, память ~15 МБ, exe меньше 1 МБ.
+Цель — скорость и сходство с TC: запуск до окна ~60–120 мс, память ~15 МБ, exe ~2,6 МБ.
 
 ## Сборка
 
 Нужны CMake 3.20+, Ninja и компилятор.
 
 ```powershell
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=g++ -DCMAKE_RC_COMPILER=windres
-cmake --build build
+cmake --preset mingw-release
+cmake --build --preset mingw-release
 ```
 
-Готовый файл: `build\POS Commander.exe`. Проверено на MinGW-w64 GCC 16.1 (`C:\Tools\w64devkit`); MSVC поддерживается в CMake, но на этой машине не проверялся (пресет `msvc-release`).
+Пресет `mingw-release` сам добавляет `C:\Tools\w64devkit\bin` в `PATH`; отдельно прописывать
+компилятор не нужно.
+
+Готовый файл: `build\PosFiles.exe`. Проверено на MinGW-w64 GCC 16.1 (`C:\Tools\w64devkit`); MSVC поддерживается в CMake, но на этой машине не проверялся (пресет `msvc-release`).
 
 ## Запуск и проверка
 
 ```powershell
-.\build\POS Commander.exe              # обычный запуск
-.\build\POS Commander.exe --selftest   # самопроверка, код возврата = число провалов
-.\build\POS Commander.exe --ftp-test 127.0.0.1:2121:test:test   # сквозная проверка FTP
+.\build\PosFiles.exe              # обычный запуск
+.\build\PosFiles.exe --selftest   # самопроверка, код возврата = число провалов
+.\build\PosFiles.exe --ftp-test 127.0.0.1:2121:test:test   # сквозная проверка FTP
 ```
 
-Отчёт самопроверки: `%TEMP%\posc2-selftest.txt`, отчёт FTP-проверки: `%TEMP%\posc2-ftp-test.txt`.
+Отчёт самопроверки: `%TEMP%\posfiles-selftest.txt`, отчёт FTP-проверки: `%TEMP%\posfiles-ftp-test.txt`.
 Для локальной проверки FTP есть `tools/ftp_test_server.py` (Python 3, без зависимостей):
 
 ```powershell
@@ -32,7 +36,9 @@ python tools\ftp_test_server.py --port 2121 --user test --password test --root <
 
 ## Настройки
 
-Файл `POS Commander.ini` рядом с exe (пишется при выходе, до закрытия окна): положение и размер окна,
+Файл `PosFiles.ini` рядом с exe (пишется при выходе, до закрытия окна). При первом запуске
+он автоматически копируется из старого `POS Commander.ini` или `POSCommander2.ini`, если те лежат рядом.
+В нём: положение и размер окна,
 развёрнутость, пропорция разделителя, скрытые файлы, сортировка, ширины колонок (Имя/Тип/Размер/Дата),
 вкладки обеих панелей — пути, подписи, блокировки, активная вкладка, активная панель, позиция курсора
 и маска в каждой панели, история масок (последние 8), сохранённые FTP-профили. После перезапуска
@@ -81,7 +87,7 @@ python tools\ftp_test_server.py --port 2121 --user test --password test --root <
 Как в TC, в заголовке одна строка состояния, обновляется раз в секунду:
 
 ```
-POS Commander - Win32   Пн 09 ноя 2026 01:07:33   Сеть: 13,9/6,9 Мбит/с   Память: 10,1/15,9 ГБ (63%)   ЦП: 18%
+PosFiles - Win32   Пн 09 ноя 2026 01:07:33   Сеть: 13,9/6,9 Мбит/с   Память: 10,1/15,9 ГБ (63%)   ЦП: 18%
 ```
 
 - дата и время — локальные, день недели и месяц сокращённо по-русски;

@@ -653,3 +653,19 @@ Alt+←/→, F9 — код на месте, нужен один ручной п�
 
   Проверено: 3×Shift+Down — «Отмечено: 4 · 2,5 Мб» (папка app 2,5 Мб).
   --selftest: 58 из 58; --ftp-test: 23 из 23.
+
+==================================================================
+23. РЕБРЕНДИНГ POSFILES (10.11.2026)
+==================================================================
+  Решение: продукт называется PosFiles (ООО «ПОС онлайн»).
+
+  Сделано:
+  - exe `build\PosFiles.exe`, заголовок `PosFiles - Win32 …`, манифест,
+    «О программе», README, иконка;
+  - `PosFiles.ini` с миграцией из `POS Commander.ini` и `POSCommander2.ini`;
+  - CMake project/target `PosFiles`, OUTPUT_NAME PosFiles;
+  - CMakePresets: PATH с w64devkit; .vscode/launch.json и tasks.json
+    переведены на build/PosFiles.exe и preset-сборку, добавлены dependsOn;
+  - temp/report-префиксы `posfiles-*`, POSFILES_DEBUG (старый POSC2_DEBUG читается).
+
+  Проверено: selftest 58/58, ftp-test 23/23, миграция INI, заголовок окна.

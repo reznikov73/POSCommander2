@@ -22,5 +22,5 @@ struct WcxResult {
 // Открыть архив через указанный плагин и прочитать список файлов.
 WcxResult WcxListArchive(const std::wstring& dllPath, const std::wstring& archivePath);
 
-// Режим диагностики: --wcx-test <dll> <archive>. Отчёт пишется в %TEMP%\posc2-wcx.txt.
+// Режим диагностики: --wcx-test <dll> <archive>. Отчёт пишется в %TEMP%\posfiles-wcx.txt.
 int WcxSelfTest(const std::wstring& dllPath, const std::wstring& archivePath);

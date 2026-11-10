@@ -2,35 +2,82 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "configure (mingw)",
+      "label": "Настроить CMake",
       "type": "shell",
-      "command": "cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=g++ -DCMAKE_RC_COMPILER=windres",
-      "options": { "cwd": "${workspaceFolder}" },
+      "command": "\"C:/Tools/w64devkit/bin/cmake.exe\" --preset mingw-release",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
       "problemMatcher": []
     },
     {
-      "label": "build",
+      "label": "Собрать",
       "type": "shell",
-      "command": "cmake --build build",
-      "options": { "cwd": "${workspaceFolder}" },
-      "group": { "kind": "build", "isDefault": true },
-      "problemMatcher": ["$gcc"]
+      "command": "\"C:/Tools/w64devkit/bin/cmake.exe\" --build --preset mingw-release",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": [
+        "$gcc"
+      ],
+      "dependsOn": [
+        "Настроить CMake"
+      ]
     },
     {
-      "label": "run",
+      "label": "Пересобрать (очистить)",
       "type": "shell",
-      "command": "cmake --build build; if ($LASTEXITCODE -eq 0) { Start-Process .\\build\\POSCommander2.exe }",
-      "options": { "cwd": "${workspaceFolder}" },
-      "dependsOn": "build",
-      "problemMatcher": []
+      "command": "\"C:/Tools/w64devkit/bin/cmake.exe\" --build --preset mingw-release --clean-first",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": "build",
+      "problemMatcher": [
+        "$gcc"
+      ],
+      "dependsOn": [
+        "Настроить CMake"
+      ]
     },
     {
-      "label": "selftest",
+      "label": "Запустить",
       "type": "shell",
-      "command": ".\\build\\POSCommander2.exe --selftest; Get-Content $env:TEMP\\posc2-selftest.txt",
-      "options": { "cwd": "${workspaceFolder}" },
-      "dependsOn": "build",
-      "problemMatcher": []
+      "command": "Start-Process \"${workspaceFolder}\\build\\PosFiles.exe\"",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "new"
+      },
+      "dependsOn": [
+        "Собрать"
+      ]
+    },
+    {
+      "label": "Самопроверка",
+      "type": "shell",
+      "command": "& \"${workspaceFolder}\\build\\PosFiles.exe\" --selftest; if (Test-Path \"$env:TEMP\\posfiles-selftest.txt\") { Get-Content \"$env:TEMP\\posfiles-selftest.txt\" }",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "new"
+      },
+      "dependsOn": [
+        "Собрать"
+      ],
+      "group": {
+        "kind": "test",
+        "isDefault": true
+      }
     }
   ]
 }

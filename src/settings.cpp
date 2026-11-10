@@ -112,14 +112,18 @@ std::wstring SettingsFilePath() {
     std::wstring path = exe;
     size_t slash = path.find_last_of(L'\\');
     if (slash != std::wstring::npos) path.resize(slash + 1);
-    cached = path + L"POS Commander.ini";
+    cached = path + L"PosFiles.ini";
 
-    // Переезд со старого имени файла настроек: если нового ещё нет, а старый лежит
+    // Переезд со старых имён файла настроек: если нового ещё нет, а старый лежит
     // рядом — копируем, чтобы позиция окна и вкладки не потерялись.
     if (GetFileAttributesW(cached.c_str()) == INVALID_FILE_ATTRIBUTES) {
-        const std::wstring legacy = path + L"POSCommander2.ini";
-        if (GetFileAttributesW(legacy.c_str()) != INVALID_FILE_ATTRIBUTES) {
-            CopyFileW(legacy.c_str(), cached.c_str(), FALSE);
+        const wchar_t* legacyNames[] = {L"POS Commander.ini", L"POSCommander2.ini"};
+        for (const wchar_t* name : legacyNames) {
+            const std::wstring legacy = path + name;
+            if (GetFileAttributesW(legacy.c_str()) != INVALID_FILE_ATTRIBUTES) {
+                CopyFileW(legacy.c_str(), cached.c_str(), FALSE);
+                break;
+            }
         }
     }
     return cached;

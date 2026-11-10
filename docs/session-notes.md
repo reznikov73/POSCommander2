@@ -309,3 +309,22 @@
   (`shiftHeld_`) — страховка от того, что к моменту стрелки состояние не видно.
 - Проверено: Shift+Down 3 раза — отмечены 4 объекта, внизу `Отмечено: 4 · 2,5 Мб`;
   папка `app` посчиталась в 2,5 Мб. `--selftest`: 58 из 58.
+
+## Ребрендинг PosFiles (10.11.2026)
+
+- Продукт переименован: **PosFiles**. Exe — `build\PosFiles.exe`, заголовок
+  `PosFiles - Win32 …`, манифест, «О программе», README, иконка/подпись.
+- Настройки: новый `PosFiles.ini`; при первом запуске копируется из старого
+  `POS Commander.ini` (приоритет) или `POSCommander2.ini`. Старые файлы не удаляются.
+- CMake: проект/цель `PosFiles`, `OUTPUT_NAME PosFiles`; сборка через
+  `cmake --preset mingw-release` + `cmake --build --preset mingw-release`.
+  В пресет добавлен `PATH` с `C:/Tools/w64devkit/bin`.
+- `.vscode/launch.json` — все три конфигурации на `build/PosFiles.exe`;
+  `.vscode/tasks.json` — preset-сборка, `dependsOn` (configure → build → run/test),
+  отчёт самопроверки `%TEMP%\posfiles-selftest.txt`.
+- Temp/report-префиксы: `posfiles-test`, `posfiles-selftest.txt`,
+  `posfiles-ftp-test.txt`, `posfiles-debug.log`, `posfiles-ftp`, `posfiles-arc`.
+  Переменная диагностики — `POSFILES_DEBUG` (старая `POSC2_DEBUG` ещё читается).
+- Проверено: `PosFiles.exe` 2 606 742 байт; `--selftest` 58/58;
+  `--ftp-test` 23/23; миграция `POS Commander.ini` → `PosFiles.ini` (1111×700
+  и вкладки сохранились); заголовок `PosFiles - Win32 …`.

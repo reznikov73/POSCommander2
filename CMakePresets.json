@@ -11,7 +11,8 @@
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_CXX_COMPILER": "g++",
         "CMAKE_RC_COMPILER": "windres"
-      }
+      },
+      "environment": { "PATH": "C:/Tools/w64devkit/bin;$penv{PATH}" }
     },
     {
       "name": "msvc-release",
@@ -24,7 +25,7 @@
     }
   ],
   "buildPresets": [
-    { "name": "mingw-release", "configurePreset": "mingw-release" },
+    { "name": "mingw-release", "configurePreset": "mingw-release", "environment": { "PATH": "C:/Tools/w64devkit/bin;$penv{PATH}" } },
     { "name": "msvc-release", "configurePreset": "msvc-release" }
   ]
 }

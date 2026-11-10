@@ -118,7 +118,7 @@ void Emit(const std::wstring& text, const std::wstring& file) {
 
 int RunSelfTest() {
     Report rep;
-    const std::wstring base = TempPath(L"posc2-test");
+    const std::wstring base = TempPath(L"posfiles-test");
     const std::wstring work = base + L"\\work";
     const std::wstring dest = base + L"\\dest";
 
@@ -300,19 +300,19 @@ int RunSelfTest() {
                   L"FTP: MLSD служебная строка");
     }
 
-    std::wstring report = L"POS Commander - самопроверка\r\n";
+    std::wstring report = L"PosFiles - самопроверка\r\n";
     report += L"каталог: " + base + L"\r\n\r\n";
     for (auto& line : rep.lines) report += line + L"\r\n";
     report += L"\r\nпровалено: " + std::to_wstring(rep.failed) + L" из " + std::to_wstring((int)rep.lines.size()) + L"\r\n";
 
-    Emit(report, TempPath(L"posc2-selftest.txt"));
+    Emit(report, TempPath(L"posfiles-selftest.txt"));
     RemoveTree(base);
     return rep.failed;
 }
 
 int RunFtpTest(const std::wstring& spec) {
     Report rep;
-    const std::wstring base = TempPath(L"posc2-ftp-test");
+    const std::wstring base = TempPath(L"posfiles-ftp-test");
     RemoveTree(base);
     MakeDir(base);
 
@@ -330,13 +330,13 @@ int RunFtpTest(const std::wstring& spec) {
     }
 
     auto finish = [&]() {
-        std::wstring report = L"POS Commander - проверка FTP\r\n";
+        std::wstring report = L"PosFiles - проверка FTP\r\n";
         report += L"сервер: " + host + L":" + std::to_wstring(port) + L", пользователь: " + user + L"\r\n";
         report += L"каталог: " + base + L"\r\n\r\n";
         for (auto& line : rep.lines) report += line + L"\r\n";
         report += L"\r\nпровалено: " + std::to_wstring(rep.failed) + L" из " +
                   std::to_wstring((int)rep.lines.size()) + L"\r\n";
-        Emit(report, TempPath(L"posc2-ftp-test.txt"));
+        Emit(report, TempPath(L"posfiles-ftp-test.txt"));
         RemoveTree(base);
         return rep.failed;
     };
@@ -371,7 +371,7 @@ int RunFtpTest(const std::wstring& spec) {
         return nullptr;
     };
 
-    const std::wstring remoteDir = L"/posc2-тест-" + std::to_wstring(GetCurrentProcessId()) + L"-" +
+    const std::wstring remoteDir = L"/posfiles-тест-" + std::to_wstring(GetCurrentProcessId()) + L"-" +
                                    std::to_wstring(GetTickCount64());
     rep.Check(FtpCreateDir(*conn, remoteDir, err), L"FTP: создание каталога", err);
 

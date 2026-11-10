@@ -697,7 +697,7 @@ bool CreateArchive(const std::wstring& archivePath, const std::vector<std::wstri
 std::wstring ArchiveTempDir() {
     wchar_t tmp[MAX_PATH]{};
     if (!GetTempPathW(MAX_PATH, tmp)) return L".";
-    std::wstring dir = std::wstring(tmp) + L"posc2-arc";
+    std::wstring dir = std::wstring(tmp) + L"posfiles-arc";
     CreateDirectoryW(dir.c_str(), nullptr);
     return dir;
 }
