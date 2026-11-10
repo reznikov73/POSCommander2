@@ -500,6 +500,24 @@ struct PixelCanvas {
         for (int y = y0; y <= y1; ++y) Set(x, y, argb);
     }
 
+    // Круг и кольцо: центр дробный, попадание считаем по центрам пикселей.
+    void Disk(double cx, double cy, double r, DWORD argb) {
+        for (int y = 0; y < size; ++y)
+            for (int x = 0; x < size; ++x) {
+                const double dx = x + 0.5 - cx, dy = y + 0.5 - cy;
+                if (dx * dx + dy * dy < r * r) Set(x, y, argb);
+            }
+    }
+
+    void Ring(double cx, double cy, double r0, double r1, DWORD argb) {
+        for (int y = 0; y < size; ++y)
+            for (int x = 0; x < size; ++x) {
+                const double dx = x + 0.5 - cx, dy = y + 0.5 - cy;
+                const double d2 = dx * dx + dy * dy;
+                if (d2 >= r0 * r0 && d2 < r1 * r1) Set(x, y, argb);
+            }
+    }
+
     HICON ToIcon() const {
         BITMAPV5HEADER bi{};
         bi.bV5Size = sizeof(bi);
@@ -860,8 +878,8 @@ void ToolIconPixels(int kind, PixelCanvas& c) {
     const unsigned kBox      = 0xFFE8B95C;
     const unsigned kBoxEdge  = 0xFFB08234;
     const unsigned kBoxLid   = 0xFFF0DCA8;
-    const unsigned kBinoc    = 0xFF39506E;
-    const unsigned kGear     = 0xFF6B7280;
+    const unsigned kLens     = 0xFFE2F0FF;
+    const unsigned kSteel    = 0xFF2F425C;
     const unsigned kSync     = 0xFF2A5AAA;
     const unsigned kRefresh  = 0xFF1E6FC0;
     const unsigned kFEdge    = 0xFFB8860B;
@@ -996,16 +1014,14 @@ void ToolIconPixels(int kind, PixelCanvas& c) {
             c.Fill(2, 13, 3, 13, kLead);
             break;
         }
-        case TIK_FIND: {                                // поиск: бинокль
-            auto lens = [&c](int cx, int cy) {
-                c.HLine(cx - 2, cx + 2, cy - 3, kBinoc);
-                for (int dy = -2; dy <= 2; ++dy) c.HLine(cx - 3, cx + 3, cy + dy, kBinoc);
-                c.HLine(cx - 2, cx + 2, cy + 3, kBinoc);
-            };
-            c.HLine(2, 13, 4, kBinoc);                    // верхняя планка
-            c.VLine(4, 4, 7, kBinoc); c.VLine(12, 4, 7, kBinoc);
-            c.HLine(7, 9, 10, kBinoc);                    // перемычка
-            lens(4, 10); lens(12, 10);
+        case TIK_FIND: {                                // поиск файлов: лупа
+            c.Disk(6.5, 6.5, 4.6, kLens);                // стекло
+            c.Ring(6.5, 6.5, 3.9, 5.1, kBlue);           // оправа
+            c.Set(4, 4, kPaper); c.Set(3, 5, kPaper);    // блик на стекле
+            for (int k = 0; k <= 3; ++k)                 // ручка: 2×2 пикселя по диагонали
+                for (int dy = 0; dy <= 1; ++dy)
+                    for (int dx = 0; dx <= 1; ++dx)
+                        c.Set(10 + k + dx, 10 + k + dy, kSteel);
             break;
         }
         case TIK_SYNC:                                  // синхронизация: встречные стрелки
@@ -1030,18 +1046,16 @@ void ToolIconPixels(int kind, PixelCanvas& c) {
             c.HLine(9, 11, 5, kRefresh);
             break;
         }
-        case TIK_PROPS: {                               // свойства: шестерёнка с зубцами
-            c.HLine(6, 9, 5, kGear);
-            c.HLine(6, 9, 11, kGear);
-            c.VLine(5, 6, 9, kGear); c.VLine(10, 6, 9, kGear);
-            c.Fill(7, 2, 8, 4, kGear);                                  // зуб N
-            c.Fill(7, 12, 8, 14, kGear);                                 // зуб S
-            c.Fill(2, 7, 4, 8, kGear);                                   // зуб W
-            c.Fill(11, 7, 13, 8, kGear);                                 // зуб E
-            c.Fill(11, 3, 12, 4, kGear);                                 // зуб NE
-            c.Fill(11, 11, 12, 12, kGear);                                // зуб SE
-            c.Fill(3, 11, 4, 12, kGear);                                 // зуб SW
-            c.Fill(3, 3, 4, 4, kGear);                                   // зуб NW
+        case TIK_PROPS: {                               // свойства: документ с бейджем «i»
+            c.Fill(0, 0, 8, 11, kPaper);                 // лист
+            c.HLine(0, 8, 0, kEdge); c.HLine(0, 8, 11, kEdge);
+            c.VLine(0, 0, 11, kEdge); c.VLine(8, 0, 11, kEdge);
+            c.HLine(2, 6, 3, kText);                     // строки текста
+            c.HLine(2, 6, 5, kText);
+            c.HLine(2, 5, 7, kText);
+            c.Disk(11.5, 11.5, 4.2, kBlue);              // бейдж
+            c.Fill(11, 9, 12, 9, kPaper);                // точка «i»
+            c.Fill(11, 11, 12, 13, kPaper);              // стойка «i»
             break;
         }
         default:
