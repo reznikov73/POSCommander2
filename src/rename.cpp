@@ -2,6 +2,7 @@
 #include "rename.h"
 
 #include "ops.h"
+#include "undo.h"
 #include "util.h"
 
 #include <commctrl.h>
@@ -161,6 +162,7 @@ void RebuildPreview() {
 void ApplyAll() {
     int done = 0;
     std::wstring firstError;
+    std::vector<std::pair<std::wstring, std::wstring>> applied;
 
     for (const Row& row : g.rows) {
         if (!row.ok || !row.changed) continue;
@@ -169,6 +171,7 @@ void ApplyAll() {
         const std::wstring to = JoinPath(g.dir, row.newName);
         if (RenamePath(from, to, err)) {
             ++done;
+            applied.emplace_back(from, to);
         } else if (firstError.empty()) {
             firstError = row.oldName + L": " + ErrText(err);
         }
@@ -180,6 +183,7 @@ void ApplyAll() {
     if (!firstError.empty()) text += L"\n\nПервая ошибка:\n" + firstError;
     MessageBoxW(g.hwnd, text.c_str(), L"Пакетное переименование", MB_ICONINFORMATION | MB_OK);
 
+    UndoPushRenames(applied);
     g.applied = done;
     g.done = true;
 }

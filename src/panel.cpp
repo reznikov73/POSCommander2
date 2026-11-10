@@ -11,6 +11,7 @@
 #include "ftp.h"
 #include "ops.h"
 #include "settings.h"
+#include "undo.h"
 #include "dialogs.h"
 
 #include <algorithm>
@@ -2320,6 +2321,7 @@ void Panel::CommitInlineRename() {
     }
 
     LogDebug(L"inline rename '" + e.name + L"' -> '" + name + L"'");
+    UndoPushRename(from, to);
     renameEnding_ = true;
     ShowWindow(renameEdit_, SW_HIDE);
     renameIndex_ = -1;

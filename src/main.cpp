@@ -9,6 +9,7 @@
 #include "search.h"
 #include "dupes.h"
 #include "rename.h"
+#include "undo.h"
 #include "archive.h"
 #include "sync.h"
 #include "ftp.h"
@@ -59,6 +60,7 @@ enum : int {
     IDM_OPEN_NEW_TAB = 206,
     IDM_COPY_PATH = 207,
     IDM_DUPES = 208,
+    IDM_UNDO_RENAME = 209,
     IDM_NET_BROWSE = 193,
     IDM_NET_MAP = 194,
     IDM_NET_UNMAP = 195,
@@ -858,6 +860,8 @@ void App::BuildMenu() {
     AppendMenuW(tools, MF_STRING, IDM_SEARCH, L"&Поиск файлов\tAlt+F7");
     AppendMenuW(tools, MF_STRING, IDM_SYNC, L"&Синхронизация каталогов");
     AppendMenuW(tools, MF_STRING, IDM_DUPES, L"Поиск &дубликатов…");
+    AppendMenuW(tools, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(tools, MF_STRING, IDM_UNDO_RENAME, L"Отменить переименование\tCtrl+Z");
     AppendMenuW(tools, MF_STRING, IDM_BATCH_RENAME, L"&Пакетное переименование…\tCtrl+M");
     AppendMenuW(tools, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(tools, MF_STRING, IDM_SWAP, L"С&менить панели\tCtrl+U");
@@ -1536,6 +1540,7 @@ void App::DoRename() {
         return;
     }
     LogDebug(L"rename OK");
+    UndoPushRename(from, to);
     panel->Reload();
     panel->SetCursorIndex(panel->CursorIndex());
     UpdatePromptLabel();
@@ -2706,6 +2711,15 @@ void App::Dispatch(int id) {
             FindDuplicates(hwnd_, ActivePanel()->Path());
             break;
         }
+        case IDM_UNDO_RENAME: {
+            std::wstring report;
+            const bool any = UndoLastRename(report);
+            left_.Reload();
+            right_.Reload();
+            MessageBoxW(hwnd_, report.c_str(), L"Отмена переименования",
+                        (any ? MB_ICONINFORMATION : MB_ICONWARNING) | MB_OK);
+            break;
+        }
         case IDM_OPEN_NEW_TAB:
             OpenCursorInNewTab();
             break;
@@ -3222,6 +3236,9 @@ bool App::PreTranslate(const MSG& msg) {
                 return true;
             case VK_F8:
                 Dispatch(IDM_TREE);
+                return true;
+            case 'Z':
+                Dispatch(IDM_UNDO_RENAME);
                 return true;
             case 'W':
                 panel->CloseTab();
