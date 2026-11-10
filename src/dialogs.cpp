@@ -790,7 +790,7 @@ void HighlightSyntax(HWND edit, const std::wstring& text, SyntaxLang lang) {
     // Палитра как в Visual Studio: синие ключевые слова, тёмно-красные строки,
     // зелёные комментарии, бирюзовые числа и встроенные функции.
     const COLORREF kKeyword = RGB(0, 0, 255);
-    const COLORREF kString = RGB(140, 40, 40);
+    const COLORREF kString = RGB(163, 21, 21);
     const COLORREF kComment = RGB(0, 128, 0);
     const COLORREF kNumber = RGB(9, 134, 88);
     const COLORREF kSection = RGB(38, 127, 153);
