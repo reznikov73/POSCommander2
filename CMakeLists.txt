@@ -18,6 +18,7 @@ add_executable(PosFiles WIN32
   src/selftest.cpp
   src/settings.cpp
   src/search.cpp
+  src/dupes.cpp
   src/archive.cpp
   src/sync.cpp
   src/ftp.cpp

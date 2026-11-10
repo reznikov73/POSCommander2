@@ -7,6 +7,7 @@
 #include "selftest.h"
 #include "settings.h"
 #include "search.h"
+#include "dupes.h"
 #include "archive.h"
 #include "sync.h"
 #include "ftp.h"
@@ -56,6 +57,7 @@ enum : int {
     IDM_SEARCH = 192,
     IDM_OPEN_NEW_TAB = 206,
     IDM_COPY_PATH = 207,
+    IDM_DUPES = 208,
     IDM_NET_BROWSE = 193,
     IDM_NET_MAP = 194,
     IDM_NET_UNMAP = 195,
@@ -854,6 +856,7 @@ void App::BuildMenu() {
     HMENU tools = CreatePopupMenu();
     AppendMenuW(tools, MF_STRING, IDM_SEARCH, L"&Поиск файлов\tAlt+F7");
     AppendMenuW(tools, MF_STRING, IDM_SYNC, L"&Синхронизация каталогов");
+    AppendMenuW(tools, MF_STRING, IDM_DUPES, L"Поиск &дубликатов…");
     AppendMenuW(tools, MF_STRING, IDM_BATCH_RENAME, L"&Пакетное переименование…\tCtrl+M");
     AppendMenuW(tools, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(tools, MF_STRING, IDM_SWAP, L"С&менить панели\tCtrl+U");
@@ -2747,6 +2750,15 @@ void App::Dispatch(int id) {
         case IDM_FTP_DISCONNECT:
             FtpDisconnectActive();
             break;
+        case IDM_DUPES: {
+            if (ActivePanel()->InFtp() || ActivePanel()->InArchive()) {
+                MessageBoxW(hwnd_, L"Поиск дубликатов работает только с локальными каталогами.", L"Дубликаты",
+                            MB_ICONINFORMATION | MB_OK);
+                break;
+            }
+            FindDuplicates(hwnd_, ActivePanel()->Path());
+            break;
+        }
         case IDM_OPEN_NEW_TAB:
             OpenCursorInNewTab();
             break;
