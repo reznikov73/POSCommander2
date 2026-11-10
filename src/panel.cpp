@@ -563,7 +563,7 @@ void Panel::DrawTabButton(DRAWITEMSTRUCT* dis) {
     const bool activeTab = (index == tab_);
     const bool locked = TabLocked(index);
 
-    HBRUSH fill = CreateSolidBrush(RGB(255, 255, 255));
+    HBRUSH fill = CreateSolidBrush(activeTab ? RGB(255, 255, 255) : RGB(226, 223, 218));
     FillRect(dc, &rc, fill);
     DeleteObject(fill);
 
@@ -574,7 +574,7 @@ void Panel::DrawTabButton(DRAWITEMSTRUCT* dis) {
     LineTo(dc, rc.left, rc.top + 1);
     LineTo(dc, rc.right - 1, rc.top + 1);
     LineTo(dc, rc.right - 1, rc.bottom - 1);
-    // Все вкладки белые; активная дополнительно подчёркнута синей полосой.
+    // Активная вкладка белая, остальные серые — как в TC.
     MoveToEx(dc, rc.left, rc.bottom - 1, nullptr);
     LineTo(dc, rc.right - 1, rc.bottom - 1);
     SelectObject(dc, oldBrush);
@@ -591,7 +591,7 @@ void Panel::DrawTabButton(DRAWITEMSTRUCT* dis) {
     }
 
     SetBkMode(dc, TRANSPARENT);
-    SetTextColor(dc, RGB(0, 0, 0));
+    SetTextColor(dc, activeTab ? RGB(0, 0, 0) : RGB(70, 70, 70));
     HGDIOBJ oldFont = SelectObject(dc, font_ ? font_ : (HFONT)GetStockObject(DEFAULT_GUI_FONT));
 
     int textLeft = rc.left + Scale(6, dpi_);
