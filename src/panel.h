@@ -117,6 +117,7 @@ public:
     void CloseTab();
     void ActivateTab(int index);
     void NextTab();
+    void PrevTab();
     void CloseTabAt(int index);
     void CloseAllTabs();
     void AddTabFor(const std::wstring& dir, const std::wstring& name);

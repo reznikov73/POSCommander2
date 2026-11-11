@@ -68,6 +68,8 @@ enum : int {
     IDM_PREFS = 211,
     IDM_DELETE_PERM = 212,   // Shift+Del — мимо корзины
     IDM_BRANCH = 213,        // Ctrl+B — плоский список поддерева
+    IDM_TAB_LIST = 214,      // Ctrl+Shift+A — список вкладок
+    IDM_CMDHIST = 215,       // Alt+F8 — история команд
     IDM_NET_BROWSE = 193,
     IDM_NET_MAP = 194,
     IDM_NET_UNMAP = 195,
@@ -591,6 +593,8 @@ private:
     std::wstring ExtractOneFromArchive(Panel* panel, const std::wstring& innerName);
     void DropOnPanel(int fromSide, int toSide);
     void ShowBookmarksMenu();
+    void ShowCommandHistory();   // Alt+F8
+    void ShowTabList();          // Ctrl+Shift+A
     void RunCommandLine();
     void SaveState();
     void UpdateTitle();
@@ -839,6 +843,8 @@ void App::BuildMenu() {
     AppendMenuW(nav, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(nav, MF_STRING, IDM_TREE, L"&Дерево каталогов\tCtrl+F8");
     AppendMenuW(nav, MF_STRING, IDM_BRANCH, L"&Ветка (плоский список)\tCtrl+B");
+    AppendMenuW(nav, MF_STRING, IDM_TAB_LIST, L"Список &вкладок…\tCtrl+Shift+A");
+    AppendMenuW(nav, MF_STRING, IDM_CMDHIST, L"История &команд…\tAlt+F8");
     AppendMenuW(nav, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(nav, MF_STRING, IDM_DRIVE_LEFT, L"Диск &левой панели\tAlt+F1");
     AppendMenuW(nav, MF_STRING, IDM_DRIVE_RIGHT, L"Диск &правой панели\tAlt+F2");
@@ -2766,6 +2772,48 @@ void App::ShowBookmarksMenu() {
     }
 }
 
+// Alt+F8: выпадающий список истории команд (как в TC).
+void App::ShowCommandHistory() {
+    if (!prompt_ || history_.empty()) return;
+    SendMessageW(prompt_, CB_RESETCONTENT, 0, 0);
+    for (const auto& line : history_) {
+        SendMessageW(prompt_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(line.c_str()));
+    }
+    SetFocus(prompt_);
+    SendMessageW(prompt_, CB_SHOWDROPDOWN, TRUE, 0);
+}
+
+// Ctrl+Shift+A: список вкладок активной панели.
+void App::ShowTabList() {
+    Panel* panel = ActivePanel();
+    const int count = panel ? panel->TabCount() : 0;
+    if (count <= 0) return;
+
+    HMENU menu = CreatePopupMenu();
+    for (int i = 0; i < count && i < 64; ++i) {
+        std::wstring title = panel->TabTitle(i);
+        if (title.empty()) title = L"Вкладка " + std::to_wstring(i + 1);
+        const UINT flags = MF_STRING | (i == panel->ActiveTab() ? MF_CHECKED : 0);
+        AppendMenuW(menu, flags, 3000 + i, title.c_str());
+    }
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING, 3099, L"Закрыть текущую вкладку\tCtrl+W");
+
+    POINT pt{};
+    GetCursorPos(&pt);
+    const int cmd = (int)TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd_, nullptr);
+    DestroyMenu(menu);
+
+    if (cmd == 3099) {
+        panel->CloseTab();
+        panel->FocusList();
+        return;
+    }
+    if (cmd >= 3000 && cmd < 3000 + count) {
+        panel->ActivateTab(cmd - 3000);
+        panel->FocusList();
+    }
+}
 LRESULT CALLBACK App::QueueProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
 
             auto* app = reinterpret_cast<App*>(GetWindowLongPtrW(h, GWLP_USERDATA));
@@ -3186,6 +3234,12 @@ void App::Dispatch(int id) {
         case IDM_BRANCH:
             panel->ToggleBranch();
             break;
+        case IDM_TAB_LIST:
+            ShowTabList();
+            break;
+        case IDM_CMDHIST:
+            ShowCommandHistory();
+            break;
         case IDM_TREE:
             panel->ToggleTree();
             break;
@@ -3495,6 +3549,10 @@ bool App::PreTranslate(const MSG& msg) {
         Dispatch(IDM_SEARCH);
         return true;
     }
+    if (alt && msg.wParam == VK_F8) {           // Alt+F8 — выпадающая история команд
+        ShowCommandHistory();
+        return true;
+    }
 
     // Прочие Alt+... отдаём системе (Alt+F4 закроет окно, Alt+Tab переключит задачу).
     if (alt) return false;
@@ -3514,7 +3572,11 @@ bool App::PreTranslate(const MSG& msg) {
     if (ctrl) {
         switch (msg.wParam) {
             case 'A':
-                panel->MarkAll(true);
+                if (shift) {            // Ctrl+Shift+A — список вкладок
+                    ShowTabList();
+                } else {
+                    panel->MarkAll(true);
+                }
                 return true;
             case 'U':
                 Dispatch(IDM_SWAP);
@@ -3542,6 +3604,21 @@ bool App::PreTranslate(const MSG& msg) {
             case 'S':                   // Ctrl+S — быстрый фильтр по подстроке
                 if (shift) panel->ClearQuickFilter();
                 else panel->BeginQuickFilter();
+                return true;
+            case 'E': {                 // Ctrl+E — предыдущая команда в строку
+                if (history_.empty()) return true;
+                if (histPos_ < 0) histPos_ = (int)history_.size() - 1;
+                else if (histPos_ > 0) --histPos_;
+                SetWindowTextW(prompt_, history_[histPos_].c_str());
+                SetFocus(prompt_);
+                return true;
+            }
+            case VK_DOWN:               // Ctrl+↓ — в строку с последней командой
+                if (!history_.empty()) {
+                    histPos_ = (int)history_.size() - 1;
+                    SetWindowTextW(prompt_, history_[histPos_].c_str());
+                }
+                SetFocus(prompt_);
                 return true;
             case 'B':                   // Ctrl+B — ветка (плоский список поддерева)
                 Dispatch(IDM_BRANCH);
@@ -3647,7 +3724,8 @@ bool App::PreTranslate(const MSG& msg) {
         case VK_TAB:
             if (!inPrompt) {
                 if (ctrl) {
-                    ActivePanel()->NextTab();
+                    if (shift) ActivePanel()->PrevTab();
+                    else ActivePanel()->NextTab();
                     ActivePanel()->FocusList();
                     return true;
                 }

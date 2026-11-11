@@ -705,6 +705,11 @@ void Panel::NextTab() {
     ActivateTab((tab_ + 1) % (int)tabs_.size());
 }
 
+void Panel::PrevTab() {
+    if (tabs_.size() < 2) return;
+    ActivateTab((tab_ - 1 + (int)tabs_.size()) % (int)tabs_.size());
+}
+
 void Panel::SetFont(HFONT font, UINT dpi) {
     font_ = font;
     dpi_ = dpi;
