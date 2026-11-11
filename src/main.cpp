@@ -70,6 +70,9 @@ enum : int {
     IDM_BRANCH = 213,        // Ctrl+B — плоский список поддерева
     IDM_TAB_LIST = 214,      // Ctrl+Shift+A — список вкладок
     IDM_CMDHIST = 215,       // Alt+F8 — история команд
+    IDM_BRIEF = 216,         // Ctrl+F1 — краткий вид
+    IDM_DETAIL = 217,        // Ctrl+F2 — подробный вид
+    IDM_SORT_NONE = 218,     // Ctrl+F7 — без сортировки
     IDM_NET_BROWSE = 193,
     IDM_NET_MAP = 194,
     IDM_NET_UNMAP = 195,
@@ -862,6 +865,10 @@ void App::BuildMenu() {
     AppendMenuW(menu_, MF_POPUP, (UINT_PTR)net, L"&Сеть");
 
     HMENU view = CreatePopupMenu();
+    AppendMenuW(view, MF_STRING, IDM_BRIEF, L"&Краткий вид (только имена)\tCtrl+F1");
+    AppendMenuW(view, MF_STRING, IDM_DETAIL, L"&Подробный вид\tCtrl+F2");
+    AppendMenuW(view, MF_STRING, IDM_SORT_NONE, L"&Без сортировки\tCtrl+F7");
+    AppendMenuW(view, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(view, MF_STRING, IDM_SORT_NAME, L"По &имени\tCtrl+F3");
     AppendMenuW(view, MF_STRING, IDM_SORT_EXT, L"По &типу\tCtrl+F4");
     AppendMenuW(view, MF_STRING, IDM_SORT_SIZE, L"По &размеру\tCtrl+F6");
@@ -3114,7 +3121,14 @@ void App::Dispatch(int id) {
                 if (!temp.empty()) ShowLister(hwnd_, temp);
                 break;
             }
-            ShowLister(hwnd_, panel->FocusedPath());
+            {
+                std::vector<std::wstring> siblings;
+                for (const auto& entry : panel->Entries()) {
+                    if (entry.isDir || entry.isUp) continue;
+                    siblings.push_back(JoinPath(panel->Path(), entry.name));
+                }
+                ShowLister(hwnd_, panel->FocusedPath(), siblings);
+            }
             break;
         }
         case IDM_EDIT: {
@@ -3180,6 +3194,16 @@ void App::Dispatch(int id) {
             panel->Reload();
             break;
         }
+        case IDM_BRIEF:
+            ActivePanel()->SetBriefView(true);
+            break;
+        case IDM_DETAIL:
+            ActivePanel()->SetBriefView(false);
+            break;
+        case IDM_SORT_NONE:
+            ActivePanel()->Sort(-1, false);
+            ActivePanel()->Reload();
+            break;
         case IDM_SORT_NAME:
             DoSort(0);
             break;
@@ -3640,6 +3664,15 @@ bool App::PreTranslate(const MSG& msg) {
                 return true;
             case 'W':
                 panel->CloseTab();
+                return true;
+            case VK_F1:
+                Dispatch(IDM_BRIEF);
+                return true;
+            case VK_F2:
+                Dispatch(IDM_DETAIL);
+                return true;
+            case VK_F7:
+                Dispatch(IDM_SORT_NONE);
                 return true;
             case VK_F3:
                 Dispatch(IDM_SORT_NAME);

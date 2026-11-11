@@ -232,6 +232,12 @@ struct ListerState {
     std::vector<std::pair<int, std::wstring>> outline;          // заголовки Markdown: уровень, текст
     bool syntaxOn = true;        // подсветка синтаксиса включается/выключается клавишей C
     std::wstring findNeedle;     // последняя строка поиска
+    std::vector<std::wstring> siblings;   // файлы панели для N/P и Alt+←/→
+    int siblingIndex = -1;
+    int fontPt = 15;             // размер шрифта (Num+/−)
+    bool wrap = true;            // перенос строк (W)
+    bool fullscreen = false;     // Alt+Enter
+    RECT savedRect{};
     HFONT font = nullptr;
     HWND edit = nullptr;
     HWND hint = nullptr;
@@ -1171,6 +1177,72 @@ void RefreshLister(HWND hwnd, ListerState* st) {
 }
 
 // Просмотрщик: ESC/F3/F10 закрывают окно, даже когда фокус в дочернем EDIT.
+// --- клавиши просмотрщика: масштаб, перенос строк, перечитывание, соседние файлы ---
+
+bool ReadWholeFile(const std::wstring& path, std::vector<BYTE>& out, std::wstring& error);
+
+void ListerApplyFont(HWND parent, ListerState* st) {
+    if (st->font) DeleteObject(st->font);
+    st->font = CreateFontW(-MulDiv(st->fontPt, (int)WindowDpi(parent), 72), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                           DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                           FIXED_PITCH | FF_MODERN, L"Consolas");
+    if (st->edit) SendMessageW(st->edit, WM_SETFONT, (WPARAM)st->font, TRUE);
+    if (st->hint) SendMessageW(st->hint, WM_SETFONT, (WPARAM)st->font, TRUE);
+}
+
+void ListerApplyWrap(ListerState* st) {
+    if (st->edit) SendMessageW(st->edit, EM_SETTARGETDEVICE, 0, st->wrap ? 0 : 1);
+}
+
+bool ListerOpenPath(HWND parent, ListerState* st, const std::wstring& path) {
+    std::vector<BYTE> raw;
+    std::wstring error;
+    if (!ReadWholeFile(path, raw, error)) {
+        MessageBoxW(parent, (L"Не удалось открыть файл:\n" + path + L"\n\n" + error).c_str(), L"Просмотр",
+                    MB_ICONERROR | MB_OK);
+        return false;
+    }
+    st->path = path;
+    st->raw = std::move(raw);
+    st->codepage = DetectCodepage(st->raw);
+    st->hex = LooksBinary(st->raw);
+    const std::wstring ext = Lower(path.substr(path.find_last_of(L'.') == std::wstring::npos ? path.size()
+                                                                                            : path.find_last_of(L'.')));
+    st->markdown = !st->hex && (ext == L".md" || ext == L".markdown" || ext == L".mdown");
+    st->links.clear();
+    st->outline.clear();
+    RefreshLister(parent, st);
+    return true;
+}
+
+void ListerStep(HWND parent, ListerState* st, int delta) {
+    if (!st || st->siblings.size() < 2 || st->siblingIndex < 0) return;
+    const int count = (int)st->siblings.size();
+    st->siblingIndex = (st->siblingIndex + delta + count) % count;
+    ListerOpenPath(parent, st, st->siblings[st->siblingIndex]);
+}
+
+void ListerToggleFullscreen(HWND parent, ListerState* st) {
+    if (!st) return;
+    if (!st->fullscreen) {
+        GetWindowRect(parent, &st->savedRect);
+        MONITORINFO mi{};
+        mi.cbSize = sizeof(mi);
+        if (GetMonitorInfoW(MonitorFromWindow(parent, MONITOR_DEFAULTTONEAREST), &mi)) {
+            SetWindowLongPtrW(parent, GWL_STYLE, WS_POPUP | WS_VISIBLE);
+            SetWindowPos(parent, HWND_TOP, mi.rcMonitor.left, mi.rcMonitor.top,
+                         mi.rcMonitor.right - mi.rcMonitor.left, mi.rcMonitor.bottom - mi.rcMonitor.top,
+                         SWP_FRAMECHANGED | SWP_NOOWNERZORDER);
+        }
+        st->fullscreen = true;
+    } else {
+        SetWindowLongPtrW(parent, GWL_STYLE, WS_OVERLAPPEDWINDOW | WS_VISIBLE);
+        SetWindowPos(parent, nullptr, st->savedRect.left, st->savedRect.top,
+                     st->savedRect.right - st->savedRect.left, st->savedRect.bottom - st->savedRect.top,
+                     SWP_FRAMECHANGED | SWP_NOZORDER | SWP_NOOWNERZORDER);
+        st->fullscreen = false;
+    }
+}
 LRESULT CALLBACK ListerEditProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
                                 UINT_PTR id, DWORD_PTR ref) {
     if (msg == WM_KEYDOWN) {
@@ -1185,6 +1257,26 @@ LRESULT CALLBACK ListerEditProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             const bool back = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
             if (st && !st->findNeedle.empty()) FindInLister(parent, st, false, back);
             else if (st) FindInLister(parent, st, true, false);
+            return 0;
+        }
+        if (st && (wParam == VK_ADD || wParam == VK_SUBTRACT)) {   // масштаб шрифта
+            st->fontPt += (wParam == VK_ADD) ? 1 : -1;
+            if (st->fontPt < 8) st->fontPt = 8;
+            if (st->fontPt > 40) st->fontPt = 40;
+            ListerApplyFont(parent, st);
+            return 0;
+        }
+        if (st && wParam == 'W') {                                 // перенос строк
+            st->wrap = !st->wrap;
+            ListerApplyWrap(st);
+            return 0;
+        }
+        if (st && wParam == VK_F2) {                               // перечитать файл
+            ListerOpenPath(parent, st, st->path);
+            return 0;
+        }
+        if (st && (wParam == 'N' || wParam == 'P')) {              // следующий/предыдущий файл
+            ListerStep(parent, st, wParam == 'N' ? 1 : -1);
             return 0;
         }
         if (wParam == VK_F4 && st) {
@@ -1471,7 +1563,7 @@ bool InputBox(HWND owner, const std::wstring& title, const std::wstring& prompt,
     return false;
 }
 
-void ShowLister(HWND owner, const std::wstring& path) {
+void ShowLister(HWND owner, const std::wstring& path, const std::vector<std::wstring>& siblings) {
     std::vector<BYTE> raw;
     std::wstring error;
     if (!ReadWholeFile(path, raw, error)) {
@@ -1503,6 +1595,15 @@ void ShowLister(HWND owner, const std::wstring& path) {
 
     auto* st = new ListerState();
     st->path = path;
+    st->siblings = siblings;
+    for (size_t i = 0; i < siblings.size(); ++i) {
+        if (SamePath(siblings[i], path)) {
+            st->siblingIndex = (int)i;
+            break;
+        }
+    }
+    LogDebug(L"lister: файлов рядом " + std::to_wstring(siblings.size()) + L", индекс " +
+             std::to_wstring(st->siblingIndex));
     st->raw = std::move(raw);
     st->codepage = DetectCodepage(st->raw);
     st->hex = LooksBinary(st->raw);

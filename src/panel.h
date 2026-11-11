@@ -139,6 +139,9 @@ public:
     int ActiveTab() const { return tab_; }
 
     void Sort(int column, bool reverse);
+    // Вид панели: краткий (только имена) и подробный (все колонки).
+    void SetBriefView(bool brief);
+    bool BriefView() const { return briefView_; }
     int SortColumn() const { return sortColumn_; }
     bool SortReverse() const { return sortReverse_; }
 
@@ -314,7 +317,9 @@ private:
     std::wstring path_;
     std::wstring lastError_;
     std::vector<Entry> entries_;
-    int sortColumn_ = 0;
+    int sortColumn_ = 0;               // -1 — без сортировки
+    bool briefView_ = false;           // Ctrl+F1: только колонка «Имя»
+    int colWidths_[4]{};               // ширины колонок до перехода в краткий вид
     bool sortReverse_ = false;
     bool showHidden_ = true;
 

@@ -37,7 +37,8 @@ bool FtpProgressUpdate(const std::wstring& file, ULONGLONG done, ULONGLONG total
 void FtpProgressClose();
 
 // Просмотр файла (F3) в отдельном окне.
-void ShowLister(HWND owner, const std::wstring& path);
+// siblings — файлы панели для N/P и Alt+←/→ (пусто — переходы недоступны).
+void ShowLister(HWND owner, const std::wstring& path, const std::vector<std::wstring>& siblings = {});
 
 // «О программе»: версия, разработчик и контакты (ссылки кликабельны).
 void ShowAbout(HWND owner);

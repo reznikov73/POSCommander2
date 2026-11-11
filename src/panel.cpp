@@ -866,6 +866,23 @@ void Panel::UpdateColumns(int width) {
 }
 
 // Стрелки сортировки в заголовке колонки: «Имя ▲» / «Тип ▼», как в TC.
+// Ctrl+F1 / Ctrl+F2: краткий вид (только имена) и подробный (все колонки).
+void Panel::SetBriefView(bool brief) {
+    if (briefView_ == brief) return;
+    briefView_ = brief;
+    if (!list_) return;
+    if (brief) {
+        for (int i = 1; i < 4; ++i) {
+            colWidths_[i] = ListView_GetColumnWidth(list_, i);
+            ListView_SetColumnWidth(list_, i, 0);
+        }
+    } else {
+        for (int i = 1; i < 4; ++i) {
+            ListView_SetColumnWidth(list_, i, colWidths_[i] > 0 ? colWidths_[i] : 100);
+        }
+    }
+    InvalidateRect(list_, nullptr, FALSE);
+}
 void Panel::UpdateSortArrows() {
     if (!list_) return;
     static const wchar_t* kBase[4] = {L"Имя", L"Тип", L"Размер", L"Дата"};
@@ -1839,8 +1856,9 @@ bool Panel::LoadArchiveListing(const std::wstring& focus) {
     entries_ = std::move(loaded);
     FilterByMask();                        // внутри архива — тот же фильтр
 
-    std::sort(entries_.begin(), entries_.end(),
-              [this](const Entry& a, const Entry& b) { return CmpEntry(a, b, sortColumn_, sortReverse_); });
+    if (sortColumn_ >= 0)
+        std::sort(entries_.begin(), entries_.end(),
+                  [this](const Entry& a, const Entry& b) { return CmpEntry(a, b, sortColumn_, sortReverse_); });
 
     ApplyEntries(focus, 0);
     UpdateHeader();
@@ -1921,8 +1939,9 @@ bool Panel::LoadFtpListing(const std::wstring& url, const std::wstring& focus) {
     entries_ = std::move(loaded);
     FilterByMask();
 
-    std::sort(entries_.begin(), entries_.end(),
-              [this](const Entry& a, const Entry& b) { return CmpEntry(a, b, sortColumn_, sortReverse_); });
+    if (sortColumn_ >= 0)
+        std::sort(entries_.begin(), entries_.end(),
+                  [this](const Entry& a, const Entry& b) { return CmpEntry(a, b, sortColumn_, sortReverse_); });
 
     ApplyEntries(focus, 0);
 
@@ -2224,8 +2243,9 @@ void Panel::LoadBranchListing(const std::wstring& focus) {
 
     entries_ = std::move(loaded);
     FilterByMask();
-    std::sort(entries_.begin(), entries_.end(),
-              [this](const Entry& a, const Entry& b) { return CmpEntry(a, b, sortColumn_, sortReverse_); });
+    if (sortColumn_ >= 0)
+        std::sort(entries_.begin(), entries_.end(),
+                  [this](const Entry& a, const Entry& b) { return CmpEntry(a, b, sortColumn_, sortReverse_); });
     ApplyEntries(focus, 0);
     UpdateHeader();
     UpdateStatus();
@@ -2763,8 +2783,9 @@ void Panel::Sort(int column, bool reverse) {
     Entry* cur = Cursor();
     if (cur && !cur->isUp) focus = cur->name;
 
-    std::stable_sort(entries_.begin(), entries_.end(),
-                     [this](const Entry& a, const Entry& b) { return CmpEntry(a, b, sortColumn_, sortReverse_); });
+    if (sortColumn_ >= 0)
+        std::stable_sort(entries_.begin(), entries_.end(),
+                         [this](const Entry& a, const Entry& b) { return CmpEntry(a, b, sortColumn_, sortReverse_); });
     ApplyEntries(focus, 0);
     UpdateSortArrows();
     InvalidateRect(list_, nullptr, FALSE);
