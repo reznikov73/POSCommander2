@@ -14,6 +14,7 @@
 #include "diff.h"
 #include "prefs.h"
 #include "archive.h"
+#include "help.h"
 #include "sync.h"
 #include "ftp.h"
 #include "plugins.h"
@@ -73,6 +74,7 @@ enum : int {
     IDM_BRIEF = 216,         // Ctrl+F1 — краткий вид
     IDM_DETAIL = 217,        // Ctrl+F2 — подробный вид
     IDM_SORT_NONE = 218,     // Ctrl+F7 — без сортировки
+    IDM_HELP = 219,          // F1 — справочник клавиш
     IDM_NET_BROWSE = 193,
     IDM_NET_MAP = 194,
     IDM_NET_UNMAP = 195,
@@ -918,6 +920,8 @@ void App::BuildMenu() {
     AppendMenuW(menu_, MF_POPUP, (UINT_PTR)startMenu, L"&Запуск");
 
     HMENU help = CreatePopupMenu();
+    AppendMenuW(help, MF_STRING, IDM_HELP, L"&Горячие клавиши…\tF1");
+    AppendMenuW(help, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(help, MF_STRING, IDM_SEVENZIP, L"&Проверить 7-Zip…");
     AppendMenuW(help, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(help, MF_STRING, IDM_ABOUT, L"&О программе");
@@ -3339,6 +3343,9 @@ void App::Dispatch(int id) {
             }
             break;
         }
+        case IDM_HELP:
+            ShowHotkeysHelp(hwnd_);
+            break;
         case IDM_ABOUT:
             ShowAbout(hwnd_);
             break;
@@ -3795,6 +3802,11 @@ bool App::PreTranslate(const MSG& msg) {
             LogDebug(L"mark by mask '" + mask + L"' mode=" + std::to_wstring(mode) + L" hit=" + std::to_wstring(hit));
         }
         panel->FocusList();
+        return true;
+    }
+
+    if (msg.wParam == VK_F1) {                   // F1 — справочник горячих клавиш
+        ShowHotkeysHelp(hwnd_);
         return true;
     }
 
