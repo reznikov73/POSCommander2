@@ -270,6 +270,7 @@ private:
     std::mutex dirSizeMutex_;
     std::map<int, DirSizeResult> dirSizeFinished_;
     int dirSizeActive_ = 0;
+    bool watchPending_ = false;      // изменение пришло во время подсчёта размеров
     HWND tree_ = nullptr;
     bool treeVisible_ = false;
     std::vector<std::wstring> treePaths_;   // lParam узла = индекс в этом векторе

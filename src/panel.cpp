@@ -2061,6 +2061,20 @@ void Panel::Reload() {
         if (e.marked) marked.push_back(e.name);
     }
 
+    // Уже посчитанные размеры папок переживают перечитывание: иначе обход каталога
+    // (он сам меняет время доступа) вызывал перечитывание и размеры «пропадали».
+    struct DirSizeInfo {
+        ULONGLONG size = 0;
+        bool known = false;
+        bool busy = false;
+    };
+    std::vector<std::pair<std::wstring, DirSizeInfo>> sizes;
+    for (auto& e : entries_) {
+        if (e.isDir && !e.isUp && (e.dirSizeKnown || e.dirSizeBusy)) {
+            sizes.push_back({e.name, DirSizeInfo{e.dirSize, e.dirSizeKnown, e.dirSizeBusy}});
+        }
+    }
+
     std::wstring dir = path_;
     // Внутри архива path_ — сам файл архива: без внутреннего каталога Navigate
     // сбросил бы его в корень архива (ветка dir == archiveFile_ очищает archiveInner_).
@@ -2076,6 +2090,14 @@ void Panel::Reload() {
                 e.marked = true;
                 break;
             }
+        }
+        if (!e.isDir || e.isUp) continue;
+        for (const auto& [name, info] : sizes) {
+            if (!SameName(e.name, name)) continue;
+            e.dirSize = info.size;
+            e.dirSizeKnown = info.known;
+            e.dirSizeBusy = info.busy;
+            break;
         }
     }
     if (list_) InvalidateRect(list_, nullptr, FALSE);
@@ -2222,6 +2244,11 @@ void Panel::StartWatch() {
             DWORD got = 0;
             if (!GetOverlappedResult(w->dir, &ov, &got, FALSE)) break;
             // got == 0 — переполнение буфера, всё равно просим полное обновление.
+            if (got >= sizeof(FILE_NOTIFY_INFORMATION)) {
+                auto* info = reinterpret_cast<FILE_NOTIFY_INFORMATION*>(buf.data());
+                LogDebug(L"watch: action=" + std::to_wstring(info->Action) + L" '" +
+                         std::wstring(info->FileName, info->FileNameLength / sizeof(wchar_t)) + L"'");
+            }
             if (IsWindow(target)) PostMessageW(target, kWatchMsg, 0, 0);
         }
     }).detach();
@@ -3211,12 +3238,20 @@ LRESULT Panel::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
         case kWatchMsg:
             // Каждое новое изменение откладывает обновление: пачка событий даёт один Reload.
+            LogDebug(L"watch: изменение в '" + path_ + L"'");
+            // Обход каталога при подсчёте размера сам меняет время доступа: не перечитываем
+            // панель посреди работы, а соберём одно обновление после завершения.
+            if (dirSizeActive_ > 0) {
+                watchPending_ = true;
+                return 0;
+            }
             SetTimer(hwnd, kWatchDebounceTimer, 350, nullptr);
             return 0;
 
         case WM_TIMER:
             if (wParam == kWatchDebounceTimer) {
                 KillTimer(hwnd, kWatchDebounceTimer);
+                LogDebug(L"watch: reload '" + path_ + L"'");
                 Reload();
                 return 0;
             }
@@ -3297,6 +3332,11 @@ LRESULT Panel::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     if (list_) ListView_RedrawItems(list_, targetIndex, targetIndex);
                     UpdateStatus();
                 }
+            }
+            if (dirSizeActive_ == 0 && watchPending_) {
+                watchPending_ = false;
+                Reload();
+                return 0;
             }
             StartMarkedDirSizes();
             return 0;
