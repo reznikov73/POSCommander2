@@ -694,6 +694,155 @@ bool CreateArchive(const std::wstring& archivePath, const std::vector<std::wstri
     return true;
 }
 
+namespace {
+
+// Общий запуск 7z для операций записи: окно прогресса с «Отменой».
+// Рабочий каталог задаёт имена, которые 7z записывает в архив.
+bool Run7zWrite(HWND owner, const std::wstring& args, const std::wstring& workDir,
+                const std::wstring& title, std::wstring& error) {
+    const std::wstring exe = Find7z();
+    if (exe.empty()) {
+        error = L"7z.exe не найден. Установите 7-Zip.";
+        return false;
+    }
+
+    SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, TRUE};
+    HANDLE readPipe = nullptr, writePipe = nullptr;
+    if (!CreatePipe(&readPipe, &writePipe, &sa, 0)) {
+        error = L"Не удалось создать канал для вывода 7z.";
+        return false;
+    }
+    SetHandleInformation(readPipe, HANDLE_FLAG_INHERIT, 0);
+
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE;
+    si.hStdOutput = writePipe;
+    si.hStdError = writePipe;
+
+    std::wstring cmd = QuoteArg(exe) + L" " + args;
+    PROCESS_INFORMATION pi{};
+    if (!CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr,
+                        workDir.empty() ? nullptr : workDir.c_str(), &si, &pi)) {
+        CloseHandle(readPipe);
+        CloseHandle(writePipe);
+        error = L"Не удалось запустить 7z.exe";
+        return false;
+    }
+    CloseHandle(writePipe);
+
+    const ULONGLONG started = GetTickCount64();
+    bool windowShown = false;
+    std::string output;
+    std::wstring status;
+    char buffer[4096];
+    bool cancelled = false;
+    for (;;) {
+        DWORD available = 0;
+        if (PeekNamedPipe(readPipe, nullptr, 0, nullptr, &available, nullptr) && available > 0) {
+            DWORD got = 0;
+            const DWORD want = available < sizeof(buffer) ? available : (DWORD)sizeof(buffer);
+            if (ReadFile(readPipe, buffer, want, &got, nullptr) && got > 0) {
+                output.append(buffer, got);
+                if (output.size() > 8192) output.erase(0, output.size() - 8192);
+                UnpParse(std::string(buffer, got), status);
+            }
+        }
+        if (!windowShown && owner && GetTickCount64() - started > 250) {
+            UnpShow(owner, title);
+            windowShown = (g_unp.hwnd != nullptr);
+        }
+        UnpPump();
+
+        if (g_unp.cancelled) {
+            cancelled = true;
+            TerminateProcess(pi.hProcess, 1);
+        }
+        if (WaitForSingleObject(pi.hProcess, 30) == WAIT_OBJECT_0) {
+            DWORD got = 0;
+            while (ReadFile(readPipe, buffer, sizeof(buffer), &got, nullptr) && got > 0) output.append(buffer, got);
+            break;
+        }
+    }
+
+    DWORD code = 0;
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(readPipe);
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+    if (windowShown) UnpHide();
+
+    if (cancelled) {
+        error = L"Операция отменена.";
+        return false;
+    }
+    if (code != 0) {
+        error = L"7z завершился с кодом " + std::to_wstring(code) + L".\n\n" + Utf8ToWide(output);
+        return false;
+    }
+    return true;
+}
+
+}  // namespace
+
+bool ArchiveCanModify(const std::wstring& archive) {
+    static const wchar_t* writable[] = {L".zip", L".7z", L".tar", L".tgz", L".tar.gz", L".tbz2", L".tar.bz2"};
+    const std::wstring lower = Lower(archive);
+    for (auto ext : writable) {
+        const std::wstring suffix = ext;
+        if (lower.size() >= suffix.size() && lower.compare(lower.size() - suffix.size(), suffix.size(), suffix) == 0)
+            return true;
+    }
+    return false;
+}
+
+bool ArchiveAdd(HWND owner, const std::wstring& archive, const std::wstring& innerDir,
+                const std::vector<std::wstring>& sources, std::wstring& error) {
+    if (sources.empty()) return false;
+    if (!ArchiveCanModify(archive)) {
+        error = L"Формат этого архива нельзя изменить:\n" + archive +
+                L"\n\nДобавление поддерживается для zip, 7z и tar. Для остальных форматов\n"
+                L"распакуйте (F5), измените и упакуйте заново (Alt+F5).";
+        return false;
+    }
+
+    // Все источники — записи одной панели, значит лежат в одном каталоге:
+    // он и становится рабочим для 7z, имена внутри архива получаются относительными.
+    const std::wstring base = ParentPath(sources.front());
+
+    std::wstring args = L"a -y -sccUTF-8 " + QuoteArg(archive);
+    std::vector<std::wstring> names;
+    for (const auto& src : sources) {
+        const size_t slash = src.find_last_of(L'\\');
+        names.push_back(slash == std::wstring::npos ? src : src.substr(slash + 1));
+        args += L" " + QuoteArg(names.back());
+    }
+    if (!Run7zWrite(owner, args, base, L"Добавление в архив", error)) return false;
+
+    // 7z не умеет писать сразу во внутренний каталог: добавляем в корень и переносим.
+    if (!innerDir.empty()) {
+        std::wstring rn = L"rn -sccUTF-8 " + QuoteArg(archive);
+        for (const auto& name : names) rn += L" " + QuoteArg(name) + L" " + QuoteArg(innerDir + L"\\" + name);
+        if (!Run7zWrite(owner, rn, ParentPath(archive), L"Добавление в архив", error)) return false;
+    }
+    return true;
+}
+
+bool ArchiveDelete(HWND owner, const std::wstring& archive, const std::vector<std::wstring>& innerPaths,
+                   std::wstring& error) {
+    if (innerPaths.empty()) return false;
+    if (!ArchiveCanModify(archive)) {
+        error = L"Формат этого архива нельзя изменить:\n" + archive +
+                L"\n\nУдаление поддерживается для zip, 7z и tar.";
+        return false;
+    }
+
+    std::wstring args = L"d -y -sccUTF-8 " + QuoteArg(archive);
+    for (const auto& p : innerPaths) args += L" " + QuoteArg(p);
+    return Run7zWrite(owner, args, ParentPath(archive), L"Удаление из архива", error);
+}
+
 std::wstring ArchiveTempDir() {
     wchar_t tmp[MAX_PATH]{};
     if (!GetTempPathW(MAX_PATH, tmp)) return L".";

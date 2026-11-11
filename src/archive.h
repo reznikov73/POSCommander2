@@ -26,6 +26,18 @@ bool ExtractFromArchive(const std::wstring& archive, const std::vector<std::wstr
 bool CreateArchive(const std::wstring& archivePath, const std::vector<std::wstring>& items,
                    std::wstring& error);
 
+// Форматы, которые 7-Zip умеет изменять (zip, 7z, tar): остальные только для чтения.
+bool ArchiveCanModify(const std::wstring& archive);
+
+// Добавить в архив файлы и каталоги с диска, разместив их внутри innerDir
+// (пусто — в корень архива). Существующие записи с теми же именами заменяются.
+bool ArchiveAdd(HWND owner, const std::wstring& archive, const std::wstring& innerDir,
+                const std::vector<std::wstring>& sources, std::wstring& error);
+
+// Удалить из архива записи по внутренним путям (каталог — со всем содержимым).
+bool ArchiveDelete(HWND owner, const std::wstring& archive, const std::vector<std::wstring>& innerPaths,
+                   std::wstring& error);
+
 // Распаковка всего архива в каталог: окно прогресса, кнопка «Отмена».
 bool ExtractArchiveWithProgress(HWND owner, const std::wstring& archive,
                                 const std::wstring& target, const std::wstring& password,

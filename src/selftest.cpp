@@ -1,6 +1,7 @@
 #include "selftest.h"
 
 #include "ftp.h"
+#include "archive.h"
 #include "ops.h"
 #include "util.h"
 
@@ -112,6 +113,44 @@ void Emit(const std::wstring& text, const std::wstring& file) {
             WriteConsoleW(out, text.c_str(), (DWORD)text.size(), &written, nullptr);
         }
     }
+}
+
+// Архивы: добавление и удаление записей (через 7z).
+void CheckArchives(Report& rep, const std::wstring& base) {
+    const std::wstring zip = base + L"\\изменяемый.zip";
+    const std::wstring src1 = base + L"\\арх-1.txt";
+    const std::wstring src2 = base + L"\\арх-2.bin";
+    WriteText(src1, "arch one");
+    WriteText(src2, std::string(4096, 'z'));
+    std::wstring arErr;
+    std::vector<std::wstring> one = {src1};
+    rep.Check(ArchiveAdd(nullptr, zip, L"", one, arErr), L"Архив: файл добавлен в корень", arErr);
+    std::vector<std::wstring> two = {src2};
+    rep.Check(ArchiveAdd(nullptr, zip, L"влож", two, arErr), L"Архив: файл добавлен в подкаталог", arErr);
+
+    std::vector<ArchiveEntry> archEntries;
+    rep.Check(ListArchive(zip, archEntries), L"Архив: список читается");
+    bool hasRoot = false, hasInner = false;
+    for (auto& e : archEntries) {
+        if (e.name == L"арх-1.txt") hasRoot = true;
+        if (e.name == L"влож\\арх-2.bin") hasInner = true;
+    }
+    rep.Check(hasRoot && hasInner, L"Архив: обе записи на месте",
+              L"записей " + std::to_wstring(archEntries.size()));
+
+    rep.Check(ArchiveCanModify(zip), L"Архив: zip можно менять");
+    rep.Check(!ArchiveCanModify(base + L"\\т.rar"), L"Архив: rar только для чтения");
+
+    rep.Check(ArchiveDelete(nullptr, zip, {L"влож"}, arErr), L"Архив: каталог удалён", arErr);
+    archEntries.clear();
+    rep.Check(ListArchive(zip, archEntries), L"Архив: список после удаления");
+    bool innerGone = true, rootKept = false;
+    for (auto& e : archEntries) {
+        if (e.name.rfind(L"влож", 0) == 0) innerGone = false;
+        if (e.name == L"арх-1.txt") rootKept = true;
+    }
+    rep.Check(innerGone && rootKept, L"Архив: каталог исчез, файл остался",
+              L"записей " + std::to_wstring(archEntries.size()));
 }
 
 }  // namespace
@@ -299,6 +338,8 @@ int RunSelfTest() {
         rep.Check(FtpParseListLine(L"type=cdir;modify=20261109190633; .", entry, skip) && skip,
                   L"FTP: MLSD служебная строка");
     }
+
+    CheckArchives(rep, base);
 
     std::wstring report = L"PosFiles - самопроверка\r\n";
     report += L"каталог: " + base + L"\r\n\r\n";

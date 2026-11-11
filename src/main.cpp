@@ -1384,7 +1384,22 @@ void App::DoCopyMove(bool move) {
         return;
     }
     if (other->InArchive()) {
-        ShowError(L"Копирование внутрь архива не поддерживается.");
+        // Добавление в архив: источники — выделенные записи этой панели на диске.
+        std::vector<std::wstring> addSources = panel->SelectedPaths();
+        if (addSources.empty()) return;
+        LogDebug(L"archive add: '" + other->ArchiveFile() + L"' inner='" + other->ArchiveInner() +
+                 L"' sources=" + std::to_wstring(addSources.size()) + L" move=" + std::to_wstring(move ? 1 : 0));
+
+        std::wstring addError;
+        if (!ArchiveAdd(hwnd_, other->ArchiveFile(), other->ArchiveInner(), addSources, addError)) {
+            ShowError(addError);
+            return;
+        }
+        if (move) DeleteViaShell(hwnd_, addSources);   // перемещение: исходники убираем
+        panel->ClearMarks();
+        other->Reload();
+        if (move) panel->Reload();
+        UpdatePromptLabel();
         return;
     }
     std::vector<std::wstring> sources = panel->SelectedPaths();
@@ -1710,8 +1725,26 @@ void App::DoDelete() {
     }
 
     if (panel->InArchive()) {
-        MessageBoxW(hwnd_, L"Удаление внутри архива не поддерживается.\nРаспакуйте (F5) и удалите файлы на диске.",
-                    L"Удаление", MB_ICONINFORMATION | MB_OK);
+        std::vector<std::wstring> names = panel->SelectedNames();
+        if (names.empty()) return;
+        const std::wstring prefix = panel->ArchiveInner().empty() ? L"" : panel->ArchiveInner() + L"\\";
+        std::vector<std::wstring> inner;
+        for (auto& name : names) inner.push_back(prefix + name);
+
+        std::wstring question;
+        if (names.size() == 1) {
+            question = L"Удалить «" + names[0] + L"» из архива?\nВосстановить будет нельзя.";
+        } else {
+            question = L"Удалить из архива объектов: " + std::to_wstring(names.size()) +
+                       L"?\nВосстановить будет нельзя.";
+        }
+        if (MessageBoxW(hwnd_, question.c_str(), L"Удаление из архива", MB_ICONQUESTION | MB_YESNO) != IDYES)
+            return;
+
+        std::wstring delError;
+        if (!ArchiveDelete(hwnd_, panel->ArchiveFile(), inner, delError)) ShowError(delError);
+        panel->ClearMarks();
+        panel->Reload();
         return;
     }
 

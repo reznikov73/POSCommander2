@@ -7,3 +7,4 @@ NVIDIA Corporation/
 *.user
 _*.ps1
 _*.py
+.gigacode_vsc/
