@@ -22,6 +22,9 @@ public:
 
     bool Navigate(const std::wstring& dir, const std::wstring& focus = L"", bool keepCursor = false);
     void Reload();
+    // Ветка (Ctrl+B): плоский список всех файлов поддерева.
+    void ToggleBranch();
+    bool InBranch() const { return branch_; }
     bool GoUp();
     bool GoRoot();
 
@@ -279,6 +282,8 @@ private:
     bool watchPending_ = false;      // изменение пришло во время подсчёта размеров
     int dirSizeFocus_ = -1;          // строка, для которой размер считаем по Ctrl+L (не отмечена)
     std::wstring substring_;         // быстрый фильтр по подстроке (Ctrl+S)
+    bool branch_ = false;            // режим ветки: плоский список поддерева
+    void LoadBranchListing(const std::wstring& focus);
     bool quickFilterEdit_ = false;   // поле маски сейчас работает как строка фильтра
     HWND tree_ = nullptr;
     bool treeVisible_ = false;

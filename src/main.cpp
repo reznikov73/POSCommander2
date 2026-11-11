@@ -67,6 +67,7 @@ enum : int {
     IDM_DIFF = 210,
     IDM_PREFS = 211,
     IDM_DELETE_PERM = 212,   // Shift+Del — мимо корзины
+    IDM_BRANCH = 213,        // Ctrl+B — плоский список поддерева
     IDM_NET_BROWSE = 193,
     IDM_NET_MAP = 194,
     IDM_NET_UNMAP = 195,
@@ -837,6 +838,7 @@ void App::BuildMenu() {
     AppendMenuW(nav, MF_STRING, IDM_NAV_FORWARD, L"Вперёд\tAlt+→");
     AppendMenuW(nav, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(nav, MF_STRING, IDM_TREE, L"&Дерево каталогов\tCtrl+F8");
+    AppendMenuW(nav, MF_STRING, IDM_BRANCH, L"&Ветка (плоский список)\tCtrl+B");
     AppendMenuW(nav, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(nav, MF_STRING, IDM_DRIVE_LEFT, L"Диск &левой панели\tAlt+F1");
     AppendMenuW(nav, MF_STRING, IDM_DRIVE_RIGHT, L"Диск &правой панели\tAlt+F2");
@@ -3181,6 +3183,9 @@ void App::Dispatch(int id) {
             }
             SyncDirectories(hwnd_, left_.Path(), right_.Path());
             break;
+        case IDM_BRANCH:
+            panel->ToggleBranch();
+            break;
         case IDM_TREE:
             panel->ToggleTree();
             break;
@@ -3537,6 +3542,9 @@ bool App::PreTranslate(const MSG& msg) {
             case 'S':                   // Ctrl+S — быстрый фильтр по подстроке
                 if (shift) panel->ClearQuickFilter();
                 else panel->BeginQuickFilter();
+                return true;
+            case 'B':                   // Ctrl+B — ветка (плоский список поддерева)
+                Dispatch(IDM_BRANCH);
                 return true;
             case 'F':                   // Ctrl+F — FTP: подключиться, Ctrl+Shift+F — отключиться
                 Dispatch(shift ? IDM_FTP_DISCONNECT : IDM_FTP_CONNECT);

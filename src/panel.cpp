@@ -901,6 +901,7 @@ void Panel::SetActive(bool active) {
 
 // Строка под панелью дисков: сколько свободно на текущем томе.
 std::wstring Panel::DisplayPath() const {
+    if (branch_) return path_ + L" (ветка)";
     if (!inArchive_) return path_;
     std::wstring out = archiveFile_;
     if (!archiveInner_.empty()) out += L"\\" + archiveInner_;
@@ -1940,6 +1941,7 @@ bool Panel::LoadFtpListing(const std::wstring& url, const std::wstring& focus) {
 
 bool Panel::Navigate(const std::wstring& dir, const std::wstring& focus, bool keepCursor) {
     lastError_.clear();
+    branch_ = false;                   // любой явный переход выходит из ветки
     if (renameEdit_ && IsWindowVisible(renameEdit_) && !renameEnding_) CancelInlineRename();
 
     // FTP-URL: отдельный источник списка, обычные пути к нему не применимы.
@@ -2126,6 +2128,13 @@ void Panel::ApplyEntries(const std::wstring& focus, int fallbackIndex) {
 }
 
 void Panel::Reload() {
+    if (branch_) {                      // в ветке список собирается заново обходом поддерева
+        std::wstring focus;
+        Entry* cur = Cursor();
+        if (cur && !cur->isUp) focus = cur->name;
+        LoadBranchListing(focus);
+        return;
+    }
     std::wstring focus;
     Entry* cur = Cursor();
     if (cur && !cur->isUp) focus = cur->name;
@@ -2175,6 +2184,64 @@ void Panel::Reload() {
         }
     }
     if (list_) InvalidateRect(list_, nullptr, FALSE);
+}
+
+// Ctrl+B: плоский список всех файлов поддерева. Имена — пути относительно текущего каталога.
+void Panel::LoadBranchListing(const std::wstring& focus) {
+    StopWatch();                       // ветка не следит за отдельными файлами
+    std::vector<Entry> loaded;
+    Entry up;
+    up.name = L"..";
+    up.isDir = true;
+    up.isUp = true;
+    up.icon = IconForEntry(up, path_);
+    loaded.push_back(std::move(up));
+
+    const size_t kMaxEntries = 200000;
+    auto walk = [&](auto&& self, const std::wstring& dir, const std::wstring& rel) -> void {
+        if (loaded.size() >= kMaxEntries) return;
+        std::vector<Entry> items;
+        DWORD err = 0;
+        if (!ListDir(dir, showHidden_, items, err)) return;
+        for (auto& item : items) {
+            if (loaded.size() >= kMaxEntries) return;
+            const std::wstring inner = rel.empty() ? item.name : rel + L"\\" + item.name;
+            if (item.isDir) {
+                self(self, dir + L"\\" + item.name, inner);
+            } else {
+                item.name = inner;
+                item.icon = IconForEntry(item, path_);
+                loaded.push_back(item);
+            }
+        }
+    };
+    walk(walk, path_, L"");
+
+    entries_ = std::move(loaded);
+    FilterByMask();
+    std::sort(entries_.begin(), entries_.end(),
+              [this](const Entry& a, const Entry& b) { return CmpEntry(a, b, sortColumn_, sortReverse_); });
+    ApplyEntries(focus, 0);
+    UpdateHeader();
+    UpdateStatus();
+    if (list_) InvalidateRect(list_, nullptr, FALSE);
+}
+
+void Panel::ToggleBranch() {
+    if (ftp_ || inArchive_) {
+        MessageBoxW(GetParent(hwnd_), L"Ветка доступна только для обычных каталогов.", L"Ветка",
+                    MB_ICONINFORMATION | MB_OK);
+        return;
+    }
+    branch_ = !branch_;
+    if (branch_) {
+        LoadBranchListing(L"");
+    } else {
+        Reload();
+    }
+    FocusList();
+    LogDebug(L"branch: " + std::to_wstring(branch_ ? 1 : 0) + L" '" + path_ + L"', строк " +
+             std::to_wstring(entries_.size()));
 }
 
 bool Panel::GoUp() {
