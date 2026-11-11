@@ -1494,6 +1494,17 @@ void Panel::ConfirmMaskEdit() {
     if (!maskEditing_) return;
     wchar_t buf[256]{};
     GetWindowTextW(maskEdit_, buf, 256);
+
+    if (quickFilterEdit_) {                 // Ctrl+S: фильтр по подстроке остаётся применённым
+        substring_ = Trim(buf);
+        quickFilterEdit_ = false;
+        LeaveMaskEdit(false);
+        UpdateMaskField();                  // вернуть в поле маску
+        Reload();
+        FocusList();
+        return;
+    }
+
     LeaveMaskEdit(false);
     SetMask(buf);
     FocusList();
@@ -1501,8 +1512,60 @@ void Panel::ConfirmMaskEdit() {
 
 void Panel::CancelMaskEdit() {
     if (!maskEditing_) return;
+    const bool wasQuick = quickFilterEdit_;
+    quickFilterEdit_ = false;
     LeaveMaskEdit(true);
+    if (wasQuick && !substring_.empty()) {
+        substring_.clear();
+        Reload();
+    }
     FocusList();
+}
+
+// Ctrl+S: поле маски превращается в строку быстрого фильтра (живой ввод).
+void Panel::BeginQuickFilter() {
+    if (!maskEdit_ || maskEditing_) return;
+    quickFilterEdit_ = true;
+    maskEditing_ = true;
+    SendMessageW(maskEdit_, EM_SETREADONLY, FALSE, 0);
+    SetWindowTextW(maskEdit_, substring_.c_str());
+    SetFocus(maskEdit_);
+    SendMessageW(maskEdit_, EM_SETSEL, 0, -1);
+    InvalidateRect(maskEdit_, nullptr, TRUE);
+}
+
+void Panel::SetSubstringFilter(const std::wstring& text) {
+    substring_ = text;
+    Reload();
+}
+
+void Panel::ClearQuickFilter() {
+    if (substring_.empty() && !quickFilterEdit_) return;
+    substring_.clear();
+    if (quickFilterEdit_) {
+        quickFilterEdit_ = false;
+        LeaveMaskEdit(false);
+        UpdateMaskField();
+    }
+    Reload();
+    FocusList();
+}
+
+// Ctrl+L: пересчитать размеры отмеченных каталогов (или каталога под курсором).
+void Panel::RecalcMarkedSizes() {
+    Entry* cur = Cursor();
+    dirSizeFocus_ = CursorIndex();
+    bool any = false;
+    for (auto& e : entries_) {
+        if (e.isUp || !e.isDir) continue;
+        if (!e.marked && &e != cur) continue;
+        e.dirSizeKnown = false;
+        e.dirSizeBusy = false;
+        any = true;
+    }
+    if (any) StartMarkedDirSizes();
+    UpdateStatus();
+    if (list_) InvalidateRect(list_, nullptr, FALSE);
 }
 
 // ▼ — история масок: свежие сверху, плюс «*.* — все файлы».
@@ -1576,6 +1639,17 @@ LRESULT CALLBACK Panel::MaskEditProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
 // Маска действует только на файлы; каталоги и «..» остаются всегда (как в TC).
 // «*.*» и «*» — показать всё (в том числе файлы без расширения).
 void Panel::FilterByMask() {
+    // Быстрый фильтр по подстроке (Ctrl+S): имена без вхождения скрываются.
+    if (!substring_.empty()) {
+        const std::wstring needle = Lower(substring_);
+        entries_.erase(std::remove_if(entries_.begin(), entries_.end(),
+                                      [&needle](const Entry& e) {
+                                          if (e.isUp) return false;
+                                          return Lower(e.name).find(needle) == std::wstring::npos;
+                                      }),
+                       entries_.end());
+    }
+
     const auto masks = SplitMasks(mask_);
     bool all = masks.empty();
     for (auto& m : masks) {
@@ -3025,7 +3099,8 @@ void Panel::StartMarkedDirSizes() {
     const int kMaxActive = 4;
     for (int i = 0; i < (int)entries_.size() && dirSizeActive_ < kMaxActive; ++i) {
         Entry& e = entries_[i];
-        if (e.isUp || !e.isDir || !e.marked) continue;
+        if (e.isUp || !e.isDir) continue;
+        if (!e.marked && i != dirSizeFocus_) continue;
         if (e.dirSizeKnown || e.dirSizeBusy) continue;
         CalculateDirSize(i);
     }
@@ -3328,6 +3403,7 @@ LRESULT Panel::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     e.dirSizeBusy = false;
                     e.dirSizeKnown = true;
                     e.dirSize = result.size;
+                    if (targetIndex == dirSizeFocus_) dirSizeFocus_ = -1;
                     LogDebug(L"dirsize '" + e.name + L"' = " + std::to_wstring(e.dirSize) + L" байт");
                     if (list_) ListView_RedrawItems(list_, targetIndex, targetIndex);
                     UpdateStatus();
@@ -3368,6 +3444,14 @@ LRESULT Panel::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
         case WM_COMMAND: {
             int id = LOWORD(wParam);
+            // Живой фильтр (Ctrl+S): каждое изменение текста в поле маски сразу фильтрует список.
+            if (quickFilterEdit_ && HIWORD(wParam) == EN_CHANGE &&
+                reinterpret_cast<HWND>(lParam) == maskEdit_) {
+                wchar_t text[256]{};
+                GetWindowTextW(maskEdit_, text, 256);
+                SetSubstringFilter(text);
+                return 0;
+            }
             if (id == kPathApplyId) {
                 ApplyPathText();
                 return 0;

@@ -569,7 +569,8 @@ private:
     void DoCopyMove(bool move);
     void DoFtpCopyMove(bool move);
     void DoRename();
-    void DoMkdir();
+    void DoMkdir(Panel* target = nullptr, const std::wstring& initialName = L"");
+    void DoCopyInPlace();       // Shift+F5 — копия рядом под новым именем
     void DoDelete(bool permanent = false);
     void DoProperties();
     void DoSort(int column);
@@ -1695,8 +1696,44 @@ void App::DoRename() {
     UpdatePromptLabel();
 }
 
-void App::DoMkdir() {
+// Shift+F5: копия рядом с исходным файлом под новым именем (как в TC).
+void App::DoCopyInPlace() {
     Panel* panel = ActivePanel();
+    if (panel->InFtp() || panel->InArchive()) {
+        ShowError(L"Копия в этом же каталоге доступна только для файлов на диске.");
+        return;
+    }
+    Entry* e = panel->Cursor();
+    if (!e || e->isUp) return;
+    if (e->isDir) {
+        ShowError(L"Каталог в этом же месте: используйте F5 и укажите новое имя в пути назначения.");
+        return;
+    }
+
+    const std::wstring name = e->name;
+    std::wstring base = name, ext;
+    const size_t dot = name.find_last_of(L'.');
+    if (dot != std::wstring::npos && dot > 0) {
+        base = name.substr(0, dot);
+        ext = name.substr(dot);
+    }
+    std::wstring newName = base + L" — копия" + ext;
+    if (!InputBox(hwnd_, L"Копия в этом каталоге", L"Новое имя:", newName, false)) return;
+    newName = Trim(newName);
+    if (newName.empty() || SamePath(newName, name)) return;
+
+    const std::wstring src = JoinPath(panel->Path(), name);
+    const std::wstring dst = JoinPath(panel->Path(), newName);
+    if (!CopyFileW(src.c_str(), dst.c_str(), FALSE)) {
+        ShowError(L"Не удалось скопировать:\n" + ErrText(GetLastError()));
+        return;
+    }
+    LogDebug(L"copy in place: '" + name + L"' -> '" + newName + L"'");
+    panel->Reload();
+    UpdatePromptLabel();
+}
+void App::DoMkdir(Panel* target, const std::wstring& initialName) {
+    Panel* panel = target ? target : ActivePanel();
 
     if (panel->InFtp()) {
         std::wstring name;
@@ -1721,7 +1758,7 @@ void App::DoMkdir() {
         return;
     }
 
-    std::wstring name;
+    std::wstring name = initialName;
     if (!InputBox(hwnd_, L"Создать каталог", L"Имя каталога:", name, false)) return;
     name = Trim(name);
     if (name.empty()) return;
@@ -3489,6 +3526,18 @@ bool App::PreTranslate(const MSG& msg) {
             case 'D':
                 ShowBookmarksMenu();        // как в TC: меню избранного, добавление — внутри
                 return true;
+            case 'J': {                 // Ctrl+J / Ctrl+Shift+J — имя/путь в командную строку
+                Entry* cur = panel->Cursor();
+                if (cur && !cur->isUp) AppendToPrompt(shift ? panel->FocusedPath() : cur->name, true);
+                return true;
+            }
+            case 'L':                   // Ctrl+L — пересчитать размеры отмеченного
+                panel->RecalcMarkedSizes();
+                return true;
+            case 'S':                   // Ctrl+S — быстрый фильтр по подстроке
+                if (shift) panel->ClearQuickFilter();
+                else panel->BeginQuickFilter();
+                return true;
             case 'M':
                 Dispatch(IDM_BATCH_RENAME);
                 return true;
@@ -3542,19 +3591,29 @@ bool App::PreTranslate(const MSG& msg) {
             Dispatch(IDM_VIEW);
             return true;
         case VK_F4:
-            Dispatch(IDM_EDIT);
+            Dispatch(shift ? IDM_NEWFILE : IDM_EDIT);   // Shift+F4 — новый текстовый файл
             return true;
         case VK_F5:
+            if (shift) {                                // Shift+F5 — копия в этом же каталоге
+                DoCopyInPlace();
+                return true;
+            }
             Dispatch(IDM_COPY);
             return true;
         case VK_F6:
-            Dispatch(IDM_MOVE);
+            Dispatch(shift ? IDM_RENAME : IDM_MOVE);    // Shift+F6 — переименование
             return true;
         case VK_F7:
+            if (shift) {                                // Shift+F7 — каталог в неактивной панели
+                Panel* other = OtherPanel();
+                Entry* cur = panel->Cursor();
+                DoMkdir(other, (cur && !cur->isUp) ? cur->name : L"");
+                return true;
+            }
             Dispatch(IDM_MKDIR);
             return true;
         case VK_F8:
-            Dispatch(IDM_DELETE);
+            Dispatch(shift ? IDM_DELETE_PERM : IDM_DELETE);
             return true;
         case VK_F2:
             Dispatch(IDM_RENAME);
@@ -3601,11 +3660,6 @@ bool App::PreTranslate(const MSG& msg) {
             break;
     }
 
-    if (shift && msg.wParam == VK_F6) {
-        Dispatch(IDM_RENAME);
-        return true;
-    }
-
     if (!inPrompt && (msg.wParam == VK_ADD || msg.wParam == VK_SUBTRACT || msg.wParam == VK_MULTIPLY)) {
         const int mode = (msg.wParam == VK_ADD) ? 0 : (msg.wParam == VK_SUBTRACT ? 1 : 2);
         const wchar_t* title = (mode == 0) ? L"Отметить по маске"
@@ -3616,11 +3670,6 @@ bool App::PreTranslate(const MSG& msg) {
             LogDebug(L"mark by mask '" + mask + L"' mode=" + std::to_wstring(mode) + L" hit=" + std::to_wstring(hit));
         }
         panel->FocusList();
-        return true;
-    }
-
-    if (shift && msg.wParam == VK_F4) {          // Shift+F4 — новый текстовый файл
-        Dispatch(IDM_NEWFILE);
         return true;
     }
 

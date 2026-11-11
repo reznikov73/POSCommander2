@@ -86,6 +86,12 @@ public:
     void CalculateDirSize(int index);
     // Запускает подсчёт для отмеченных папок (не более 4 одновременно).
     void StartMarkedDirSizes();
+    // Ctrl+L: пересчитать размеры отмеченных каталогов (или каталога под курсором).
+    void RecalcMarkedSizes();
+    // Ctrl+S: быстрый фильтр по подстроке (живой ввод в поле маски).
+    void BeginQuickFilter();
+    void ClearQuickFilter();
+    void SetSubstringFilter(const std::wstring& text);
 
     void ToggleTree();
     bool TreeVisible() const { return treeVisible_; }
@@ -271,6 +277,9 @@ private:
     std::map<int, DirSizeResult> dirSizeFinished_;
     int dirSizeActive_ = 0;
     bool watchPending_ = false;      // изменение пришло во время подсчёта размеров
+    int dirSizeFocus_ = -1;          // строка, для которой размер считаем по Ctrl+L (не отмечена)
+    std::wstring substring_;         // быстрый фильтр по подстроке (Ctrl+S)
+    bool quickFilterEdit_ = false;   // поле маски сейчас работает как строка фильтра
     HWND tree_ = nullptr;
     bool treeVisible_ = false;
     std::vector<std::wstring> treePaths_;   // lParam узла = индекс в этом векторе
