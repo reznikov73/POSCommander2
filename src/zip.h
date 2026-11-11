@@ -9,6 +9,7 @@
 
 struct ZipItem {
     std::wstring name;                 // путь внутри архива, разделители '\'
+    std::string nameRaw;               // исходные байты имени (для точного копирования)
     unsigned long long size = 0;       // размер после распаковки
     unsigned long long packed = 0;     // размер сжатых данных
     unsigned long long offset = 0;     // смещение локального заголовка
@@ -39,6 +40,11 @@ struct ZipSource {
 
 // Создание архива (сжатие store) из списка источников.
 bool ZipCreateFrom(const std::wstring& zipPath, const std::vector<ZipSource>& sources, std::wstring& error);
+
+// Изменение архива: удалить записи (по именам, каталог — с содержимым) и добавить файлы.
+// Сжатые данные существующих записей копируются байт в байт (без пересжатия).
+bool ZipModify(const std::wstring& zipPath, const std::vector<std::wstring>& deleteNames,
+               const std::vector<ZipSource>& addItems, std::wstring& error);
 
 // Быстрая проверка, что файл — zip (по сигнатуре PK\x03\x04 в начале и центральному каталогу).
 bool ZipLooksLikeZip(const std::wstring& path);

@@ -493,6 +493,7 @@ void ParseCentral(const std::vector<unsigned char>& cd, std::vector<ZipItem>& it
         }
 
         const std::string rawName(reinterpret_cast<const char*>(cd.data() + pos + 46), nameLen);
+        item.nameRaw = rawName;
         item.name = DecodeName(rawName, item.flags);
         item.size = usize;
         item.packed = csize;
@@ -893,6 +894,248 @@ bool ZipCreateFrom(const std::wstring& zipPath, const std::vector<ZipSource>& so
     Put16(eocd, 0);
     if (fwrite(eocd.data(), 1, eocd.size(), out.get()) != eocd.size()) {
         error = L"Не удалось записать конец архива.";
+        return false;
+    }
+    return true;
+}
+
+namespace {
+
+// Запись в новом архиве: то, что нужно для локального заголовка и оглавления.
+struct OutRec {
+    std::string nameRaw;
+    unsigned short flags = 0;
+    unsigned short method = 0;
+    unsigned short dosTime = 0;
+    unsigned short dosDate = 0;
+    unsigned long crc = 0;
+    unsigned long long csize = 0;
+    unsigned long long usize = 0;
+    unsigned long long offset = 0;
+};
+
+bool WriteLocalHeader(FILE* out, const OutRec& rec, unsigned long long& offset, std::wstring& error) {
+    if (rec.csize > 0xFFFFFFFEull || rec.usize > 0xFFFFFFFEull) {
+        error = L"Запись больше 4 ГБ: изменение такого архива без 7-Zip не поддерживается.";
+        return false;
+    }
+    std::vector<unsigned char> h;
+    Put32(h, kLocalSig);
+    Put16(h, 20);
+    Put16(h, rec.flags);
+    Put16(h, rec.method);
+    Put16(h, rec.dosTime);
+    Put16(h, rec.dosDate);
+    Put32(h, rec.crc);
+    Put32(h, (unsigned long)rec.csize);
+    Put32(h, (unsigned long)rec.usize);
+    Put16(h, (unsigned short)rec.nameRaw.size());
+    Put16(h, 0);
+    h.insert(h.end(), rec.nameRaw.begin(), rec.nameRaw.end());
+    if (fwrite(h.data(), 1, h.size(), out) != h.size()) {
+        error = L"Не удалось записать временный архив (нет места?).";
+        return false;
+    }
+    offset += h.size();
+    return true;
+}
+
+}  // namespace
+
+bool ZipModify(const std::wstring& zipPath, const std::vector<std::wstring>& deleteNames,
+               const std::vector<ZipSource>& addItems, std::wstring& error) {
+    error.clear();
+    std::vector<ZipItem> items;
+    if (!ZipReadIndex(zipPath, items, error)) return false;
+
+    auto matches = [](const std::wstring& name, const std::vector<std::wstring>& list) {
+        for (const auto& it : list) {
+            if (SamePath(name, it)) return true;
+            if (!it.empty() && name.rfind(it + L"\\", 0) == 0) return true;
+        }
+        return false;
+    };
+
+    const std::wstring tempPath = zipPath + L".posfiles-tmp";
+    FilePtr out(_wfopen(tempPath.c_str(), L"wb"));
+    if (!out) {
+        error = L"Не удалось создать временный файл рядом с архивом.\nПроверьте права на папку.";
+        return false;
+    }
+    FilePtr src = OpenRead(zipPath);
+    if (!src) {
+        error = L"Не удалось открыть архив.";
+        return false;
+    }
+
+    std::vector<OutRec> recs;
+    unsigned long long offset = 0;
+    unsigned char buf[1 << 16];
+
+    for (const auto& item : items) {
+        if (matches(item.name, deleteNames)) continue;
+        bool replaced = false;
+        for (const auto& add : addItems) {
+            if (SamePath(item.name, add.inner)) {
+                replaced = true;
+                break;
+            }
+        }
+        if (replaced) continue;
+
+        OutRec rec;
+        rec.nameRaw = item.nameRaw;
+        rec.flags = (unsigned short)(item.flags & ~0x0008);   // без потокового дескриптора
+        rec.method = item.isDir ? 0 : item.method;
+        rec.dosTime = item.dosTime;
+        rec.dosDate = item.dosDate;
+        rec.crc = item.isDir ? 0 : item.crc;
+        rec.csize = item.isDir ? 0 : item.packed;
+        rec.usize = item.isDir ? 0 : item.size;
+        rec.offset = offset;
+        if (!WriteLocalHeader(out.get(), rec, offset, error)) return false;
+        recs.push_back(rec);
+
+        if (item.isDir || item.packed == 0) continue;
+
+        unsigned char header[30]{};
+        if (!ReadAt(src.get(), item.offset, header, 30) || Rd32(header) != kLocalSig) {
+            error = L"Повреждён локальный заголовок записи: " + item.name;
+            return false;
+        }
+        const unsigned long long dataOffset = item.offset + 30 + Rd16(header + 26) + Rd16(header + 28);
+        if (_fseeki64(src.get(), (long long)dataOffset, SEEK_SET) != 0) {
+            error = L"Не удалось перейти к данным записи: " + item.name;
+            return false;
+        }
+        unsigned long long left = item.packed;
+        while (left > 0) {
+            const size_t want = (size_t)(left < sizeof(buf) ? left : sizeof(buf));
+            const size_t got = fread(buf, 1, want, src.get());
+            if (got != want) {
+                error = L"Данные записи обрываются: " + item.name;
+                return false;
+            }
+            if (fwrite(buf, 1, got, out.get()) != got) {
+                error = L"Не удалось записать временный архив.";
+                return false;
+            }
+            left -= got;
+            offset += got;
+        }
+    }
+
+    // Новые файлы — без сжатия (store): дефляция для записи пока не реализована.
+    for (const auto& add : addItems) {
+        std::wstring inner = add.inner;
+        for (auto& ch : inner) {
+            if (ch == L'/') ch = L'\\';
+        }
+        FILE* f = _wfopen(add.path.c_str(), L"rb");
+        if (!f) {
+            error = L"Не удалось прочитать файл: " + add.path;
+            return false;
+        }
+        _fseeki64(f, 0, SEEK_END);
+        const long long size = _ftelli64(f);
+        _fseeki64(f, 0, SEEK_SET);
+        if (size < 0) {
+            fclose(f);
+            error = L"Не удалось определить размер файла: " + add.path;
+            return false;
+        }
+        unsigned long crc = 0;
+        size_t got = 0;
+        while ((got = fread(buf, 1, sizeof(buf), f)) > 0) crc = CrcUpdate(crc, buf, got);
+        _fseeki64(f, 0, SEEK_SET);
+
+        WIN32_FILE_ATTRIBUTE_DATA fad{};
+        unsigned short dosTime = 0, dosDate = 0;
+        if (GetFileAttributesExW(add.path.c_str(), GetFileExInfoStandard, &fad)) {
+            DosFromFileTime(fad.ftLastWriteTime, dosTime, dosDate);
+        }
+
+        OutRec rec;
+        rec.nameRaw = ToUtf8(inner);
+        rec.flags = 0x0800;
+        rec.method = 0;
+        rec.dosTime = dosTime;
+        rec.dosDate = dosDate;
+        rec.crc = crc;
+        rec.csize = (unsigned long long)size;
+        rec.usize = (unsigned long long)size;
+        rec.offset = offset;
+        if (!WriteLocalHeader(out.get(), rec, offset, error)) {
+            fclose(f);
+            return false;
+        }
+        while ((got = fread(buf, 1, sizeof(buf), f)) > 0) {
+            if (fwrite(buf, 1, got, out.get()) != got) {
+                fclose(f);
+                error = L"Не удалось записать временный архив (нет места?).";
+                return false;
+            }
+            offset += got;
+        }
+        fclose(f);
+        recs.push_back(rec);
+    }
+
+    if (recs.size() > 0xFFFF) {
+        error = L"В архиве больше 65535 записей: изменение без 7-Zip не поддерживается.";
+        return false;
+    }
+
+    const unsigned long long cdOffset = offset;
+    std::vector<unsigned char> cd;
+    for (const auto& rec : recs) {
+        if (rec.offset > 0xFFFFFFFEull) {
+            error = L"Архив больше 4 ГБ: изменение без 7-Zip не поддерживается.";
+            return false;
+        }
+        Put32(cd, kCentralSig);
+        Put16(cd, 20);
+        Put16(cd, 20);
+        Put16(cd, rec.flags);
+        Put16(cd, rec.method);
+        Put16(cd, rec.dosTime);
+        Put16(cd, rec.dosDate);
+        Put32(cd, rec.crc);
+        Put32(cd, (unsigned long)rec.csize);
+        Put32(cd, (unsigned long)rec.usize);
+        Put16(cd, (unsigned short)rec.nameRaw.size());
+        Put16(cd, 0);
+        Put16(cd, 0);
+        Put16(cd, 0);
+        Put16(cd, 0);
+        Put32(cd, 0);
+        Put32(cd, (unsigned long)rec.offset);
+        cd.insert(cd.end(), rec.nameRaw.begin(), rec.nameRaw.end());
+    }
+    if (!cd.empty() && fwrite(cd.data(), 1, cd.size(), out.get()) != cd.size()) {
+        error = L"Не удалось записать оглавление архива.";
+        return false;
+    }
+
+    std::vector<unsigned char> eocd;
+    Put32(eocd, kEocdSig);
+    Put16(eocd, 0);
+    Put16(eocd, 0);
+    Put16(eocd, (unsigned short)recs.size());
+    Put16(eocd, (unsigned short)recs.size());
+    Put32(eocd, (unsigned long)cd.size());
+    Put32(eocd, (unsigned long)cdOffset);
+    Put16(eocd, 0);
+    if (fwrite(eocd.data(), 1, eocd.size(), out.get()) != eocd.size()) {
+        error = L"Не удалось записать конец архива.";
+        return false;
+    }
+
+    out.reset();          // закрыть до переименования
+    src.reset();
+    if (!MoveFileExW(tempPath.c_str(), zipPath.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+        error = L"Не удалось заменить архив (файл занят другой программой?).";
+        DeleteFileW(tempPath.c_str());
         return false;
     }
     return true;

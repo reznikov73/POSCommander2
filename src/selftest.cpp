@@ -164,6 +164,48 @@ void CheckArchives(Report& rep, const std::wstring& base) {
         rep.Check(ReadText(zout + L"\\папка\\zip-1.txt") == "строка для zip", L"Zip: текст совпал");
         rep.Check(ReadBytes(zout + L"\\zip-2.bin").size() == 5000, L"Zip: бинарник совпал по размеру");
 
+        // Правка архива без 7-Zip: добавление в подкаталог и удаление.
+        const std::wstring zm = base + L"\\правка.zip";
+        std::vector<ZipSource> zinit = {{zsrc1, L"раз.txt"}};
+        rep.Check(ZipCreateFrom(zm, zinit, zerr), L"Zip: исходный архив для правки", zerr);
+        std::vector<ZipSource> zadd = {{zsrc2, L"папка\\два.bin"}};
+        rep.Check(ZipModify(zm, {}, zadd, zerr), L"Zip: добавление в подкаталог", zerr);
+        std::vector<ZipItem> zlist;
+        rep.Check(ZipReadIndex(zm, zlist, zerr), L"Zip: оглавление после добавления", zerr);
+        bool hasNew = false;
+        for (const auto& it : zlist) {
+            if (it.name == L"папка\\два.bin") hasNew = true;
+        }
+        rep.Check(hasNew && zlist.size() == 2, L"Zip: добавленная запись на месте",
+                  L"записей " + std::to_wstring(zlist.size()));
+        const std::wstring zext2 = base + L"\\zip-ext2";
+        rep.Check(ZipExtractTo(zm, {}, zext2, zerr), L"Zip: распаковка после добавления", zerr);
+        rep.Check(ReadBytes(zext2 + L"\\папка\\два.bin").size() == 5000, L"Zip: добавленный файл цел");
+        rep.Check(ReadText(zext2 + L"\\раз.txt") == "строка для zip", L"Zip: старый файл не испорчен");
+        rep.Check(ZipModify(zm, {L"раз.txt"}, {}, zerr), L"Zip: удаление записи", zerr);
+        zlist.clear();
+        rep.Check(ZipReadIndex(zm, zlist, zerr), L"Zip: оглавление после удаления", zerr);
+        bool gone = true;
+        for (const auto& it : zlist) {
+            if (it.name == L"раз.txt") gone = false;
+        }
+        rep.Check(gone && zlist.size() == 1, L"Zip: запись удалена, другая осталась");
+
+        // Сжатые записи при правке копируются байт в байт — проверяем, что не портятся.
+        if (!Find7zPath().empty()) {
+            const std::wstring defZip = base + L"\\deflate-mod.zip";
+            const std::wstring keeper = base + L"\\keep.txt";
+            WriteText(keeper, "оставить этот файл");
+            std::wstring derr;
+            if (CreateArchive(defZip, {zsrc1, keeper}, derr)) {   // 7z: сжатие deflate
+                rep.Check(ZipModify(defZip, {L"zip-1.txt"}, {}, zerr), L"Zip: удаление из сжатого архива", zerr);
+                const std::wstring keepOut = base + L"\\keep-out.txt";
+                rep.Check(ZipExtractOne(defZip, L"keep.txt", keepOut, zerr) &&
+                              ReadText(keepOut) == "оставить этот файл",
+                          L"Zip: сжатая запись скопирована без порчи", zerr);
+            }
+        }
+
         // Сжатый (deflate) архив: создаём 7-Zip, читаем своим inflate.
         if (!Find7zPath().empty()) {
             const std::wstring deflateZip = base + L"\\deflate.zip";

@@ -723,31 +723,10 @@ bool ExtractFromArchive(const std::wstring& archive, const std::vector<std::wstr
     return true;
 }
 
+
 namespace {
-
-std::wstring ArchiveLeaf(const std::wstring& path) {
-    const size_t slash = path.find_last_of(L'\\');
-    return slash == std::wstring::npos ? path : path.substr(slash + 1);
-}
-
-// Разворачиваем элементы (файлы и каталоги) в список «файл + имя внутри архива».
-void CollectZipSources(const std::wstring& path, const std::wstring& inner, std::vector<ZipSource>& out) {
-    if (!IsDirectory(path)) {
-        out.push_back(ZipSource{path, inner});
-        return;
-    }
-    std::vector<Entry> entries;
-    DWORD err = 0;
-    if (!ListDir(path, true, entries, err)) return;
-    for (const auto& e : entries) {
-        if (e.isDir) {
-            CollectZipSources(path + L"\\" + e.name, inner + L"\\" + e.name, out);
-        } else {
-            out.push_back(ZipSource{path + L"\\" + e.name, inner + L"\\" + e.name});
-        }
-    }
-}
-
+std::wstring ArchiveLeaf(const std::wstring& path);
+void CollectZipSources(const std::wstring& path, const std::wstring& inner, std::vector<ZipSource>& out);
 }  // namespace
 
 bool CreateArchive(const std::wstring& archivePath, const std::vector<std::wstring>& items,
@@ -915,13 +894,50 @@ bool ArchiveCanModify(const std::wstring& archive) {
     return false;
 }
 
+namespace {
+
+std::wstring ArchiveLeaf(const std::wstring& path) {
+    const size_t slash = path.find_last_of(L'\\');
+    return slash == std::wstring::npos ? path : path.substr(slash + 1);
+}
+
+// Разворачиваем элементы (файлы и каталоги) в список «файл + имя внутри архива».
+void CollectZipSources(const std::wstring& path, const std::wstring& inner, std::vector<ZipSource>& out) {
+    if (!IsDirectory(path)) {
+        out.push_back(ZipSource{path, inner});
+        return;
+    }
+    std::vector<Entry> entries;
+    DWORD err = 0;
+    if (!ListDir(path, true, entries, err)) return;
+    for (const auto& e : entries) {
+        if (e.isDir) {
+            CollectZipSources(path + L"\\" + e.name, inner + L"\\" + e.name, out);
+        } else {
+            out.push_back(ZipSource{path + L"\\" + e.name, inner + L"\\" + e.name});
+        }
+    }
+}
+
+}  // namespace
 bool ArchiveAdd(HWND owner, const std::wstring& archive, const std::wstring& innerDir,
                 const std::vector<std::wstring>& sources, std::wstring& error) {
     if (sources.empty()) return false;
     if (UseBuiltinZip(archive)) {
-        error = L"Добавление в zip без 7-Zip пока не поддерживается.\n"
-                L"Распакуйте архив (F5), добавьте файлы и упакуйте заново (Alt+F5).";
-        return false;
+        std::vector<ZipSource> adds;
+        for (const auto& src : sources) {
+            const std::wstring leaf = ArchiveLeaf(src);
+            const std::wstring inner = innerDir.empty() ? leaf : innerDir + L"\\" + leaf;
+            CollectZipSources(src, inner, adds);
+        }
+        if (adds.empty()) {
+            error = L"Нечего добавлять.";
+            return false;
+        }
+        if (GetFileAttributesW(archive.c_str()) == INVALID_FILE_ATTRIBUTES) {
+            return ZipCreateFrom(archive, adds, error);      // архива ещё нет — создаём
+        }
+        return ZipModify(archive, {}, adds, error);
     }
     if (!ArchiveCanModify(archive)) {
         error = L"Формат этого архива нельзя изменить:\n" + archive +
@@ -956,9 +972,7 @@ bool ArchiveDelete(HWND owner, const std::wstring& archive, const std::vector<st
                    std::wstring& error) {
     if (innerPaths.empty()) return false;
     if (UseBuiltinZip(archive)) {
-        error = L"Удаление из zip без 7-Zip пока не поддерживается.\n"
-                L"Распакуйте архив (F5), удалите лишнее и упакуйте заново (Alt+F5).";
-        return false;
+        return ZipModify(archive, innerPaths, {}, error);
     }
     if (!ArchiveCanModify(archive)) {
         error = L"Формат этого архива нельзя изменить:\n" + archive +
