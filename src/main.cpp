@@ -1709,6 +1709,12 @@ void App::DoDelete() {
         return;
     }
 
+    if (panel->InArchive()) {
+        MessageBoxW(hwnd_, L"Удаление внутри архива не поддерживается.\nРаспакуйте (F5) и удалите файлы на диске.",
+                    L"Удаление", MB_ICONINFORMATION | MB_OK);
+        return;
+    }
+
     std::vector<std::wstring> targets = panel->SelectedPaths();
     if (targets.empty()) return;
 
@@ -2838,6 +2844,41 @@ void App::Dispatch(int id) {
                 if (slash != std::wstring::npos) {
                     const std::wstring dir = found.substr(0, slash);
                     const std::wstring name = found.substr(slash + 1);
+
+                    // Путь может быть внутри архива: ищем существующий архивный
+                    // файл-префикс и открываем архив с нужным каталогом внутри.
+                    if (!PathExists(dir)) {
+                        std::wstring root;
+                        for (size_t pos = found.find(L'\\'); pos != std::wstring::npos;
+                             pos = found.find(L'\\', pos + 1)) {
+                            const std::wstring candidate = found.substr(0, pos);
+                            if (IsArchivePath(candidate) && PathExists(candidate)) {
+                                root = candidate;
+                                break;
+                            }
+                        }
+                        if (!root.empty()) {
+                            std::wstring inner = found.substr(root.size() + 1);
+                            for (wchar_t& ch : inner)
+                                if (ch == L'/') ch = L'\\';
+                            const size_t lastSlash = inner.find_last_of(L'\\');
+                            const std::wstring innerDir =
+                                lastSlash == std::wstring::npos ? std::wstring{} : inner.substr(0, lastSlash);
+                            const std::wstring fileName =
+                                lastSlash == std::wstring::npos ? inner : inner.substr(lastSlash + 1);
+                            const bool first = ActivePanel()->Navigate(root);
+                            const bool second =
+                                first && ActivePanel()->Navigate(
+                                              innerDir.empty() ? root : root + L"\\" + innerDir, fileName);
+                            LogDebug(L"search: архив root='" + root + L"' inner='" + innerDir +
+                                     L"' focus='" + fileName + L"' enter=" + std::to_wstring(first ? 1 : 0) +
+                                     L"/" + std::to_wstring(second ? 1 : 0) + L" err='" +
+                                     ActivePanel()->NavigateError() + L"'");
+                            if (second) ActivePanel()->FocusList();
+                            break;
+                        }
+                    }
+
                     if (ActivePanel()->Navigate(dir, name)) ActivePanel()->FocusList();
                 }
             }

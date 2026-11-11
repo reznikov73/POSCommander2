@@ -1,5 +1,6 @@
 #include "search.h"
 
+#include "archive.h"
 #include "dialogs.h"
 
 #include "ops.h"
@@ -34,6 +35,7 @@ const int kMaxSizeId = 17;      // размер до, Кб
 const int kDateFromId = 18;     // дата с, ДД.ММ.ГГГГ
 const int kDateToId = 19;       // дата по
 const int kTemplatesId = 24;    // кнопка «Шаблоны»
+const int kArchivesId = 26;     // искать в архивах
 const int kStopId = 20;
 const int kBrowseId = 22;
 const int kOpenDirId = 23;
@@ -63,6 +65,8 @@ struct SearchState {
     HWND caseCheck = nullptr;
     HWND subdirs = nullptr;
     HWND hiddenCheck = nullptr;
+    HWND archivesCheck = nullptr;
+    bool searchArchives = false;
     HWND list = nullptr;
     HWND status = nullptr;
     HWND hint = nullptr;
@@ -195,6 +199,47 @@ void WalkDirectory(SearchState* st, const std::wstring& dir, const std::vector<s
         if (st->useDateFrom && CompareFileTime(&data.ftLastWriteTime, &st->dateFromFt) < 0) continue;
         if (st->useDateTo && CompareFileTime(&data.ftLastWriteTime, &st->dateToFt) > 0) continue;
 
+        // Архив: ищем по именам внутри, не читая содержимое.
+        if (st->searchArchives && IsArchivePath(full)) {
+            std::vector<ArchiveEntry> entries;
+            if (ListArchive(full, entries)) {
+                int added = 0;
+                for (const auto& entry : entries) {
+                    if (entry.isDir) continue;
+                    if (added >= 5000) break;
+                    std::wstring inner = entry.name;   // 7z печатает разделитель ОС, но нормализуем на всякий случай
+                    for (wchar_t& ch : inner)
+                        if (ch == L'/') ch = L'\\';
+                    const size_t slash = inner.find_last_of(L"\\/");
+                    const std::wstring shortName = slash == std::wstring::npos ? inner : inner.substr(slash + 1);
+                    bool match = false;
+                    for (auto& m : masks) {
+                        if (MatchMask(Lower(shortName), m)) {
+                            match = true;
+                            break;
+                        }
+                    }
+                    if (!match) continue;
+
+                    std::lock_guard<std::mutex> lock(st->mutex);
+                    if (st->rows.size() + st->pending.size() < kMaxResults) {
+                        Result r;
+                        r.path = full + L"\\" + inner;
+                        r.name = inner;
+                        r.dir = full;
+                        r.size = 0;
+                        if (!entry.size.empty()) {           // 7z отдаёт размер строкой
+                            wchar_t* end = nullptr;
+                            const unsigned long long v = wcstoull(entry.size.c_str(), &end, 10);
+                            if (end != entry.size.c_str()) r.size = v;
+                        }
+                        st->pending.push_back(std::move(r));
+                        ++added;
+                    }
+                }
+            }
+        }
+
         bool nameMatches = false;
         for (auto& m : masks) {
             if (MatchMask(Lower(name), m)) {
@@ -283,10 +328,11 @@ std::wstring TemplateValue(SearchState* st) {
     GetWindowTextW(st->dateTo, toS, 64);
 
     wchar_t flags[8]{};
-    swprintf(flags, 8, L"%d%d%d",
+    swprintf(flags, 8, L"%d%d%d%d",
              SendMessageW(st->subdirs, BM_GETCHECK, 0, 0) == BST_CHECKED ? 1 : 0,
              SendMessageW(st->caseCheck, BM_GETCHECK, 0, 0) == BST_CHECKED ? 1 : 0,
-             SendMessageW(st->hiddenCheck, BM_GETCHECK, 0, 0) == BST_CHECKED ? 1 : 0);
+             SendMessageW(st->hiddenCheck, BM_GETCHECK, 0, 0) == BST_CHECKED ? 1 : 0,
+             SendMessageW(st->archivesCheck, BM_GETCHECK, 0, 0) == BST_CHECKED ? 1 : 0);
 
     std::wstring out = mask;
     out += L"|"; out += dir;
@@ -324,6 +370,7 @@ void ApplyTemplate(SearchState* st, const std::wstring& value) {
     SendMessageW(st->subdirs, BM_SETCHECK, flags.size() > 0 && flags[0] == L'1' ? BST_CHECKED : BST_UNCHECKED, 0);
     SendMessageW(st->caseCheck, BM_SETCHECK, flags.size() > 1 && flags[1] == L'1' ? BST_CHECKED : BST_UNCHECKED, 0);
     SendMessageW(st->hiddenCheck, BM_SETCHECK, flags.size() > 2 && flags[2] == L'1' ? BST_CHECKED : BST_UNCHECKED, 0);
+    SendMessageW(st->archivesCheck, BM_SETCHECK, flags.size() > 3 && flags[3] == L'1' ? BST_CHECKED : BST_UNCHECKED, 0);
     SetWindowTextW(st->text, at(3).c_str());
     SetWindowTextW(st->minSize, at(4).c_str());
     SetWindowTextW(st->maxSize, at(5).c_str());
@@ -408,10 +455,11 @@ void SavePrefs(SearchState* st) {
     WritePrivateProfileStringW(L"Search", L"Text", buf, ini.c_str());
 
     wchar_t flags[8]{};
-    swprintf(flags, 8, L"%d%d%d",
+    swprintf(flags, 8, L"%d%d%d%d",
              SendMessageW(st->subdirs, BM_GETCHECK, 0, 0) == BST_CHECKED ? 1 : 0,
              SendMessageW(st->caseCheck, BM_GETCHECK, 0, 0) == BST_CHECKED ? 1 : 0,
-             SendMessageW(st->hiddenCheck, BM_GETCHECK, 0, 0) == BST_CHECKED ? 1 : 0);
+             SendMessageW(st->hiddenCheck, BM_GETCHECK, 0, 0) == BST_CHECKED ? 1 : 0,
+             SendMessageW(st->archivesCheck, BM_GETCHECK, 0, 0) == BST_CHECKED ? 1 : 0);
     WritePrivateProfileStringW(L"Search", L"Flags", flags, ini.c_str());
 
     auto put = [&ini](const wchar_t* key, HWND edit) {
@@ -453,6 +501,7 @@ void ReadPrefs(SearchState* st, const std::wstring& startDir) {
     SendMessageW(st->subdirs, BM_SETCHECK, flags.size() > 0 && flags[0] == L'1' ? BST_CHECKED : BST_UNCHECKED, 0);
     SendMessageW(st->caseCheck, BM_SETCHECK, flags.size() > 1 && flags[1] == L'1' ? BST_CHECKED : BST_UNCHECKED, 0);
     SendMessageW(st->hiddenCheck, BM_SETCHECK, flags.size() > 2 && flags[2] == L'1' ? BST_CHECKED : BST_UNCHECKED, 0);
+    SendMessageW(st->archivesCheck, BM_SETCHECK, flags.size() > 3 && flags[3] == L'1' ? BST_CHECKED : BST_UNCHECKED, 0);
 }
 
 void StartWorker(SearchState* st) {
@@ -485,6 +534,7 @@ void StartWorker(SearchState* st) {
     const bool caseSensitive = SendMessageW(st->caseCheck, BM_GETCHECK, 0, 0) == BST_CHECKED;
     const bool recurse = SendMessageW(st->subdirs, BM_GETCHECK, 0, 0) == BST_CHECKED;
     const bool hidden = SendMessageW(st->hiddenCheck, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    st->searchArchives = SendMessageW(st->archivesCheck, BM_GETCHECK, 0, 0) == BST_CHECKED;
     if (!caseSensitive && !needle.empty()) needle = Lower(needle);
 
     auto masks = SplitMasks(maskText);
@@ -587,6 +637,7 @@ void LayoutSearch(SearchState* st) {
     MoveWindow(st->subdirs, editX, y, 150, 20, TRUE);
     MoveWindow(st->caseCheck, editX + 160, y, 170, 20, TRUE);
     MoveWindow(st->hiddenCheck, editX + 340, y, 190, 20, TRUE);
+    MoveWindow(st->archivesCheck, editX + 540, y, 160, 20, TRUE);
 
     y += 28;
     const int startW = 160;
@@ -772,6 +823,8 @@ LRESULT CALLBACK SearchProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             st->subdirs = MakeChild(hwnd, L"BUTTON", L"В подкаталогах", BS_AUTOCHECKBOX | WS_TABSTOP, kSubdirsId);
             st->hiddenCheck = MakeChild(hwnd, L"BUTTON", L"Скрытые и системные", BS_AUTOCHECKBOX | WS_TABSTOP,
                                         kHiddenId);
+            st->archivesCheck = MakeChild(hwnd, L"BUTTON", L"Искать в архивах", BS_AUTOCHECKBOX | WS_TABSTOP,
+                                          kArchivesId);
             st->startBtn = MakeChild(hwnd, L"BUTTON", L"Начать поиск", BS_DEFPUSHBUTTON | WS_TABSTOP, IDOK);
             st->stopBtn = MakeChild(hwnd, L"BUTTON", L"Стоп", BS_PUSHBUTTON | WS_TABSTOP, kStopId);
             st->openDirBtn = MakeChild(hwnd, L"BUTTON", L"Открыть каталог", BS_PUSHBUTTON | WS_TABSTOP, kOpenDirId);
@@ -806,7 +859,7 @@ LRESULT CALLBACK SearchProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 ++slot;
             }
 
-            for (HWND h : {st->labelMask, st->labelDir, st->labelRoots, st->labelText, st->mask, st->dir,
+            for (HWND h : {st->archivesCheck, st->labelMask, st->labelDir, st->labelRoots, st->labelText, st->mask, st->dir,
                            st->text, st->caseCheck, st->subdirs, st->hiddenCheck, st->list, st->status,
                            st->startBtn, st->stopBtn, st->browseBtn, st->openDirBtn, st->templatesBtn,
                            st->labelFilter, st->labelSize, st->minSize, st->dash1, st->maxSize, st->labelKb,

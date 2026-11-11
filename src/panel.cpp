@@ -2034,6 +2034,9 @@ void Panel::Reload() {
     }
 
     std::wstring dir = path_;
+    // Внутри архива path_ — сам файл архива: без внутреннего каталога Navigate
+    // сбросил бы его в корень архива (ветка dir == archiveFile_ очищает archiveInner_).
+    if (inArchive_ && !archiveInner_.empty()) dir = archiveFile_ + L"\\" + archiveInner_;
     if (!Navigate(dir, focus, true)) {
         std::wstring parent = ParentPath(dir);
         if (!parent.empty() && !SamePath(parent, dir)) Navigate(parent);
@@ -2377,9 +2380,10 @@ Entry* Panel::Cursor() {
 }
 
 std::wstring Panel::FullPathOf(const Entry& e) const {
-    if (e.isUp) return ftp_ ? FtpParentUrl(path_) : ParentPath(path_);
+    // Внутри архива путь — виртуальный («архив.zip\внутренний каталог\файл»).
+    if (e.isUp) return ftp_ ? FtpParentUrl(path_) : ParentPath(inArchive_ ? DisplayPath() : path_);
     if (ftp_) return FtpJoinUrl(path_, e.name);
-    return JoinPath(path_, e.name);
+    return JoinPath(inArchive_ ? DisplayPath() : path_, e.name);
 }
 
 std::wstring Panel::FocusedPath() {
