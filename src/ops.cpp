@@ -44,14 +44,14 @@ bool CopyMoveLegacy(HWND owner, const std::vector<std::wstring>& sources, const 
     return result == 0 && !op.fAnyOperationsAborted;
 }
 
-bool DeleteLegacy(HWND owner, const std::vector<std::wstring>& items, bool silent) {
+bool DeleteLegacy(HWND owner, const std::vector<std::wstring>& items, bool silent, bool permanent) {
     std::wstring from = BuildPathList(items);
 
     SHFILEOPSTRUCTW op{};
     op.hwnd = owner;
     op.wFunc = FO_DELETE;
     op.pFrom = from.c_str();
-    op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION;
+    op.fFlags = (permanent ? 0 : FOF_ALLOWUNDO) | FOF_NOCONFIRMATION;
     if (silent) op.fFlags |= FOF_SILENT | FOF_NOERRORUI;
 
     int result = SHFileOperationW(&op);
@@ -109,7 +109,7 @@ bool CopyMoveModern(HWND owner, const std::vector<std::wstring>& sources, const 
     return true;
 }
 
-bool DeleteModern(HWND owner, const std::vector<std::wstring>& items, bool* performed) {
+bool DeleteModern(HWND owner, const std::vector<std::wstring>& items, bool* performed, bool permanent) {
     *performed = false;
 
     IFileOperation* op = nullptr;
@@ -118,7 +118,7 @@ bool DeleteModern(HWND owner, const std::vector<std::wstring>& items, bool* perf
     }
 
     if (owner) op->SetOwnerWindow(owner);
-    op->SetOperationFlags(FOF_ALLOWUNDO | FOF_NOCONFIRMATION);
+    op->SetOperationFlags((permanent ? 0u : (unsigned)FOF_ALLOWUNDO) | FOF_NOCONFIRMATION);
 
     bool queued = true;
     for (auto& path : items) {
@@ -169,15 +169,15 @@ bool RenamePath(const std::wstring& from, const std::wstring& to, DWORD& err) {
     return false;
 }
 
-bool DeleteViaShell(HWND owner, const std::vector<std::wstring>& items, bool silent) {
+bool DeleteViaShell(HWND owner, const std::vector<std::wstring>& items, bool silent, bool permanent) {
     if (items.empty()) return false;
 
     if (!silent) {
         bool performed = false;
-        if (DeleteModern(owner, items, &performed)) return performed;
-        return DeleteLegacy(owner, items, false);
+        if (DeleteModern(owner, items, &performed, permanent)) return performed;
+        return DeleteLegacy(owner, items, false, permanent);
     }
-    return DeleteLegacy(owner, items, true);
+    return DeleteLegacy(owner, items, true, permanent);
 }
 
 bool MakeDir(const std::wstring& path) {

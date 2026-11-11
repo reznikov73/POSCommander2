@@ -16,7 +16,9 @@ bool ShellCopyMove(HWND owner, const std::vector<std::wstring>& sources, const s
 bool RenamePath(const std::wstring& from, const std::wstring& to, DWORD& err);
 
 // Удаление в корзину (IFileOperation, при недоступности COM — SHFileOperation).
-bool DeleteViaShell(HWND owner, const std::vector<std::wstring>& items, bool silent = false);
+// permanent = true — удаление мимо корзины (Shift+Del).
+bool DeleteViaShell(HWND owner, const std::vector<std::wstring>& items, bool silent = false,
+                     bool permanent = false);
 
 // Создание одного каталога. true, если каталог создан или уже существует.
 bool MakeDir(const std::wstring& path);

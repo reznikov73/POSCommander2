@@ -66,6 +66,7 @@ enum : int {
     IDM_UNDO_RENAME = 209,
     IDM_DIFF = 210,
     IDM_PREFS = 211,
+    IDM_DELETE_PERM = 212,   // Shift+Del — мимо корзины
     IDM_NET_BROWSE = 193,
     IDM_NET_MAP = 194,
     IDM_NET_UNMAP = 195,
@@ -569,7 +570,7 @@ private:
     void DoFtpCopyMove(bool move);
     void DoRename();
     void DoMkdir();
-    void DoDelete();
+    void DoDelete(bool permanent = false);
     void DoProperties();
     void DoSort(int column);
     void ShowDrivesMenu(int side);
@@ -807,6 +808,7 @@ void App::BuildMenu() {
     AppendMenuW(file, MF_STRING, IDM_MKDIR, L"Создать &каталог\tF7");
     AppendMenuW(file, MF_STRING, IDM_NEWFILE, L"&Новый файл\tShift+F4");
     AppendMenuW(file, MF_STRING, IDM_DELETE, L"&Удалить\tF8");
+    AppendMenuW(file, MF_STRING, IDM_DELETE_PERM, L"Удалить без &корзины\tShift+Del");
     AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(file, MF_STRING, IDM_PROPERTIES, L"С&войства\tAlt+Enter");
     AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
@@ -853,16 +855,16 @@ void App::BuildMenu() {
     HMENU view = CreatePopupMenu();
     AppendMenuW(view, MF_STRING, IDM_SORT_NAME, L"По &имени\tCtrl+F3");
     AppendMenuW(view, MF_STRING, IDM_SORT_EXT, L"По &типу\tCtrl+F4");
-    AppendMenuW(view, MF_STRING, IDM_SORT_SIZE, L"По &размеру\tCtrl+F5");
-    AppendMenuW(view, MF_STRING, IDM_SORT_DATE, L"По &дате\tCtrl+F6");
+    AppendMenuW(view, MF_STRING, IDM_SORT_SIZE, L"По &размеру\tCtrl+F6");
+    AppendMenuW(view, MF_STRING, IDM_SORT_DATE, L"По &дате\tCtrl+F5");
     AppendMenuW(view, MF_STRING, IDM_REVERSE, L"Обратный &порядок");
     AppendMenuW(view, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(view, MF_STRING, IDM_HIDDEN, L"Скрытые &файлы\tCtrl+H");
     AppendMenuW(view, MF_STRING, IDM_REFRESH, L"&Обновить\tCtrl+R");
     AppendMenuW(view, MF_STRING, IDM_QUICKVIEW, L"&Быстрый просмотр\tCtrl+Q");
     AppendMenuW(view, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(view, MF_STRING, IDM_BOOKMARK_ADD, L"Добавить &закладку\tCtrl+D");
-    AppendMenuW(view, MF_STRING, IDM_BOOKMARK_SHOW, L"&Закладки…");
+    AppendMenuW(view, MF_STRING, IDM_BOOKMARK_SHOW, L"&Избранное (закладки)\tCtrl+D");
+    AppendMenuW(view, MF_STRING, IDM_BOOKMARK_ADD, L"Добавить &закладку");
     AppendMenuW(menu_, MF_POPUP, (UINT_PTR)view, L"&Вид");
 
     HMENU tabs = CreatePopupMenu();
@@ -1280,8 +1282,25 @@ void App::ShowError(const std::wstring& text) {
     MessageBoxW(hwnd_, text.c_str(), kTitle, MB_ICONERROR | MB_OK);
 }
 
+// Ctrl+Enter / Ctrl+Shift+Enter: имя или полный путь — в командную строку (как в TC).
+void App::AppendToPrompt(const std::wstring& text, bool quoted) {
+    if (!prompt_ || text.empty()) return;
+    wchar_t buf[4096]{};
+    GetWindowTextW(prompt_, buf, 4096);
+    std::wstring line = buf;
+    std::wstring add = text;
+    if (quoted && add.find(L' ') != std::wstring::npos) add = L"\"" + add + L"\"";
+    if (!line.empty() && line.back() != L' ') line += L' ';
+    line += add;
+    LogDebug(L"prompt: +'" + add + L"'");
+    SetWindowTextW(prompt_, line.c_str());
+    SendMessageW(prompt_, CB_SETEDITSEL, 0, MAKELPARAM(line.size(), line.size()));
+    SetFocus(prompt_);
+}
+
 // Ctrl+Enter: элемент открывается в новой вкладке, текущая остаётся на месте.
 void App::OpenCursorInNewTab() {
+    LogDebug(L"new tab from cursor");
     Panel* panel = ActivePanel();
     Entry* e = panel->Cursor();
     if (!e || e->isUp) return;
@@ -1723,7 +1742,7 @@ void App::DoMkdir() {
     panel->SetCursorIndex(panel->CursorIndex());
 }
 
-void App::DoDelete() {
+void App::DoDelete(bool permanent) {
     LogDebug(L"DoDelete enter");
     Panel* panel = ActivePanel();
 
@@ -1791,15 +1810,17 @@ void App::DoDelete() {
     std::wstring question;
     if (targets.size() == 1) {
         std::wstring name = targets[0].substr(targets[0].find_last_of(L'\\') + 1);
-        question = L"Удалить «" + name + L"» в корзину?";
+        question = permanent ? (L"Удалить «" + name + L"» безвозвратно?")
+                            : (L"Удалить «" + name + L"» в корзину?");
     } else {
         wchar_t buf[128];
-        swprintf(buf, 128, L"Удалить объектов: %zu в корзину?", targets.size());
+        swprintf(buf, 128, permanent ? L"Удалить объектов: %zu безвозвратно?" : L"Удалить объектов: %zu в корзину?",
+                 targets.size());
         question = buf;
     }
     if (MessageBoxW(hwnd_, question.c_str(), L"Удаление", MB_ICONQUESTION | MB_YESNO) != IDYES) return;
 
-    if (!DeleteViaShell(hwnd_, targets)) ShowError(L"Удаление не выполнено или отменено.");
+    if (!DeleteViaShell(hwnd_, targets, false, permanent)) ShowError(L"Удаление не выполнено или отменено.");
 
     panel->ClearMarks();
     panel->Reload();
@@ -2680,22 +2701,24 @@ void App::AddBookmark() {
 
 void App::ShowBookmarksMenu() {
     Settings& st = GetSettings();
-    if (st.bookmarks.empty()) {
-        MessageBoxW(hwnd_, L"Закладок пока нет. Нажмите Ctrl+D, чтобы добавить текущий каталог.",
-                    L"Закладки", MB_ICONINFORMATION);
-        return;
-    }
 
+    // Как в TC: Ctrl+D — меню избранного; добавление текущего — пунктом внутри.
     HMENU popup = CreatePopupMenu();
     for (size_t i = 0; i < st.bookmarks.size() && i < 200; ++i) {
         AppendMenuW(popup, MF_STRING, 2000 + (UINT)i, st.bookmarks[i].c_str());
     }
+    if (!st.bookmarks.empty()) AppendMenuW(popup, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(popup, MF_STRING, 2001, L"Добавить текущий каталог");
 
     POINT pt{};
     GetCursorPos(&pt);
-    int cmd = TrackPopupMenu(popup, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd_, nullptr);
+    const int cmd = (int)TrackPopupMenu(popup, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd_, nullptr);
     DestroyMenu(popup);
 
+    if (cmd == 2001) {
+        AddBookmark();
+        return;
+    }
     if (cmd >= 2000) {
         size_t index = (size_t)(cmd - 2000);
         if (index < st.bookmarks.size()) {
@@ -3034,7 +3057,10 @@ void App::Dispatch(int id) {
             DoMkdir();
             break;
         case IDM_DELETE:
-            DoDelete();
+            DoDelete(false);
+            break;
+        case IDM_DELETE_PERM:
+            DoDelete(true);
             break;
         case IDM_PROPERTIES:
             DoProperties();
@@ -3431,9 +3457,10 @@ bool App::PreTranslate(const MSG& msg) {
     // Прочие Alt+... отдаём системе (Alt+F4 закроет окно, Alt+Tab переключит задачу).
     if (alt) return false;
 
-    // Ctrl+Enter и Ctrl+Shift+C обрабатываем отдельно: они не входят в switch ниже.
+    // Ctrl+Enter / Ctrl+Shift+Enter — имя файла (полный путь) в командную строку, как в TC.
     if (!inPrompt && ctrl && msg.wParam == VK_RETURN) {
-        OpenCursorInNewTab();
+        Entry* cur = panel->Cursor();
+        if (cur && !cur->isUp) AppendToPrompt(shift ? panel->FocusedPath() : cur->name, true);
         return true;
     }
     if (!inPrompt && ctrl && shift && msg.wParam == 'C') {
@@ -3460,7 +3487,7 @@ bool App::PreTranslate(const MSG& msg) {
                 panel->AddTab();
                 return true;
             case 'D':
-                AddBookmark();
+                ShowBookmarksMenu();        // как в TC: меню избранного, добавление — внутри
                 return true;
             case 'M':
                 Dispatch(IDM_BATCH_RENAME);
@@ -3481,10 +3508,10 @@ bool App::PreTranslate(const MSG& msg) {
                 Dispatch(IDM_SORT_EXT);
                 return true;
             case VK_F5:
-                Dispatch(IDM_SORT_SIZE);
+                Dispatch(IDM_SORT_DATE);
                 return true;
             case VK_F6:
-                Dispatch(IDM_SORT_DATE);
+                Dispatch(IDM_SORT_SIZE);
                 return true;
             case VK_OEM_5:              // Ctrl+\ — в корень диска
                 if (!panel->GoRoot()) ShowError(panel->NavigateError());
@@ -3493,6 +3520,9 @@ bool App::PreTranslate(const MSG& msg) {
             case VK_PRIOR:              // Ctrl+PgUp — на уровень вверх
                 GoUpActive();
                 panel->FocusList();
+                return true;
+            case VK_UP:                 // Ctrl+↑ — открыть в новой вкладке (как в TC)
+                OpenCursorInNewTab();
                 return true;
             case VK_NEXT:               // Ctrl+PgDn — войти в каталог или архив
                 OpenCursor();
@@ -3565,7 +3595,7 @@ bool App::PreTranslate(const MSG& msg) {
             return true;
         case VK_DELETE:
             if (!inPrompt && !inList) break;
-            Dispatch(IDM_DELETE);
+            Dispatch(shift ? IDM_DELETE_PERM : IDM_DELETE);   // Shift+Del — мимо корзины
             return true;
         default:
             break;
@@ -3594,8 +3624,15 @@ bool App::PreTranslate(const MSG& msg) {
         return true;
     }
 
-    if (msg.wParam == VK_F9) {                   // F9 — меню, как в TC
-        PostMessageW(hwnd_, WM_SYSKEYDOWN, VK_F10, 1);
+    if (msg.wParam == VK_F9 || msg.wParam == VK_F10) {   // F9/F10 — меню, как в TC
+        HMENU first = menu_ ? GetSubMenu(menu_, 0) : nullptr;
+        if (first) {
+            RECT rc{};
+            GetWindowRect(hwnd_, &rc);
+            const int cmd = (int)TrackPopupMenu(first, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN,
+                                                rc.left + 4, rc.top + 4, 0, hwnd_, nullptr);
+            if (cmd) Dispatch(cmd);
+        }
         return true;
     }
 
