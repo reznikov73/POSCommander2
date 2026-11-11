@@ -1,6 +1,8 @@
 // Реализация диалогов без .rc: шаблон собирается в памяти.
 #include "dialogs.h"
 #include "settings.h"
+#include "version.h"
+#include <shellapi.h>
 #include "util.h"
 
 #include <cstdio>
@@ -1966,4 +1968,56 @@ void FtpProgressClose() {
     g_ftpProg.ownerDisabled = false;
     g_ftpProg.cancelled = false;
     g_ftpProg.shown = false;
+}
+
+// ---------- «О программе» ----------
+
+// Клик по ссылке в TaskDialog — открываем сайт или почту.
+HRESULT CALLBACK AboutLinkProc(HWND, UINT msg, WPARAM, LPARAM lParam, LONG_PTR) {
+    if (msg == TDN_HYPERLINK_CLICKED) {
+        ShellExecuteW(nullptr, L"open", reinterpret_cast<LPCWSTR>(lParam), nullptr, nullptr, SW_SHOWNORMAL);
+    }
+    return S_OK;
+}
+
+void ShowAbout(HWND owner) {
+    const std::wstring content =
+        L"Двухпанельный файловый менеджер в духе Total Commander.\r\n"
+        L"C++20, чистый Win32 API, без внешних зависимостей.\r\n\r\n"
+        L"Разработчик: " POSFILES_COMPANY L"\r\n"
+        L"Сайт: <a href=\"" POSFILES_SITE_URL L"\">" POSFILES_SITE L"</a>\r\n"
+        L"Почта: <a href=\"mailto:" POSFILES_EMAIL L"\">" POSFILES_EMAIL L"</a>";
+
+    const std::wstring build = std::wstring(L"Сборка ") + POSFILES_VERSION_FULL;
+
+    TASKDIALOGCONFIG cfg{};
+    cfg.cbSize = sizeof(cfg);
+    cfg.hwndParent = owner;
+    cfg.hInstance = g_inst;
+    cfg.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION | TDF_POSITION_RELATIVE_TO_WINDOW | TDF_ENABLE_HYPERLINKS |
+                  TDF_USE_HICON_MAIN;   // иконка задана как HICON, а не как имя ресурса
+    cfg.dwCommonButtons = TDCBF_OK_BUTTON;
+    cfg.pszWindowTitle = L"О программе";
+    cfg.hMainIcon = LoadIconW(g_inst, MAKEINTRESOURCEW(101));
+    cfg.pszMainInstruction = L"PosFiles " POSFILES_VERSION_FULL;
+    cfg.pszContent = content.c_str();
+    cfg.pszExpandedInformation = build.c_str();
+    cfg.pszExpandedControlText = L"Подробнее о сборке";
+    cfg.pszFooter = L"© 2026 " POSFILES_COMPANY;
+    cfg.pfCallback = AboutLinkProc;
+
+    int pressed = 0;
+    const HRESULT hr = TaskDialogIndirect(&cfg, &pressed, nullptr, nullptr);
+    {
+        wchar_t hrbuf[64]{};
+        swprintf(hrbuf, 64, L"about: hr=0x%08X", (unsigned)hr);
+        LogDebug(hrbuf);
+    }
+    if (FAILED(hr)) {
+        // Совсем старый comctl32: простой текст без ссылок.
+        wchar_t text[512]{};
+        swprintf(text, 512, L"PosFiles %ls\n\n%ls\n%ls\n%ls", POSFILES_VERSION_FULL, POSFILES_COMPANY,
+                 POSFILES_SITE, POSFILES_EMAIL);
+        MessageBoxW(owner, text, L"О программе", MB_ICONINFORMATION | MB_OK);
+    }
 }

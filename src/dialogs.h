@@ -38,3 +38,6 @@ void FtpProgressClose();
 
 // Просмотр файла (F3) в отдельном окне.
 void ShowLister(HWND owner, const std::wstring& path);
+
+// «О программе»: версия, разработчик и контакты (ссылки кликабельны).
+void ShowAbout(HWND owner);

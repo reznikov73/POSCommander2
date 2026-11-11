@@ -6,6 +6,7 @@
 #include "ops.h"
 #include "selftest.h"
 #include "settings.h"
+#include "version.h"
 #include "search.h"
 #include "dupes.h"
 #include "rename.h"
@@ -614,6 +615,8 @@ private:
     HMENU menu_ = nullptr;
     HWND label_ = nullptr;
     HWND prompt_ = nullptr;
+    HWND ver_ = nullptr;                // версия в правом верхнем углу, малозаметным шрифтом
+    HFONT verFont_ = nullptr;           // мелкий шрифт для версии
     HWND term_ = nullptr;               // кнопка «Терминал» у командной строки
     int histPos_ = -1;                  // позиция в истории команд (-1 — новая строка)
     HFONT boldFont_ = nullptr;          // жирный шрифт для клавиши в F-кнопках
@@ -908,10 +911,25 @@ void App::ApplyUiSettings() {
     if (font_) DeleteObject(font_);
     font_ = fresh;
 
+    // Мелкий шрифт версии: на 2 пункта меньше интерфейсного, но не мельче 7.
+    LOGFONTW vlf{};
+    int vpt = GetSettings().uiFontPt - 2;
+    if (vpt < 7) vpt = 7;
+    vlf.lfHeight = -MulDiv(vpt, (int)dpi_, 72);
+    vlf.lfCharSet = DEFAULT_CHARSET;
+    vlf.lfQuality = CLEARTYPE_QUALITY;
+    wcscpy_s(vlf.lfFaceName, L"Segoe UI");
+    HFONT freshVer = CreateFontIndirectW(&vlf);
+    if (freshVer) {
+        if (verFont_) DeleteObject(verFont_);
+        verFont_ = freshVer;
+    }
+
     left_.SetFont(font_, dpi_);
     right_.SetFont(font_, dpi_);
     if (prompt_) SendMessageW(prompt_, WM_SETFONT, (WPARAM)font_, TRUE);
     if (label_) SendMessageW(label_, WM_SETFONT, (WPARAM)font_, TRUE);
+    if (ver_) SendMessageW(ver_, WM_SETFONT, (WPARAM)(verFont_ ? verFont_ : font_), TRUE);
 
     left_.SetShowHidden(showHidden_);
     right_.SetShowHidden(showHidden_);
@@ -974,6 +992,10 @@ void App::CreateChildren() {
 
     label_ = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_RIGHT | SS_CENTERIMAGE, 0, 0, 10, 10,
                              hwnd_, (HMENU)(INT_PTR)ID_PROMPT_LABEL, g_inst, nullptr);
+
+    // Версия на главном окне: правый край ряда тулбара, мелким серым шрифтом.
+    ver_ = CreateWindowExW(0, L"STATIC", POSFILES_VERSION_FULL, WS_CHILD | WS_VISIBLE | SS_RIGHT | SS_CENTERIMAGE,
+                           0, 0, 10, 10, hwnd_, nullptr, g_inst, nullptr);
 
     prompt_ = CreateWindowExW(0, L"COMBOBOX", L"",
                               WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWN | CBS_AUTOHSCROLL,
@@ -1132,7 +1154,8 @@ void App::Layout() {
     int rightW = width - rightX;
     if (rightW < Scale(120, dpi_)) rightW = Scale(120, dpi_);
 
-    HDWP dwp = BeginDeferWindowPos(10 + toolbarCount_);
+    HDWP dwp = BeginDeferWindowPos(12 + toolbarCount_);
+    int tbEnd = 0;                                    // правый край кнопок тулбара
     if (dwp) {
         int x = 0;
         const int bh = Scale(24, dpi_);              // кнопка 24×24, как в TC
@@ -1142,6 +1165,16 @@ void App::Layout() {
             dwp = DeferWindowPos(dwp, toolbar_[i], nullptr, x, by, w, bh, SWP_NOZORDER);
             x += w + Scale(2, dpi_);
         }
+        tbEnd = x;
+    }
+
+    // Версия в правом краю ряда тулбара: место есть — показываем, нет — прячем.
+    if (ver_) {
+        const int verW = Scale(104, dpi_);
+        const int verX = width - verW - gap;
+        const bool room = verX > tbEnd + Scale(12, dpi_);
+        ShowWindow(ver_, room ? SW_SHOW : SW_HIDE);
+        if (room && dwp) dwp = DeferWindowPos(dwp, ver_, nullptr, verX, 0, verW, tbH, SWP_NOZORDER);
     }
     if (dwp) dwp = DeferWindowPos(dwp, left_.Hwnd(), nullptr, 0, panelsY, leftW, panelsH, SWP_NOZORDER);
     if (dwp) dwp = DeferWindowPos(dwp, right_.Hwnd(), nullptr, rightX, panelsY, rightW, panelsH, SWP_NOZORDER);
@@ -3136,8 +3169,7 @@ void App::Dispatch(int id) {
             PostMessageW(hwnd_, WM_APP + 302, (WPARAM)panel->Side(), (LPARAM)panel->ActiveTab());
             break;
         case IDM_ABOUT:
-            MessageBoxW(hwnd_, L"PosFiles\nДвухпанельный файловый менеджер на Win32 API.\n\nC++ / MinGW · без внешних зависимостей",
-                        L"О программе", MB_ICONINFORMATION | MB_OK);
+            ShowAbout(hwnd_);
             break;
         default:
             break;
@@ -3643,6 +3675,17 @@ LRESULT App::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         case WM_SIZE:
             Layout();
             return 0;
+
+        case WM_CTLCOLORSTATIC: {
+            // Версия на главном окне — серым, без своей рамки-фона.
+            if (reinterpret_cast<HWND>(lParam) == ver_) {
+                HDC dc = reinterpret_cast<HDC>(wParam);
+                SetTextColor(dc, GetSysColor(COLOR_GRAYTEXT));
+                SetBkMode(dc, TRANSPARENT);
+                return reinterpret_cast<LRESULT>(GetSysColorBrush(COLOR_BTNFACE));
+            }
+            break;
+        }
 
         case WM_GETMINMAXINFO: {
             auto mmi = reinterpret_cast<MINMAXINFO*>(lParam);

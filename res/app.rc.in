@@ -1,0 +1,43 @@
+// Ресурсы: манифест, иконки и версия сборки (VERSIONINFO).
+// Файл генерируется CMake из res/app.rc.in — руками не править.
+#include <windows.h>
+
+1 24 "@CMAKE_CURRENT_SOURCE_DIR@/res/app.manifest"
+101 ICON "@CMAKE_CURRENT_SOURCE_DIR@/res/app.ico"
+102 ICON "@CMAKE_CURRENT_SOURCE_DIR@/res/folder.ico"
+103 ICON "@CMAKE_CURRENT_SOURCE_DIR@/res/folder_hidden.ico"
+104 ICON "@CMAKE_CURRENT_SOURCE_DIR@/res/arrow_up.ico"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION @PROJECT_VERSION_MAJOR@,@PROJECT_VERSION_MINOR@,@PROJECT_VERSION_PATCH@,@POSFILES_BUILD@
+ PRODUCTVERSION @PROJECT_VERSION_MAJOR@,@PROJECT_VERSION_MINOR@,@PROJECT_VERSION_PATCH@,@POSFILES_BUILD@
+ FILEFLAGSMASK 0x3fL
+#ifdef _DEBUG
+ FILEFLAGS 0x1L
+#else
+ FILEFLAGS 0x0L
+#endif
+ FILEOS 0x40004L
+ FILETYPE 0x1L
+ FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "041904b0"
+        BEGIN
+            VALUE "CompanyName", "ООО «ПОС онлайн»"
+            VALUE "FileDescription", "PosFiles — двухпанельный файловый менеджер"
+            VALUE "FileVersion", "@PROJECT_VERSION@.@POSFILES_BUILD@"
+            VALUE "InternalName", "PosFiles"
+            VALUE "LegalCopyright", "© 2026 ООО «ПОС онлайн»"
+            VALUE "OriginalFilename", "PosFiles.exe"
+            VALUE "ProductName", "PosFiles"
+            VALUE "ProductVersion", "@PROJECT_VERSION@.@POSFILES_BUILD@"
+            VALUE "Comments", "www.poson.ru · info@poson.ru"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x419, 1200
+    END
+END

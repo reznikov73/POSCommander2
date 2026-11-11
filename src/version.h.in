@@ -1,0 +1,14 @@
+// Версия программы. Файл генерируется CMake из src/version.h.in — руками не править.
+#pragma once
+
+// Версия задаётся в CMakeLists.txt (project(PosFiles VERSION ...)).
+#define POSFILES_VERSION      L"@PROJECT_VERSION@"
+// Номер сборки — количество коммитов в git на момент сборки.
+#define POSFILES_BUILD_NUMBER @POSFILES_BUILD@
+// «1.0.0.279» — версия с номером сборки, как в свойствах exe.
+#define POSFILES_VERSION_FULL L"@PROJECT_VERSION@.@POSFILES_BUILD@"
+
+#define POSFILES_COMPANY L"ООО «ПОС онлайн»"
+#define POSFILES_SITE    L"www.poson.ru"
+#define POSFILES_SITE_URL L"http://www.poson.ru"
+#define POSFILES_EMAIL   L"info@poson.ru"
