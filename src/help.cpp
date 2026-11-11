@@ -145,6 +145,7 @@ const HelpSection kSections[] = {
 };
 
 const wchar_t* kHelpClass = L"POSHelp2";
+bool g_helpOpen = false;   // окно справочника открыто (одно на приложение)
 
 const int kFilterId = 10;
 const int kListId = 11;
@@ -319,8 +320,17 @@ void ShowHotkeysHelp(HWND owner) {
         registered = true;
     }
 
-    static HelpState state;          // одно окно на приложение
-    state = HelpState{};
+    // Немодальное окно: одно на приложение. Повторный F1 показывет уже открытое.
+    if (g_helpOpen) {
+        HWND existing = FindWindowW(kHelpClass, nullptr);
+        if (existing) {
+            ShowWindow(existing, SW_RESTORE);
+            SetForegroundWindow(existing);
+            SetFocus(GetDlgItem(existing, kFilterId));
+            return;
+        }
+        g_helpOpen = false;
+    }
 
     RECT ownerRect{0, 0, 900, 640};
     if (owner && IsWindow(owner)) GetWindowRect(owner, &ownerRect);
@@ -329,24 +339,15 @@ void ShowHotkeysHelp(HWND owner) {
     const int x = ownerRect.left + ((ownerRect.right - ownerRect.left) - width) / 2;
     const int y = ownerRect.top + ((ownerRect.bottom - ownerRect.top) - height) / 2;
 
+    auto* state = new HelpState();
     HWND hwnd = CreateWindowExW(WS_EX_APPWINDOW, kHelpClass, L"Горячие клавиши — PosFiles",
-                                WS_OVERLAPPEDWINDOW | WS_VISIBLE, x, y, width, height, nullptr, nullptr,
-                                GetModuleHandleW(nullptr), &state);
-    if (!hwnd) return;
-
-    const bool ownerEnabled = owner && IsWindow(owner) && IsWindowEnabled(owner);
-    if (ownerEnabled) EnableWindow(owner, FALSE);
+                                WS_OVERLAPPEDWINDOW | WS_VISIBLE, x, y, width, height, owner, nullptr,
+                                GetModuleHandleW(nullptr), state);
+    if (!hwnd) {
+        delete state;
+        return;
+    }
+    g_helpOpen = true;
     SetForegroundWindow(hwnd);
-
-    MSG msg{};
-    while (IsWindow(hwnd) && GetMessageW(&msg, nullptr, 0, 0) > 0) {
-        TranslateMessage(&msg);
-        DispatchMessageW(&msg);
-    }
-
-    if (ownerEnabled && IsWindow(owner)) {
-        EnableWindow(owner, TRUE);
-        SetForegroundWindow(owner);
-        SetFocus(owner);
-    }
+    SetFocus(GetDlgItem(hwnd, kFilterId));
 }
