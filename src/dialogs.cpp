@@ -1537,6 +1537,95 @@ bool UnpackDialog(HWND owner, const std::wstring& archiveName, std::wstring& tar
     return false;
 }
 
+// Упаковка: имя архива и быстрый выбор панели назначения (текущая / напротив).
+struct PackCtx {
+    std::wstring currentDir;
+    std::wstring otherDir;
+    std::wstring value;
+    bool ok = false;
+};
+
+const int kPackCurrentId = 102;
+const int kPackOtherId = 103;
+
+std::wstring LeafOfPath(const std::wstring& path) {
+    const size_t slash = path.find_last_of(L"\\/");
+    return slash == std::wstring::npos ? path : path.substr(slash + 1);
+}
+
+void PackSetDir(HWND dlg, PackCtx* ctx, const std::wstring& dir) {
+    wchar_t buf[32768]{};
+    GetDlgItemTextW(dlg, kIdEdit, buf, 32768);
+    std::wstring name = LeafOfPath(buf);
+    if (name.empty()) name = L"архив.zip";
+    const std::wstring full = dir.empty() ? name : (dir + L"\\" + name);
+    SetDlgItemTextW(dlg, kIdEdit, full.c_str());
+    SendDlgItemMessageW(dlg, kIdEdit, EM_SETSEL, 0, -1);
+    SetFocus(GetDlgItem(dlg, kIdEdit));
+}
+
+INT_PTR CALLBACK PackProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM lParam) {
+    auto* ctx = reinterpret_cast<PackCtx*>(GetWindowLongPtrW(dlg, GWLP_USERDATA));
+    switch (msg) {
+        case WM_INITDIALOG:
+            ctx = reinterpret_cast<PackCtx*>(lParam);
+            SetWindowLongPtrW(dlg, GWLP_USERDATA, (LONG_PTR)ctx);
+            SetWindowTextW(dlg, L"Упаковка");
+            SetDlgItemTextW(dlg, kIdEdit, ctx->value.c_str());
+            SHAutoComplete(GetDlgItem(dlg, kIdEdit), SHACF_FILESYSTEM);
+            SendDlgItemMessageW(dlg, kIdEdit, EM_SETSEL, 0, -1);
+            SetFocus(GetDlgItem(dlg, kIdEdit));
+            return FALSE;
+        case WM_COMMAND: {
+            const int id = LOWORD(wParam);
+            if (id == IDOK) {
+                wchar_t buf[32768]{};
+                GetDlgItemTextW(dlg, kIdEdit, buf, 32768);
+                if (ctx) {
+                    ctx->value = buf;
+                    ctx->ok = true;
+                }
+                EndDialog(dlg, 1);
+                return TRUE;
+            }
+            if (id == IDCANCEL) {
+                EndDialog(dlg, 0);
+                return TRUE;
+            }
+            if (id == kPackCurrentId && ctx) {
+                PackSetDir(dlg, ctx, ctx->currentDir);
+                return TRUE;
+            }
+            if (id == kPackOtherId && ctx) {
+                PackSetDir(dlg, ctx, ctx->otherDir);
+                return TRUE;
+            }
+            break;
+        }
+        default:
+            break;
+    }
+    return FALSE;
+}
+
+bool PackBox(HWND owner, const std::wstring& currentDir, const std::wstring& otherDir, std::wstring& path) {
+    DlgBuilder builder(L"Упаковка", 380, 112);
+    builder.Add(L"Имя архива (полный путь, .zip или .7z):", 0, kClsStatic, WS_CHILD | WS_VISIBLE | SS_LEFT, 10, 8, 360, 16);
+    builder.Add(L"", kIdEdit, kClsEdit, WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL, 10, 28, 360, 14);
+    builder.Add(L"Текущая панель", kPackCurrentId, kClsButton, WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 10, 52, 110, 16);
+    builder.Add(L"Панель напротив", kPackOtherId, kClsButton, WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 126, 52, 130, 16);
+    builder.Add(L"OK", IDOK, kClsButton, WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON, 186, 82, 80, 18);
+    builder.Add(L"Отмена", IDCANCEL, kClsButton, WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 276, 82, 80, 18);
+
+    PackCtx ctx;
+    ctx.currentDir = currentDir;
+    ctx.otherDir = otherDir;
+    ctx.value = path;
+
+    if (DialogBoxIndirectParamW(g_inst, builder.Get(), owner, PackProc, (LPARAM)&ctx) != 1 || !ctx.ok) return false;
+    path = ctx.value;
+    return true;
+}
 bool InputBox(HWND owner, const std::wstring& title, const std::wstring& prompt, std::wstring& value,
               bool isPath) {
     DlgBuilder builder(title.c_str(), 300, 78);

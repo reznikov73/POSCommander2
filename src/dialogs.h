@@ -21,6 +21,9 @@ struct CopyMoveOptions {
 
 bool CopyMoveBox(HWND owner, const std::wstring& title, const std::wstring& prompt, CopyMoveOptions& options);
 
+// Упаковка: имя архива и выбор панели назначения (текущая или напротив).
+bool PackBox(HWND owner, const std::wstring& currentDir, const std::wstring& otherDir, std::wstring& path);
+
 // Подключение к FTP: сохранённые профили, адрес, порт, логин, пароль, пассивный режим.
 struct FtpConnectOptions {
     FtpSite site;

@@ -659,7 +659,9 @@ private:
     UINT dpi_ = 96;
     bool showHidden_ = true;
     int splitPercent_ = 50;
-    std::wstring quickFilter_;          // буфер быстрого поиска по буквам
+    std::wstring quickFilter_;          // буфер быстрого поиска по буквам (символы как набраны)
+    std::wstring quickFilterLatin_;     // те же клавиши в латинской раскладке — поиск не зависит от языка ввода
+    ULONGLONG quickFilterAt_ = 0;
     bool dragging_ = false;             // внутреннее перетаскивание файлов
     int dragFromSide_ = 0;              // из какой панели тянут
     bool shiftHeld_ = false;            // Shift по сообщениям окна
@@ -677,7 +679,6 @@ private:
     HWND queueWnd_ = nullptr;
     HWND queueList_ = nullptr;
     HWND queueStatus_ = nullptr;
-    ULONGLONG quickFilterAt_ = 0;       // время последнего символа
     bool draggingSplit_ = false;
     std::vector<std::wstring> history_;
 };
@@ -2651,9 +2652,11 @@ void App::PackSelection() {
     if (items.empty()) return;
 
     std::wstring target = JoinPath(panel->Path(), L"архив.zip");
-    if (!InputBox(hwnd_, L"Упаковка", L"Имя архива (.zip или .7z):", target, true)) return;
+    if (!PackBox(hwnd_, panel->Path(), OtherPanel()->Path(), target)) return;
     target = Trim(target);
     if (target.empty()) return;
+    // Имя без пути считаем от каталога панели-источника: «backup.zip» или «..\backup.zip».
+    if (PathIsRelativeW(target.c_str())) target = JoinPath(panel->Path(), target);
 
     std::wstring error;
     if (!CreateArchive(target, items, error)) {
@@ -3444,20 +3447,55 @@ bool App::PreTranslate(const MSG& msg) {
         const bool al = (GetKeyState(VK_MENU) & 0x8000) != 0;
         UpdateFKeyLabels(al ? 3 : (ct ? 2 : (sh ? 1 : 0)));
     }
+    // Латинский двойник быстрого поиска: те же физические клавиши, но латиницей.
+    // VK для букв не зависит от раскладки, поэтому Ctrl+B, F5 и пр. работают при любом
+    // языке ввода; а вот WM_CHAR приходит уже с символом раскладки — его и дублируем.
+    if (msg.message == WM_KEYDOWN) {
+        const bool ctrlNow = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+        const bool altNow = (GetKeyState(VK_MENU) & 0x8000) != 0;
+        wchar_t latin = 0;
+        if (!ctrlNow && !altNow) {
+            if (msg.wParam >= 'A' && msg.wParam <= 'Z')
+                latin = (GetKeyState(VK_SHIFT) & 0x8000) ? (wchar_t)msg.wParam : (wchar_t)(msg.wParam - 'A' + 'a');
+            else if (msg.wParam >= '0' && msg.wParam <= '9')
+                latin = (wchar_t)msg.wParam;
+        }
+        if (latin) {
+            const ULONGLONG now = GetTickCount64();
+            if (now - quickFilterAt_ > 900) {
+                quickFilter_.clear();
+                quickFilterLatin_.clear();
+            }
+            quickFilterLatin_.push_back(latin);
+            quickFilterAt_ = now;
+        }
+    }
     // Быстрый поиск по буквам: WM_CHAR даёт символ с учётом раскладки.
     if (msg.message == WM_CHAR) {
         HWND focus = GetFocus();
         const bool inList = focus && (focus == left_.List() || focus == right_.List());
+        const bool ctrlNow = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+        const bool altNow = (GetKeyState(VK_MENU) & 0x8000) != 0;
         // Пробел — это отметка файла (как в TC), а не быстрый поиск.
-        if (inList && msg.wParam > 32 && msg.wParam != 127) {
+        if (inList && !ctrlNow && !altNow && msg.wParam > 32 && msg.wParam != 127) {
             const ULONGLONG now = GetTickCount64();
-            if (now - quickFilterAt_ > 900) quickFilter_.clear();
+            if (now - quickFilterAt_ > 900) {
+                quickFilter_.clear();
+                quickFilterLatin_.clear();
+            }
             quickFilterAt_ = now;
             quickFilter_.push_back((wchar_t)msg.wParam);
+            if (quickFilterLatin_.size() > quickFilter_.size()) quickFilterLatin_.resize(quickFilter_.size());
 
             Panel* target = ActivePanel();
-            if (!target->FocusPrefix(quickFilter_) && quickFilter_.size() > 1) {
+            bool found = target->FocusPrefix(quickFilter_);
+            // Кириллица не нашлась — пробуем те же клавиши в латинской раскладке.
+            if (!found && quickFilterLatin_.size() == quickFilter_.size() && quickFilterLatin_ != quickFilter_) {
+                found = target->FocusPrefix(quickFilterLatin_);
+            }
+            if (!found && quickFilter_.size() > 1) {
                 quickFilter_.pop_back();
+                if (quickFilterLatin_.size() > quickFilter_.size()) quickFilterLatin_.resize(quickFilter_.size());
                 target->FocusPrefix(quickFilter_);
             }
             return true;
@@ -3783,6 +3821,7 @@ bool App::PreTranslate(const MSG& msg) {
             break;
         case VK_ESCAPE:
             quickFilter_.clear();
+            quickFilterLatin_.clear();
             return true;
         case VK_DELETE:
             if (!inPrompt && !inList) break;
