@@ -3393,12 +3393,15 @@ bool App::PreTranslate(const MSG& msg) {
                 right_.CancelPathEdit();
                 return true;
             }
+            // Esc в поле фильтра снимает фильтр целиком и возвращает фокус в список.
             if (left_.MaskEditing()) {
-                left_.CancelMaskEdit();
+                if (left_.QuickFilterEditing()) left_.ClearQuickFilter();
+                else left_.CancelMaskEdit();
                 return true;
             }
             if (right_.MaskEditing()) {
-                right_.CancelMaskEdit();
+                if (right_.QuickFilterEditing()) right_.ClearQuickFilter();
+                else right_.CancelMaskEdit();
                 return true;
             }
         }
@@ -3882,6 +3885,16 @@ LRESULT CALLBACK App::ProcStatic(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 
 LRESULT App::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
+        case WM_INITMENUPOPUP: {
+            // Галочка у «Ветка»: сразу видно, плоский сейчас список или обычный.
+            HMENU menu = reinterpret_cast<HMENU>(wParam);
+            if (menu) {
+                CheckMenuItem(menu, IDM_BRANCH,
+                              MF_BYCOMMAND | (ActivePanel()->InBranch() ? MF_CHECKED : MF_UNCHECKED));
+            }
+            return 0;
+        }
+
         case WM_CREATE:
             CreateChildren();
             Layout();

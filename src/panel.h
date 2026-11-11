@@ -25,6 +25,7 @@ public:
     // Ветка (Ctrl+B): плоский список всех файлов поддерева.
     void ToggleBranch();
     bool InBranch() const { return branch_; }
+    bool QuickFilterEditing() const { return quickFilterEdit_; }
     bool GoUp();
     bool GoRoot();
 
@@ -287,8 +288,14 @@ private:
     int dirSizeFocus_ = -1;          // строка, для которой размер считаем по Ctrl+L (не отмечена)
     std::wstring substring_;         // быстрый фильтр по подстроке (Ctrl+S)
     bool branch_ = false;            // режим ветки: плоский список поддерева
+    static constexpr size_t kBranchLimit = 50000;   // больше не собираем: иначе список не обслужить
+    std::vector<Entry> branchAll_;   // полный набор ветки: без фильтра и без сортировки
+    bool branchTruncated_ = false;   // обход упёрся в предел записей
     void LoadBranchListing(const std::wstring& focus);
+    void RebuildBranch();            // обойти поддерево (дорого, только по требованию)
+    void RefreshBranchView(const std::wstring& focus);   // фильтр и сортировка по branchAll_
     bool quickFilterEdit_ = false;   // поле маски сейчас работает как строка фильтра
+    bool maskSync_ = false;          // поле маски обновляется программно (не ввод пользователя)
     HWND tree_ = nullptr;
     bool treeVisible_ = false;
     std::vector<std::wstring> treePaths_;   // lParam узла = индекс в этом векторе

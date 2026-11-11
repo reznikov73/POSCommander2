@@ -923,7 +923,9 @@ void Panel::SetActive(bool active) {
 
 // Строка под панелью дисков: сколько свободно на текущем томе.
 std::wstring Panel::DisplayPath() const {
-    if (branch_) return path_ + L" (ветка)";
+    if (branch_)
+        return path_ + (branchTruncated_ ? L" (ветка, первые " + std::to_wstring(kBranchLimit) + L")"
+                                            : L" (ветка)");
     if (!inArchive_) return path_;
     std::wstring out = archiveFile_;
     if (!archiveInner_.empty()) out += L"\\" + archiveInner_;
@@ -1457,7 +1459,12 @@ void Panel::ShowPathFavorites() {
 // ---------- маска файлов (этап 5 план-UI) ----------
 
 void Panel::UpdateMaskField() {
-    if (maskEdit_) SetWindowTextW(maskEdit_, mask_.c_str());
+    if (!maskEdit_) return;
+    // Это не ввод пользователя: иначе EN_CHANGE принимал маску за строку фильтра
+    // (после Ctrl+S в фильтр попадало «*.*» и список пустел).
+    maskSync_ = true;
+    SetWindowTextW(maskEdit_, mask_.c_str());
+    maskSync_ = false;
 }
 
 // Последние 8 масок — общая история в настройках; повтор маски поднимает его наверх.
@@ -1523,7 +1530,8 @@ void Panel::ConfirmMaskEdit() {
         quickFilterEdit_ = false;
         LeaveMaskEdit(false);
         UpdateMaskField();                  // вернуть в поле маску
-        Reload();
+        if (branch_) RefreshBranchView(L"");   // в ветке — только пересчёт отображения
+        else Reload();
         FocusList();
         return;
     }
@@ -1540,7 +1548,8 @@ void Panel::CancelMaskEdit() {
     LeaveMaskEdit(true);
     if (wasQuick && !substring_.empty()) {
         substring_.clear();
-        Reload();
+        if (branch_) RefreshBranchView(L"");   // в ветке — только пересчёт отображения
+        else Reload();
     }
     FocusList();
 }
@@ -1551,7 +1560,9 @@ void Panel::BeginQuickFilter() {
     quickFilterEdit_ = true;
     maskEditing_ = true;
     SendMessageW(maskEdit_, EM_SETREADONLY, FALSE, 0);
+    maskSync_ = true;
     SetWindowTextW(maskEdit_, substring_.c_str());
+    maskSync_ = false;
     SetFocus(maskEdit_);
     SendMessageW(maskEdit_, EM_SETSEL, 0, -1);
     InvalidateRect(maskEdit_, nullptr, TRUE);
@@ -1559,6 +1570,16 @@ void Panel::BeginQuickFilter() {
 
 void Panel::SetSubstringFilter(const std::wstring& text) {
     substring_ = text;
+    LogDebug(L"filter: '" + text + L"' branch=" + std::to_wstring(branch_ ? 1 : 0));
+    if (branch_) {
+        // В ветке фильтр применяется к уже собранному списку: дерево не обходим заново.
+        std::wstring focus;
+        if (Entry* cur = Cursor()) {
+            if (!cur->isUp) focus = cur->name;
+        }
+        RefreshBranchView(focus);
+        return;
+    }
     Reload();
 }
 
@@ -1570,7 +1591,11 @@ void Panel::ClearQuickFilter() {
         LeaveMaskEdit(false);
         UpdateMaskField();
     }
-    Reload();
+    if (branch_) {
+        RefreshBranchView(L"");
+    } else {
+        Reload();
+    }
     FocusList();
 }
 
@@ -1651,7 +1676,12 @@ LRESULT CALLBACK Panel::MaskEditProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
             }
             break;
         case WM_KILLFOCUS:
-            if (self && self->maskEditing_) self->LeaveMaskEdit(true);
+            // Ушли из поля фильтра — фильтр остаётся применённым, но маска «*.*»
+            // не должна попасть в строку фильтра (раньше список после этого пустел).
+            if (self && self->maskEditing_) {
+                if (self->quickFilterEdit_) self->ConfirmMaskEdit();
+                else self->LeaveMaskEdit(true);
+            }
             break;
         default:
             break;
@@ -2211,8 +2241,15 @@ void Panel::Reload() {
 }
 
 // Ctrl+B: плоский список всех файлов поддерева. Имена — пути относительно текущего каталога.
-void Panel::LoadBranchListing(const std::wstring& focus) {
+//
+// Обход выполняется один раз (RebuildBranch): он дорогой, а фильтр Ctrl+S и смена
+// сортировки меняют только отображение (RefreshBranchView). Раньше каждый Reload
+// заново обходил всё дерево — на больших каталогах программа «залипала».
+
+void Panel::RebuildBranch() {
+    const ULONGLONG started = GetTickCount64();
     StopWatch();                       // ветка не следит за отдельными файлами
+
     std::vector<Entry> loaded;
     Entry up;
     up.name = L"..";
@@ -2221,27 +2258,49 @@ void Panel::LoadBranchListing(const std::wstring& focus) {
     up.icon = IconForEntry(up, path_);
     loaded.push_back(std::move(up));
 
-    const size_t kMaxEntries = 200000;
+    bool cancelled = false;
     auto walk = [&](auto&& self, const std::wstring& dir, const std::wstring& rel) -> void {
-        if (loaded.size() >= kMaxEntries) return;
+        if (loaded.size() >= kBranchLimit || cancelled) return;
+        if ((GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0) {   // Esc во время обхода — отмена
+            cancelled = true;
+            return;
+        }
         std::vector<Entry> items;
         DWORD err = 0;
         if (!ListDir(dir, showHidden_, items, err)) return;
         for (auto& item : items) {
-            if (loaded.size() >= kMaxEntries) return;
+            if (loaded.size() >= kBranchLimit || cancelled) return;
+            if ((GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0) {
+                cancelled = true;
+                return;
+            }
             const std::wstring inner = rel.empty() ? item.name : rel + L"\\" + item.name;
             if (item.isDir) {
                 self(self, dir + L"\\" + item.name, inner);
             } else {
                 item.name = inner;
-                item.icon = IconForEntry(item, path_);
+                // Значок конкретного exe требует запроса к оболочке по полному пути.
+                // На большом списке это дорого — дальше берём значок по расширению.
+                item.icon = loaded.size() < 3000 ? IconForEntry(item, path_) : IconForEntry(item, L"");
                 loaded.push_back(item);
             }
         }
     };
-    walk(walk, path_, L"");
 
-    entries_ = std::move(loaded);
+    HCURSOR oldCursor = ::SetCursor(::LoadCursorW(nullptr, IDC_WAIT));
+    walk(walk, path_, L"");
+    ::SetCursor(oldCursor);
+
+    branchTruncated_ = loaded.size() >= kBranchLimit;
+    branchAll_ = std::move(loaded);
+    LogDebug(L"branch walk: '" + path_ + L"', файлов " + std::to_wstring(branchAll_.size()) +
+             L", " + std::to_wstring(GetTickCount64() - started) + L" мс" +
+             (cancelled ? L", отменено" : L"") + (branchTruncated_ ? L", обрезано" : L""));
+}
+
+void Panel::RefreshBranchView(const std::wstring& focus) {
+    const ULONGLONG started = GetTickCount64();
+    entries_ = branchAll_;
     FilterByMask();
     if (sortColumn_ >= 0)
         std::sort(entries_.begin(), entries_.end(),
@@ -2250,6 +2309,13 @@ void Panel::LoadBranchListing(const std::wstring& focus) {
     UpdateHeader();
     UpdateStatus();
     if (list_) InvalidateRect(list_, nullptr, FALSE);
+    LogDebug(L"branch view: строк " + std::to_wstring(entries_.size()) + L" за " +
+             std::to_wstring(GetTickCount64() - started) + L" мс");
+}
+
+void Panel::LoadBranchListing(const std::wstring& focus) {
+    RebuildBranch();
+    RefreshBranchView(focus);
 }
 
 void Panel::ToggleBranch() {
@@ -2262,6 +2328,16 @@ void Panel::ToggleBranch() {
     if (branch_) {
         LoadBranchListing(L"");
     } else {
+        // Фильтр, набранный в ветке, не должен прятать файлы обычного списка:
+        // иначе кажется, что из ветки не вышли.
+        if (!substring_.empty() || quickFilterEdit_) {
+            substring_.clear();
+            if (quickFilterEdit_) {
+                quickFilterEdit_ = false;
+                LeaveMaskEdit(false);
+                UpdateMaskField();
+            }
+        }
         Reload();
     }
     FocusList();
@@ -3538,7 +3614,7 @@ LRESULT Panel::Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         case WM_COMMAND: {
             int id = LOWORD(wParam);
             // Живой фильтр (Ctrl+S): каждое изменение текста в поле маски сразу фильтрует список.
-            if (quickFilterEdit_ && HIWORD(wParam) == EN_CHANGE &&
+            if (quickFilterEdit_ && !maskSync_ && HIWORD(wParam) == EN_CHANGE &&
                 reinterpret_cast<HWND>(lParam) == maskEdit_) {
                 wchar_t text[256]{};
                 GetWindowTextW(maskEdit_, text, 256);
