@@ -1030,6 +1030,7 @@ int Panel::PathPartStart(int charIndex) const {
 
 // Наведение на компонент пути: запоминаем и через паузу открываем первый уровень.
 void Panel::SchedulePathHover(int charIndex) {
+    if (GetTickCount64() < hoverSuppressUntil_) return;   // только что выбрали — не мешаем
     if (ftp_) {
         HidePathHover();
         return;
@@ -1041,7 +1042,33 @@ void Panel::SchedulePathHover(int charIndex) {
     if (charIndex == hoverChars_ && !hover_.empty()) return;   // уже на этом компоненте
     hoverChars_ = charIndex;
 
-    if (pathEdit_) SetTimer(pathEdit_, kHoverShowTimer, 350, nullptr);
+    if (pathEdit_) {
+        KillTimer(pathEdit_, kHoverHideTimer);   // вернулись на путь — не закрываем список
+        SetTimer(pathEdit_, kHoverShowTimer, 350, nullptr);
+    }
+}
+
+// Курсор в зоне каскада: поле пути или любой открытый уровень. Запас в несколько
+// пикселей закрывает зазоры между уровнями — иначе список «выскальзывал» из-под мыши.
+bool Panel::HoverZoneContains(POINT pt) const {
+    if (pathEdit_ && IsWindowVisible(pathEdit_) && !pathEditing_) {
+        RECT rc{};
+        GetWindowRect(pathEdit_, &rc);
+        InflateRect(&rc, Scale(2, dpi_), Scale(8, dpi_));
+        if (PtInRect(&rc, pt)) return true;
+    }
+    for (const auto& lv : hover_) {
+        if (!lv.win || !IsWindowVisible(lv.win)) continue;
+        RECT rc{};
+        GetWindowRect(lv.win, &rc);
+        InflateRect(&rc, Scale(4, dpi_), Scale(4, dpi_));
+        if (PtInRect(&rc, pt)) return true;
+    }
+    return false;
+}
+
+void Panel::ScheduleHoverHide(UINT delay) {
+    if (pathEdit_) SetTimer(pathEdit_, kHoverHideTimer, delay, nullptr);
 }
 
 // Клик по компоненту пути — переход в этот каталог.
@@ -1049,6 +1076,8 @@ void Panel::NavigatePathPart(int charIndex) {
     const std::wstring target = PathPartTarget(charIndex);
     if (target.empty()) return;
     LogDebug(L"path click: '" + target + L"'");
+    HidePathHover();
+    hoverSuppressUntil_ = GetTickCount64() + 700;
     if (!Navigate(target)) {
         MessageBoxW(GetParent(hwnd_), NavigateError().c_str(), L"Переход", MB_ICONERROR);
     }
@@ -1133,11 +1162,13 @@ void Panel::FillLevel(HoverLevel& lv) {
 }
 
 // Открыть уровень каскада в точке (x, y). Возвращает индекс уровня или -1.
-int Panel::OpenLevel(const std::wstring& dir, int x, int y) {
+int Panel::OpenLevel(const std::wstring& dir, int x, int y, int parentLevel, int parentItem) {
     if (dir.empty() || !IsDirectory(dir)) return -1;
 
     HoverLevel lv;
     lv.dir = dir;
+    lv.parentLevel = parentLevel;
+    lv.parentItem = parentItem;
     if (!CreateLevelWindow(lv)) return -1;
     FillLevel(lv);
     if (lv.items.empty()) {
@@ -1151,9 +1182,12 @@ int Panel::OpenLevel(const std::wstring& dir, int x, int y) {
     const int width = Scale(300, dpi_);
     const int height = rows * rowH + Scale(6, dpi_);
 
-    SetWindowPos(lv.win, HWND_TOPMOST, x, y, width, height, SWP_SHOWWINDOW | SWP_NOACTIVATE);
-    MoveWindow(lv.list, 1, 1, width - 2, height - 2, TRUE);
+    // Сначала размеры и список, показ — последним: иначе видна пустая рамка и «прыжок».
+    SetWindowPos(lv.win, HWND_TOPMOST, x, y, width, height, SWP_NOACTIVATE);
+    MoveWindow(lv.list, 1, 1, width - 2, height - 2, FALSE);
     hover_.push_back(std::move(lv));
+    ShowWindow(hover_.back().win, SW_SHOWNOACTIVATE);
+    if (pathEdit_) KillTimer(pathEdit_, kHoverHideTimer);
     return (int)hover_.size() - 1;
 }
 
@@ -1233,7 +1267,7 @@ LRESULT CALLBACK Panel::HoverListProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
 
             case WM_MOUSELEAVE:
                 // Ушли со списка — закрываем, если курсор не на другом уровне каскада.
-                SetTimer(self->pathEdit_, kHoverHideTimer, 250, nullptr);
+                SetTimer(self->pathEdit_, kHoverHideTimer, 350, nullptr);
                 break;
 
             case WM_LBUTTONDOWN: {
@@ -1248,6 +1282,7 @@ LRESULT CALLBACK Panel::HoverListProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                         const std::wstring target =
                             JoinPath(self->hover_[i].dir, self->hover_[i].items[item].name);
                         self->HidePathHover();
+                        self->hoverSuppressUntil_ = GetTickCount64() + 700;
                         if (!self->Navigate(target)) {
                             MessageBoxW(GetParent(self->hwnd_), self->NavigateError().c_str(), L"Переход",
                                         MB_ICONERROR);
@@ -1295,7 +1330,7 @@ LRESULT CALLBACK Panel::HoverProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
             break;
 
         case WM_MOUSELEAVE:
-            if (self && self->pathEdit_) SetTimer(self->pathEdit_, kHoverHideTimer, 250, nullptr);
+            if (self && self->pathEdit_) SetTimer(self->pathEdit_, kHoverHideTimer, 350, nullptr);
             break;
 
         case WM_MOUSEWHEEL:
@@ -3354,36 +3389,37 @@ LRESULT CALLBACK Panel::PathEditProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
                 if (self->cascadePendingItem_ < 0 || self->cascadePendingItem_ >= (int)lv.items.size()) return 0;
                 if (lv.hoverItem != self->cascadePendingItem_) return 0;   // мышь ушла с пункта
 
-                const std::wstring child = JoinPath(lv.dir, lv.items[self->cascadePendingItem_].name);
-                self->CloseLevelsFrom((size_t)self->cascadePendingLevel_ + 1);
+                const int level = self->cascadePendingLevel_;
+                const int item = self->cascadePendingItem_;
+                const std::wstring child = JoinPath(lv.dir, lv.items[item].name);
+
+                // Такой подуровень уже открыт — не трогаем его. Иначе окно уничтожалось
+                // и создавалось заново на каждое движение мыши, и список мерцал.
+                if (self->hover_.size() > (size_t)level + 1) {
+                    const HoverLevel& sub = self->hover_[level + 1];
+                    if (sub.parentLevel == level && sub.parentItem == item && SamePath(sub.dir, child))
+                        return 0;
+                }
+
+                self->CloseLevelsFrom((size_t)level + 1);
 
                 RECT pr{};
                 GetWindowRect(lv.win, &pr);
                 RECT ir{};
-                ListView_GetItemRect(lv.list, self->cascadePendingItem_, &ir, LVIR_BOUNDS);
+                ListView_GetItemRect(lv.list, item, &ir, LVIR_BOUNDS);
                 const int x = pr.right - Scale(6, self->dpi_);
                 const int y = pr.top + ir.top + Scale(2, self->dpi_);
-                self->OpenLevel(child, x, y);          // нет подкаталогов — уровень не откроется
+                self->OpenLevel(child, x, y, level, item);   // нет подкаталогов — не откроется
                 return 0;
             }
             if (wParam == kHoverHideTimer) {
                 KillTimer(hwnd, kHoverHideTimer);
                 if (!self) return 0;
-                // Если курсор над любым уровнем каскада — не скрываем, ждём дальше.
+                // Пока курсор в зоне каскада (поле пути или любой уровень) — не скрываем.
                 POINT pt{};
                 GetCursorPos(&pt);
-                bool over = false;
-                for (const auto& lv : self->hover_) {
-                    if (!lv.win || !IsWindowVisible(lv.win)) continue;
-                    RECT rc{};
-                    GetWindowRect(lv.win, &rc);
-                    if (PtInRect(&rc, pt)) {
-                        over = true;
-                        break;
-                    }
-                }
-                if (over) {
-                    SetTimer(self->pathEdit_, kHoverHideTimer, 200, nullptr);
+                if (self->HoverZoneContains(pt)) {
+                    SetTimer(self->pathEdit_, kHoverHideTimer, 150, nullptr);
                     return 0;
                 }
                 self->HidePathHover();
@@ -3410,7 +3446,10 @@ LRESULT CALLBACK Panel::PathEditProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
             }
             const int x = GET_X_LPARAM(lParam);
             if (self->PathClickInEmptyArea(x)) {
-                self->HidePathHover();
+                // Пустое место в поле пути: не захлопываем список мгновенно, иначе
+                // до него просто невозможно довести мышь.
+                if (!self->hover_.empty()) self->ScheduleHoverHide(500);
+                else self->HidePathHover();
                 break;
             }
             self->SchedulePathHover(self->PathCharIndexAt(x, GET_Y_LPARAM(lParam)));
@@ -3418,7 +3457,7 @@ LRESULT CALLBACK Panel::PathEditProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
         }
 
         case WM_MOUSELEAVE:
-            if (self && self->pathEdit_) SetTimer(self->pathEdit_, kHoverHideTimer, 250, nullptr);
+            if (self && self->pathEdit_) SetTimer(self->pathEdit_, kHoverHideTimer, 350, nullptr);
             break;
 
         case WM_LBUTTONDBLCLK:

@@ -3385,6 +3385,12 @@ bool App::PreTranslate(const MSG& msg) {
     // Пока идёт правка пути, Enter и Esc работают на поле, даже если фокус успел уйти.
     if (msg.message == WM_KEYDOWN || msg.message == WM_SYSKEYDOWN) {
         if (msg.wParam == VK_ESCAPE) {
+            // Открытый список каталогов у пути закрывается первым.
+            if (left_.HasPathHover() || right_.HasPathHover()) {
+                left_.HidePathHover();
+                right_.HidePathHover();
+                return true;
+            }
             if (left_.PathEditing()) {
                 left_.CancelPathEdit();
                 return true;

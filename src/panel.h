@@ -26,6 +26,9 @@ public:
     void ToggleBranch();
     bool InBranch() const { return branch_; }
     bool QuickFilterEditing() const { return quickFilterEdit_; }
+    // Выпадающий список каталогов у поля пути: закрыть снаружи (Esc, клик мимо).
+    void HidePathHover();
+    bool HasPathHover() const { return !hover_.empty(); }
     bool GoUp();
     bool GoRoot();
 
@@ -200,7 +203,6 @@ private:
     // Выпадающий список содержимого каталога при наведении на компонент пути (как в TC).
     void SchedulePathHover(int charIndex);
     void ShowPathHover();
-    void HidePathHover();
     void FillPathHover(const std::wstring& dir);
     static LRESULT CALLBACK HoverProc(HWND, UINT, WPARAM, LPARAM);
     // Каскад выпадающих списков папок: уровень 0 — от компонента пути, дальше — вложенные.
@@ -210,11 +212,17 @@ private:
         std::wstring dir;
         std::vector<Entry> items;      // только каталоги
         int hoverItem = -1;            // пункт под курсором
+        int parentLevel = -1;          // уровень-родитель (-1 у первого)
+        int parentItem = -1;           // пункт родителя, от которого открыт подуровень
     };
     bool CreateLevelWindow(HoverLevel& lv);
     void FillLevel(HoverLevel& lv);
-    int OpenLevel(const std::wstring& dir, int x, int y);
+    int OpenLevel(const std::wstring& dir, int x, int y, int parentLevel = -1, int parentItem = -1);
     void CloseLevelsFrom(size_t index);
+    // Курсор в «зоне» каскада: поле пути или любой открытый уровень (с запасом).
+    bool HoverZoneContains(POINT pt) const;
+    void ScheduleHoverHide(UINT delay);
+    ULONGLONG hoverSuppressUntil_ = 0;   // после выбора/перехода список не открываем сразу
     static LRESULT CALLBACK HoverListProc(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
     int PathCharIndexAt(int x, int y) const;
     bool PathClickInEmptyArea(int x) const;
