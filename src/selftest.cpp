@@ -164,6 +164,26 @@ void CheckArchives(Report& rep, const std::wstring& base) {
         rep.Check(ReadText(zout + L"\\папка\\zip-1.txt") == "строка для zip", L"Zip: текст совпал");
         rep.Check(ReadBytes(zout + L"\\zip-2.bin").size() == 5000, L"Zip: бинарник совпал по размеру");
 
+        // Дефляция при записи: архив с текстом должен быть меньше исходника.
+        const std::wstring bigTxt = base + L"\\zip-big.txt";
+        std::string bigText;
+        for (int i = 0; i < 500; i++) bigText += "строка для проверки сжатия встроенным дефлятором\n";
+        WriteText(bigTxt, bigText);
+        std::vector<ZipSource> zbig = {{bigTxt, L"big.txt"}};
+        const std::wstring bigZip = base + L"\\big.zip";
+        rep.Check(ZipCreateFrom(bigZip, zbig, zerr), L"Zip: архив с текстом создан", zerr);
+        const size_t packedSize = ReadBytes(bigZip).size();
+        rep.Check(packedSize + 200 < bigText.size(), L"Zip: deflate сжимает текст",
+                  std::to_wstring(packedSize) + L" из " + std::to_wstring(bigText.size()) + L" байт");
+        const std::wstring bigOut = base + L"\\big-out.txt";
+        const bool extracted = ZipExtractOne(bigZip, L"big.txt", bigOut, zerr);
+        const std::vector<char> roundTrip = ReadBytes(bigOut);
+        rep.Check(extracted && roundTrip.size() == bigText.size() &&
+                      std::equal(bigText.begin(), bigText.end(), roundTrip.begin()),
+                  L"Zip: deflate — данные совпали",
+                  L"байт " + std::to_wstring(roundTrip.size()) + L" из " + std::to_wstring(bigText.size()) +
+                      L" " + zerr);
+
         // Правка архива без 7-Zip: добавление в подкаталог и удаление.
         const std::wstring zm = base + L"\\правка.zip";
         std::vector<ZipSource> zinit = {{zsrc1, L"раз.txt"}};

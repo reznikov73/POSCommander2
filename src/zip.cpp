@@ -741,15 +741,6 @@ void DosFromFileTime(const FILETIME& ft, unsigned short& dosTime, unsigned short
     dosDate = (unsigned short)(((st.wYear - 1980) << 9) | (st.wMonth << 5) | st.wDay);
 }
 
-struct CentralRec {
-    std::string name;
-    unsigned long crc = 0;
-    unsigned long long size = 0;
-    unsigned long long offset = 0;
-    unsigned short dosTime = 0;
-    unsigned short dosDate = 0;
-};
-
 void Put16(std::vector<unsigned char>& out, unsigned short v) {
     out.push_back((unsigned char)(v & 0xFF));
     out.push_back((unsigned char)(v >> 8));
@@ -758,150 +749,130 @@ void Put32(std::vector<unsigned char>& out, unsigned long v) {
     for (int i = 0; i < 4; i++) out.push_back((unsigned char)((v >> (8 * i)) & 0xFF));
 }
 
-void WriteAt(std::vector<unsigned char>& out, size_t pos, const std::vector<unsigned char>& data) {
-    for (size_t i = 0; i < data.size(); i++) out[pos + i] = data[i];
-}
-
 }  // namespace
-
-bool ZipCreateFrom(const std::wstring& zipPath, const std::vector<ZipSource>& sources, std::wstring& error) {
-    error.clear();
-    if (sources.empty()) {
-        error = L"Нечего упаковывать.";
-        return false;
-    }
-    FilePtr out(_wfopen(zipPath.c_str(), L"wb"));
-    if (!out) {
-        error = L"Не удалось создать архив: " + zipPath;
-        return false;
-    }
-
-    std::vector<CentralRec> records;
-    unsigned long long offset = 0;
-
-    for (const auto& source : sources) {
-        const std::wstring& file = source.path;
-        const std::wstring name = source.inner;
-        FILE* src = _wfopen(file.c_str(), L"rb");
-        if (!src) {
-            error = L"Не удалось прочитать файл: " + file;
-            return false;
-        }
-        _fseeki64(src, 0, SEEK_END);
-        const long long size = _ftelli64(src);
-        _fseeki64(src, 0, SEEK_SET);
-        if (size < 0) {
-            fclose(src);
-            error = L"Не удалось определить размер файла: " + file;
-            return false;
-        }
-
-        unsigned long crc = 0;
-        {
-            unsigned char buf[1 << 16];
-            size_t got = 0;
-            while ((got = fread(buf, 1, sizeof(buf), src)) > 0) crc = CrcUpdate(crc, buf, got);
-            _fseeki64(src, 0, SEEK_SET);
-        }
-
-        WIN32_FILE_ATTRIBUTE_DATA fad{};
-        unsigned short dosTime = 0, dosDate = 0;
-        if (GetFileAttributesExW(file.c_str(), GetFileExInfoStandard, &fad)) {
-            DosFromFileTime(fad.ftLastWriteTime, dosTime, dosDate);
-        }
-
-        const std::string utf8 = ToUtf8(name);
-        std::vector<unsigned char> header;
-        Put32(header, kLocalSig);
-        Put16(header, 20);                       // нужна версия 2.0
-        Put16(header, 0x0800);                   // имена в UTF-8
-        Put16(header, 0);                        // метод 0 — без сжатия
-        Put16(header, dosTime);
-        Put16(header, dosDate);
-        Put32(header, crc);
-        Put32(header, (unsigned long)size);      // сжатый размер = исходному
-        Put32(header, (unsigned long)size);
-        Put16(header, (unsigned short)utf8.size());
-        Put16(header, 0);
-        header.insert(header.end(), utf8.begin(), utf8.end());
-
-        const unsigned long long localOffset = offset;
-        if (fwrite(header.data(), 1, header.size(), out.get()) != header.size()) {
-            fclose(src);
-            error = L"Не удалось записать архив.";
-            return false;
-        }
-        offset += header.size();
-
-        unsigned char buf[1 << 16];
-        size_t got = 0;
-        while ((got = fread(buf, 1, sizeof(buf), src)) > 0) {
-            if (fwrite(buf, 1, got, out.get()) != got) {
-                fclose(src);
-                error = L"Не удалось записать архив (нет места?).";
-                return false;
-            }
-            offset += got;
-        }
-        fclose(src);
-
-        CentralRec rec;
-        rec.name = utf8;
-        rec.crc = crc;
-        rec.size = (unsigned long long)size;
-        rec.offset = localOffset;
-        rec.dosTime = dosTime;
-        rec.dosDate = dosDate;
-        records.push_back(std::move(rec));
-    }
-
-    // Центральный каталог.
-    const unsigned long long cdOffset = offset;
-    std::vector<unsigned char> cd;
-    for (const auto& rec : records) {
-        Put32(cd, kCentralSig);
-        Put16(cd, 20);
-        Put16(cd, 20);
-        Put16(cd, 0x0800);
-        Put16(cd, 0);
-        Put16(cd, rec.dosTime);
-        Put16(cd, rec.dosDate);
-        Put32(cd, rec.crc);
-        Put32(cd, (unsigned long)rec.size);
-        Put32(cd, (unsigned long)rec.size);
-        Put16(cd, (unsigned short)rec.name.size());
-        Put16(cd, 0);
-        Put16(cd, 0);
-        Put16(cd, 0);
-        Put16(cd, 0);
-        Put32(cd, 0);
-        Put32(cd, (unsigned long)rec.offset);
-        cd.insert(cd.end(), rec.name.begin(), rec.name.end());
-    }
-    if (fwrite(cd.data(), 1, cd.size(), out.get()) != cd.size()) {
-        error = L"Не удалось записать оглавление архива.";
-        return false;
-    }
-
-    std::vector<unsigned char> eocd;
-    Put32(eocd, kEocdSig);
-    Put16(eocd, 0);
-    Put16(eocd, 0);
-    Put16(eocd, (unsigned short)records.size());
-    Put16(eocd, (unsigned short)records.size());
-    Put32(eocd, (unsigned long)cd.size());
-    Put32(eocd, (unsigned long)cdOffset);
-    Put16(eocd, 0);
-    if (fwrite(eocd.data(), 1, eocd.size(), out.get()) != eocd.size()) {
-        error = L"Не удалось записать конец архива.";
-        return false;
-    }
-    return true;
-}
 
 namespace {
 
-// Запись в новом архиве: то, что нужно для локального заголовка и оглавления.
+// ---------- сжатие (fixed Huffman + LZ77) ----------
+
+struct BitWriter {
+    std::vector<unsigned char>& out;
+    unsigned long long bits = 0;
+    int count = 0;
+    explicit BitWriter(std::vector<unsigned char>& target) : out(target) {}
+
+    void Put(unsigned value, int n) {                 // младшим битом вперёд
+        bits |= (unsigned long long)value << count;
+        count += n;
+        while (count >= 8) {
+            out.push_back((unsigned char)(bits & 0xFF));
+            bits >>= 8;
+            count -= 8;
+        }
+    }
+    void PutCode(unsigned code, int n) {              // код Хаффмана — от старшего бита
+        for (int i = n - 1; i >= 0; i--) Put((code >> i) & 1, 1);
+    }
+    void Flush() {
+        if (count > 0) {
+            out.push_back((unsigned char)(bits & 0xFF));
+            bits = 0;
+            count = 0;
+        }
+    }
+};
+
+const unsigned short kLenBaseW[29] = {3,  4,  5,  6,  7,  8,  9,  10, 11,  13,  15,  17,  19,  23, 27,
+                                      31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258};
+const unsigned char kLenExtraW[29] = {0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2,
+                                      2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0};
+const unsigned short kDistBaseW[30] = {1,    2,    3,    4,    5,    7,     9,     13,    17,    25,
+                                       33,   49,   65,   97,   129,  193,   257,   385,   513,   769,
+                                       1025, 1537, 2049, 3073, 4097, 6145,  8193,  12289, 16385, 24577};
+const unsigned char kDistExtraW[30] = {0, 0, 0,  0,  1,  1,  2,  2,  3,  3,  4,  4,  5,  5,  6,
+                                       6, 7, 7,  8,  8,  9,  9,  10, 10, 11, 11, 12, 12, 13, 13};
+
+void EmitSym(BitWriter& bw, int sym) {               // символ литерала/длины 0..287
+    if (sym <= 143) bw.PutCode(0x30 + sym, 8);
+    else if (sym <= 255) bw.PutCode(0x190 + (sym - 144), 9);
+    else if (sym <= 279) bw.PutCode(sym - 256, 7);
+    else bw.PutCode(0xC0 + (sym - 280), 8);
+}
+
+// Сжатие в raw deflate одним блоком fixed Huffman. Результат может быть больше входа —
+// вызывающий решает, использовать ли его.
+bool DeflateFixed(const std::vector<unsigned char>& src, std::vector<unsigned char>& out) {
+    if (src.size() > 0xFFFFFFF0ull) return false;    // слишком большой кусок для одного блока
+
+    BitWriter bw(out);
+    bw.Put(1, 1);          // BFINAL
+    bw.Put(1, 2);          // BTYPE = 01 — fixed Huffman
+
+    const size_t kWindow = 32768;
+    const int kMinMatch = 3;
+    const int kMaxMatch = 258;
+    const int kHashBits = 15;
+    const size_t kHashSize = (size_t)1 << kHashBits;
+
+    std::vector<int> head(kHashSize, -1);
+    std::vector<int> prev(src.size(), -1);
+
+    auto hash3 = [&](size_t i) -> size_t {
+        return (((size_t)src[i] << 10) ^ ((size_t)src[i + 1] << 5) ^ (size_t)src[i + 2]) & (kHashSize - 1);
+    };
+    auto insert = [&](size_t i) {
+        if (i + 2 >= src.size()) return;
+        const size_t h = hash3(i);
+        prev[i] = head[h];
+        head[h] = (int)i;
+    };
+
+    size_t i = 0;
+    while (i < src.size()) {
+        int bestLen = 0;
+        size_t bestDist = 0;
+        if (i + kMinMatch <= src.size()) {
+            int cand = head[hash3(i)];
+            int chain = 48;
+            const size_t maxLen = (src.size() - i) < (size_t)kMaxMatch ? (src.size() - i) : (size_t)kMaxMatch;
+            while (cand >= 0 && chain-- > 0) {
+                const size_t dist = i - (size_t)cand;
+                if (dist == 0 || dist > kWindow) break;
+                size_t len = 0;
+                while (len < maxLen && src[(size_t)cand + len] == src[i + len]) ++len;
+                if ((int)len > bestLen) {
+                    bestLen = (int)len;
+                    bestDist = dist;
+                    if (bestLen >= 128) break;
+                }
+                cand = prev[(size_t)cand];
+            }
+        }
+
+        if (bestLen >= kMinMatch) {
+            int li = 0;
+            while (li < 28 && kLenBaseW[li + 1] <= bestLen) ++li;
+            EmitSym(bw, 257 + li);
+            bw.Put((unsigned)(bestLen - kLenBaseW[li]), kLenExtraW[li]);
+            int di = 0;
+            while (di < 29 && kDistBaseW[di + 1] <= (int)bestDist) ++di;
+            bw.PutCode((unsigned)di, 5);
+            bw.Put((unsigned)(bestDist - kDistBaseW[di]), kDistExtraW[di]);
+            for (int k = 0; k < bestLen; k++) insert(i + (size_t)k);
+            i += (size_t)bestLen;
+        } else {
+            EmitSym(bw, src[i]);
+            insert(i);
+            ++i;
+        }
+    }
+    EmitSym(bw, 256);      // конец блока
+    bw.Flush();
+    return true;
+}
+
+// ---------- запись новых записей ----------
+
 struct OutRec {
     std::string nameRaw;
     unsigned short flags = 0;
@@ -933,14 +904,180 @@ bool WriteLocalHeader(FILE* out, const OutRec& rec, unsigned long long& offset, 
     Put16(h, 0);
     h.insert(h.end(), rec.nameRaw.begin(), rec.nameRaw.end());
     if (fwrite(h.data(), 1, h.size(), out) != h.size()) {
-        error = L"Не удалось записать временный архив (нет места?).";
+        error = L"Не удалось записать архив (нет места?).";
         return false;
     }
     offset += h.size();
     return true;
 }
 
+// Записать новый файл в архив: сжимаем, если выгодно и файл не слишком большой (иначе store).
+bool WriteNewFile(FILE* out, const std::wstring& path, const std::string& nameUtf8,
+                  unsigned long long& offset, OutRec& rec, std::wstring& error) {
+    WIN32_FILE_ATTRIBUTE_DATA fad{};
+    unsigned short dosTime = 0, dosDate = 0;
+    unsigned long long size = 0;
+    if (GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fad)) {
+        DosFromFileTime(fad.ftLastWriteTime, dosTime, dosDate);
+        size = ((unsigned long long)fad.nFileSizeHigh << 32) | fad.nFileSizeLow;
+    }
+
+    const unsigned long long kMaxInMemory = 64ull * 1024 * 1024;
+    std::vector<unsigned char> packed;
+    unsigned long crc = 0;
+    unsigned short method = 0;
+
+    if (size <= kMaxInMemory) {
+        std::vector<unsigned char> raw((size_t)size);
+        FILE* f = _wfopen(path.c_str(), L"rb");
+        if (!f) {
+            error = L"Не удалось прочитать файл: " + path;
+            return false;
+        }
+        const size_t got = raw.empty() ? 0 : fread(raw.data(), 1, raw.size(), f);
+        fclose(f);
+        if (got != raw.size()) {
+            error = L"Файл изменился во время упаковки: " + path;
+            return false;
+        }
+        if (!raw.empty()) crc = CrcUpdate(0, raw.data(), raw.size());
+
+        std::vector<unsigned char> deflated;
+        if (raw.size() >= 32 && DeflateFixed(raw, deflated) && deflated.size() < raw.size()) {
+            packed.swap(deflated);
+            method = 8;
+        } else {
+            packed.swap(raw);
+            method = 0;
+        }
+    } else {
+        // Большой файл: считаем CRC первым проходом, пишем потоком без сжатия.
+        FILE* f = _wfopen(path.c_str(), L"rb");
+        if (!f) {
+            error = L"Не удалось прочитать файл: " + path;
+            return false;
+        }
+        unsigned char buf[1 << 16];
+        size_t got = 0;
+        while ((got = fread(buf, 1, sizeof(buf), f)) > 0) crc = CrcUpdate(crc, buf, got);
+        fclose(f);
+        method = 0;
+    }
+
+    rec.nameRaw = nameUtf8;
+    rec.flags = 0x0800;                       // имена в UTF-8
+    rec.method = method;
+    rec.dosTime = dosTime;
+    rec.dosDate = dosDate;
+    rec.crc = crc;
+    rec.csize = (method == 8) ? (unsigned long long)packed.size() : size;
+    rec.usize = size;
+    rec.offset = offset;
+    if (!WriteLocalHeader(out, rec, offset, error)) return false;
+
+    if (method == 8) {
+        if (!packed.empty() && fwrite(packed.data(), 1, packed.size(), out) != packed.size()) {
+            error = L"Не удалось записать архив (нет места?).";
+            return false;
+        }
+        offset += packed.size();
+        return true;
+    }
+
+    FILE* f = _wfopen(path.c_str(), L"rb");
+    if (!f) {
+        error = L"Не удалось перечитать файл: " + path;
+        return false;
+    }
+    unsigned char buf[1 << 16];
+    size_t got = 0;
+    while ((got = fread(buf, 1, sizeof(buf), f)) > 0) {
+        if (fwrite(buf, 1, got, out) != got) {
+            fclose(f);
+            error = L"Не удалось записать архив (нет места?).";
+            return false;
+        }
+        offset += got;
+    }
+    fclose(f);
+    return true;
+}
+
+bool WriteCentral(FILE* out, const std::vector<OutRec>& recs, unsigned long long& offset, std::wstring& error) {
+    if (recs.size() > 0xFFFF) {
+        error = L"В архиве больше 65535 записей: изменение без 7-Zip не поддерживается.";
+        return false;
+    }
+    const unsigned long long cdOffset = offset;
+    std::vector<unsigned char> cd;
+    for (const auto& rec : recs) {
+        if (rec.offset > 0xFFFFFFFEull) {
+            error = L"Архив больше 4 ГБ: изменение без 7-Zip не поддерживается.";
+            return false;
+        }
+        Put32(cd, kCentralSig);
+        Put16(cd, 20);
+        Put16(cd, 20);
+        Put16(cd, rec.flags);
+        Put16(cd, rec.method);
+        Put16(cd, rec.dosTime);
+        Put16(cd, rec.dosDate);
+        Put32(cd, rec.crc);
+        Put32(cd, (unsigned long)rec.csize);
+        Put32(cd, (unsigned long)rec.usize);
+        Put16(cd, (unsigned short)rec.nameRaw.size());
+        Put16(cd, 0);
+        Put16(cd, 0);
+        Put16(cd, 0);
+        Put16(cd, 0);
+        Put32(cd, 0);
+        Put32(cd, (unsigned long)rec.offset);
+        cd.insert(cd.end(), rec.nameRaw.begin(), rec.nameRaw.end());
+    }
+    if (!cd.empty() && fwrite(cd.data(), 1, cd.size(), out) != cd.size()) {
+        error = L"Не удалось записать оглавление архива.";
+        return false;
+    }
+
+    std::vector<unsigned char> eocd;
+    Put32(eocd, kEocdSig);
+    Put16(eocd, 0);
+    Put16(eocd, 0);
+    Put16(eocd, (unsigned short)recs.size());
+    Put16(eocd, (unsigned short)recs.size());
+    Put32(eocd, (unsigned long)cd.size());
+    Put32(eocd, (unsigned long)cdOffset);
+    Put16(eocd, 0);
+    if (fwrite(eocd.data(), 1, eocd.size(), out) != eocd.size()) {
+        error = L"Не удалось записать конец архива.";
+        return false;
+    }
+    return true;
+}
+
 }  // namespace
+
+bool ZipCreateFrom(const std::wstring& zipPath, const std::vector<ZipSource>& sources, std::wstring& error) {
+    error.clear();
+    if (sources.empty()) {
+        error = L"Нечего упаковывать.";
+        return false;
+    }
+    FilePtr out(_wfopen(zipPath.c_str(), L"wb"));
+    if (!out) {
+        error = L"Не удалось создать архив: " + zipPath;
+        return false;
+    }
+
+    std::vector<OutRec> recs;
+    unsigned long long offset = 0;
+    for (const auto& source : sources) {
+        OutRec rec;
+        if (!WriteNewFile(out.get(), source.path, ToUtf8(source.inner), offset, rec, error)) return false;
+        recs.push_back(rec);
+    }
+    return WriteCentral(out.get(), recs, offset, error);
+}
 
 bool ZipModify(const std::wstring& zipPath, const std::vector<std::wstring>& deleteNames,
                const std::vector<ZipSource>& addItems, std::wstring& error) {
@@ -1025,113 +1162,19 @@ bool ZipModify(const std::wstring& zipPath, const std::vector<std::wstring>& del
         }
     }
 
-    // Новые файлы — без сжатия (store): дефляция для записи пока не реализована.
     for (const auto& add : addItems) {
         std::wstring inner = add.inner;
         for (auto& ch : inner) {
             if (ch == L'/') ch = L'\\';
         }
-        FILE* f = _wfopen(add.path.c_str(), L"rb");
-        if (!f) {
-            error = L"Не удалось прочитать файл: " + add.path;
-            return false;
-        }
-        _fseeki64(f, 0, SEEK_END);
-        const long long size = _ftelli64(f);
-        _fseeki64(f, 0, SEEK_SET);
-        if (size < 0) {
-            fclose(f);
-            error = L"Не удалось определить размер файла: " + add.path;
-            return false;
-        }
-        unsigned long crc = 0;
-        size_t got = 0;
-        while ((got = fread(buf, 1, sizeof(buf), f)) > 0) crc = CrcUpdate(crc, buf, got);
-        _fseeki64(f, 0, SEEK_SET);
-
-        WIN32_FILE_ATTRIBUTE_DATA fad{};
-        unsigned short dosTime = 0, dosDate = 0;
-        if (GetFileAttributesExW(add.path.c_str(), GetFileExInfoStandard, &fad)) {
-            DosFromFileTime(fad.ftLastWriteTime, dosTime, dosDate);
-        }
-
         OutRec rec;
-        rec.nameRaw = ToUtf8(inner);
-        rec.flags = 0x0800;
-        rec.method = 0;
-        rec.dosTime = dosTime;
-        rec.dosDate = dosDate;
-        rec.crc = crc;
-        rec.csize = (unsigned long long)size;
-        rec.usize = (unsigned long long)size;
-        rec.offset = offset;
-        if (!WriteLocalHeader(out.get(), rec, offset, error)) {
-            fclose(f);
-            return false;
-        }
-        while ((got = fread(buf, 1, sizeof(buf), f)) > 0) {
-            if (fwrite(buf, 1, got, out.get()) != got) {
-                fclose(f);
-                error = L"Не удалось записать временный архив (нет места?).";
-                return false;
-            }
-            offset += got;
-        }
-        fclose(f);
+        if (!WriteNewFile(out.get(), add.path, ToUtf8(inner), offset, rec, error)) return false;
         recs.push_back(rec);
     }
 
-    if (recs.size() > 0xFFFF) {
-        error = L"В архиве больше 65535 записей: изменение без 7-Zip не поддерживается.";
-        return false;
-    }
+    if (!WriteCentral(out.get(), recs, offset, error)) return false;
 
-    const unsigned long long cdOffset = offset;
-    std::vector<unsigned char> cd;
-    for (const auto& rec : recs) {
-        if (rec.offset > 0xFFFFFFFEull) {
-            error = L"Архив больше 4 ГБ: изменение без 7-Zip не поддерживается.";
-            return false;
-        }
-        Put32(cd, kCentralSig);
-        Put16(cd, 20);
-        Put16(cd, 20);
-        Put16(cd, rec.flags);
-        Put16(cd, rec.method);
-        Put16(cd, rec.dosTime);
-        Put16(cd, rec.dosDate);
-        Put32(cd, rec.crc);
-        Put32(cd, (unsigned long)rec.csize);
-        Put32(cd, (unsigned long)rec.usize);
-        Put16(cd, (unsigned short)rec.nameRaw.size());
-        Put16(cd, 0);
-        Put16(cd, 0);
-        Put16(cd, 0);
-        Put16(cd, 0);
-        Put32(cd, 0);
-        Put32(cd, (unsigned long)rec.offset);
-        cd.insert(cd.end(), rec.nameRaw.begin(), rec.nameRaw.end());
-    }
-    if (!cd.empty() && fwrite(cd.data(), 1, cd.size(), out.get()) != cd.size()) {
-        error = L"Не удалось записать оглавление архива.";
-        return false;
-    }
-
-    std::vector<unsigned char> eocd;
-    Put32(eocd, kEocdSig);
-    Put16(eocd, 0);
-    Put16(eocd, 0);
-    Put16(eocd, (unsigned short)recs.size());
-    Put16(eocd, (unsigned short)recs.size());
-    Put32(eocd, (unsigned long)cd.size());
-    Put32(eocd, (unsigned long)cdOffset);
-    Put16(eocd, 0);
-    if (fwrite(eocd.data(), 1, eocd.size(), out.get()) != eocd.size()) {
-        error = L"Не удалось записать конец архива.";
-        return false;
-    }
-
-    out.reset();          // закрыть до переименования
+    out.reset();
     src.reset();
     if (!MoveFileExW(tempPath.c_str(), zipPath.c_str(), MOVEFILE_REPLACE_EXISTING)) {
         error = L"Не удалось заменить архив (файл занят другой программой?).";
