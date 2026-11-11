@@ -1716,6 +1716,19 @@ bool Panel::LoadArchiveListing(const std::wstring& focus) {
 
         const size_t slash = rest.find(L'\\');
         if (slash == std::wstring::npos) {
+            // Запись каталога («core/» в zip): папка уже могла быть собрана из путей файлов,
+            // иначе в списке появлялись бы дубли (баг на архивах без 7-Zip).
+            if (e.isDir) {
+                bool known = false;
+                for (auto& d : seenDirs) {
+                    if (SameName(d, rest)) {
+                        known = true;
+                        break;
+                    }
+                }
+                if (known) continue;
+                seenDirs.push_back(rest);
+            }
             Entry en;
             en.name = rest;
             en.isDir = e.isDir;
@@ -1726,7 +1739,7 @@ bool Panel::LoadArchiveListing(const std::wstring& focus) {
             const std::wstring dirName = rest.substr(0, slash);
             bool known = false;
             for (auto& d : seenDirs) {
-                if (d == dirName) {
+                if (SameName(d, dirName)) {
                     known = true;
                     break;
                 }
