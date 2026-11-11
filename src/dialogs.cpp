@@ -1990,7 +1990,7 @@ void ShowAbout(HWND owner) {
         L"Почта: <a href=\"mailto:" POSFILES_EMAIL L"\">" POSFILES_EMAIL L"</a>";
 
     std::wstring build = std::wstring(L"Сборка ") + POSFILES_VERSION_FULL;
-    build += Find7zPath().empty() ? L"\r\n7-Zip: не найден (архивы недоступны)"
+    build += Find7zPath().empty() ? L"\r\n7-Zip: не найден — работает встроенный zip"
                                    : (L"\r\n7-Zip: " + Find7zPath());
 
     TASKDIALOGCONFIG cfg{};

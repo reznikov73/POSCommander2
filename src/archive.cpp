@@ -1,6 +1,7 @@
 #include "archive.h"
 
 #include "dialogs.h"
+#include "zip.h"
 #include "util.h"
 
 #include <commctrl.h>
@@ -38,6 +39,10 @@ std::wstring Find7zPathImpl() {
     if (g_sevenZipScanned) return g_sevenZipPath;
     g_sevenZipScanned = true;
     g_sevenZipPath.clear();
+
+    // POSFILES_NO_7Z=1 — принудительно работать встроенным движком (тесты, диагностика).
+    wchar_t off[8]{};
+    if (GetEnvironmentVariableW(L"POSFILES_NO_7Z", off, 8) > 0 && off[0] != L'0') return g_sevenZipPath;
 
     std::vector<std::wstring> candidates;
 
@@ -389,8 +394,28 @@ LRESULT CALLBACK ArchiveProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
 
 }  // namespace
 
+// Встроенный движок zip: нужен, когда 7-Zip не установлен (старые Windows и т. п.).
+bool UseBuiltinZip(const std::wstring& archive) {
+    if (!Find7zPath().empty()) return false;
+    const std::wstring lower = Lower(archive);
+    return lower.size() > 4 && lower.compare(lower.size() - 4, 4, L".zip") == 0;
+}
+
 bool ListArchive(const std::wstring& archive, std::vector<ArchiveEntry>& out) {
     out.clear();
+    if (UseBuiltinZip(archive)) {
+        std::vector<ZipItem> items;
+        std::wstring error;
+        if (!ZipReadIndex(archive, items, error)) return false;
+        for (const auto& item : items) {
+            ArchiveEntry e;
+            e.name = item.name;
+            e.size = std::to_wstring(item.size);
+            e.isDir = item.isDir;
+            out.push_back(std::move(e));
+        }
+        return true;
+    }
     const std::wstring exe = Find7z();
     if (exe.empty()) return false;
 
@@ -676,6 +701,9 @@ bool ExtractArchiveWithProgress(HWND owner, const std::wstring& archive,
 
 bool ExtractFromArchive(const std::wstring& archive, const std::vector<std::wstring>& innerPaths,
                         const std::wstring& target, std::wstring& error) {
+    if (UseBuiltinZip(archive)) {
+        return ZipExtractTo(archive, innerPaths, target, error);
+    }
     const std::wstring exe = Find7z();
     if (exe.empty()) {
         error = L"7z.exe не найден. Установите 7-Zip.";
@@ -695,15 +723,60 @@ bool ExtractFromArchive(const std::wstring& archive, const std::vector<std::wstr
     return true;
 }
 
+namespace {
+
+std::wstring ArchiveLeaf(const std::wstring& path) {
+    const size_t slash = path.find_last_of(L'\\');
+    return slash == std::wstring::npos ? path : path.substr(slash + 1);
+}
+
+// Разворачиваем элементы (файлы и каталоги) в список «файл + имя внутри архива».
+void CollectZipSources(const std::wstring& path, const std::wstring& inner, std::vector<ZipSource>& out) {
+    if (!IsDirectory(path)) {
+        out.push_back(ZipSource{path, inner});
+        return;
+    }
+    std::vector<Entry> entries;
+    DWORD err = 0;
+    if (!ListDir(path, true, entries, err)) return;
+    for (const auto& e : entries) {
+        if (e.isDir) {
+            CollectZipSources(path + L"\\" + e.name, inner + L"\\" + e.name, out);
+        } else {
+            out.push_back(ZipSource{path + L"\\" + e.name, inner + L"\\" + e.name});
+        }
+    }
+}
+
+}  // namespace
+
 bool CreateArchive(const std::wstring& archivePath, const std::vector<std::wstring>& items,
                    std::wstring& error) {
+    if (items.empty()) {
+        error = L"Нечего упаковывать.";
+        return false;
+    }
+
+    // Без 7-Zip упаковываем сами, но только zip.
+    if (Find7zPath().empty()) {
+        const size_t dot = archivePath.find_last_of(L'.');
+        const std::wstring ext = dot == std::wstring::npos ? std::wstring() : Lower(archivePath.substr(dot));
+        if (ext != L".zip") {
+            error = L"Без 7-Zip создаётся только zip. Для 7z, tar и gz установите 7-Zip.";
+            return false;
+        }
+        std::vector<ZipSource> sources;
+        for (const auto& item : items) CollectZipSources(item, ArchiveLeaf(item), sources);
+        if (sources.empty()) {
+            error = L"Нечего упаковывать.";
+            return false;
+        }
+        return ZipCreateFrom(archivePath, sources, error);
+    }
+
     const std::wstring exe = Find7z();
     if (exe.empty()) {
         error = L"7z.exe не найден. Установите 7-Zip.";
-        return false;
-    }
-    if (items.empty()) {
-        error = L"Нечего упаковывать.";
         return false;
     }
 
@@ -845,6 +918,11 @@ bool ArchiveCanModify(const std::wstring& archive) {
 bool ArchiveAdd(HWND owner, const std::wstring& archive, const std::wstring& innerDir,
                 const std::vector<std::wstring>& sources, std::wstring& error) {
     if (sources.empty()) return false;
+    if (UseBuiltinZip(archive)) {
+        error = L"Добавление в zip без 7-Zip пока не поддерживается.\n"
+                L"Распакуйте архив (F5), добавьте файлы и упакуйте заново (Alt+F5).";
+        return false;
+    }
     if (!ArchiveCanModify(archive)) {
         error = L"Формат этого архива нельзя изменить:\n" + archive +
                 L"\n\nДобавление поддерживается для zip, 7z и tar. Для остальных форматов\n"
@@ -877,6 +955,11 @@ bool ArchiveAdd(HWND owner, const std::wstring& archive, const std::wstring& inn
 bool ArchiveDelete(HWND owner, const std::wstring& archive, const std::vector<std::wstring>& innerPaths,
                    std::wstring& error) {
     if (innerPaths.empty()) return false;
+    if (UseBuiltinZip(archive)) {
+        error = L"Удаление из zip без 7-Zip пока не поддерживается.\n"
+                L"Распакуйте архив (F5), удалите лишнее и упакуйте заново (Alt+F5).";
+        return false;
+    }
     if (!ArchiveCanModify(archive)) {
         error = L"Формат этого архива нельзя изменить:\n" + archive +
                 L"\n\nУдаление поддерживается для zip, 7z и tar.";

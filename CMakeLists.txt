@@ -41,6 +41,7 @@ add_executable(PosFiles WIN32
   src/diff.cpp
   src/prefs.cpp
   src/archive.cpp
+  src/zip.cpp
   src/sync.cpp
   src/ftp.cpp
   src/plugins.cpp

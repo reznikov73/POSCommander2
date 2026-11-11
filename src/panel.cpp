@@ -8,6 +8,7 @@
 #include <shlwapi.h>
 
 #include "archive.h"
+#include "zip.h"
 #include "ftp.h"
 #include "ops.h"
 #include "settings.h"
@@ -1675,9 +1676,13 @@ bool Panel::LoadArchiveListing(const std::wstring& focus) {
     if (!ListArchive(archiveFile_, all)) {
         const std::wstring sevenZip = Find7zPath();
         if (sevenZip.empty()) {
-            lastError_ = L"Для работы с архивами нужен 7-Zip (7z.exe).\n"
-                         L"Установите 7-Zip или положите 7z.exe рядом с PosFiles.exe.\n\n" +
-                         archiveFile_;
+            lastError_ = ZipLooksLikeZip(archiveFile_)
+                             ? (L"Не удалось прочитать zip-архив (встроенный движок):\n" + archiveFile_ +
+                                L"\n\nФайл повреждён или это не zip.")
+                             : (L"Для этого формата нужен 7-Zip (7z.exe).\n"
+                                L"Zip читается и создаётся встроенно, остальное — через 7-Zip.\n"
+                                L"Установите 7-Zip или положите 7z.exe рядом с PosFiles.exe.\n\n" +
+                                archiveFile_);
         } else {
             lastError_ = L"Не удалось прочитать архив:\n" + archiveFile_ +
                          L"\n\n7-Zip: " + sevenZip +

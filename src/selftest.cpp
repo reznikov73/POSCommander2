@@ -2,6 +2,7 @@
 
 #include "ftp.h"
 #include "archive.h"
+#include "zip.h"
 #include "ops.h"
 #include "util.h"
 
@@ -141,6 +142,40 @@ void CheckArchives(Report& rep, const std::wstring& base) {
     rep.Check(!Find7zPath().empty(), L"7-Zip найден (нужен для архивов)", Find7zPath());
     rep.Check(ArchiveCanModify(zip), L"Архив: zip можно менять");
     rep.Check(!ArchiveCanModify(base + L"\\т.rar"), L"Архив: rar только для чтения");
+
+    // Встроенный zip-движок (работает и без 7-Zip).
+    {
+        const std::wstring builtinZip = base + L"\\встроенный.zip";
+        const std::wstring zsrc1 = base + L"\\zip-1.txt";
+        const std::wstring zsrc2 = base + L"\\zip-2.bin";
+        WriteText(zsrc1, "строка для zip");
+        WriteText(zsrc2, std::string(5000, 'z'));
+        std::vector<ZipSource> zsources = {{zsrc1, L"папка\\zip-1.txt"}, {zsrc2, L"zip-2.bin"}};
+        std::wstring zerr;
+        rep.Check(ZipCreateFrom(builtinZip, zsources, zerr), L"Zip: архив создан встроенным движком", zerr);
+
+        std::vector<ZipItem> zitems;
+        rep.Check(ZipReadIndex(builtinZip, zitems, zerr), L"Zip: оглавление читается", zerr);
+        rep.Check(zitems.size() == 2, L"Zip: две записи в оглавлении",
+                  L"получено " + std::to_wstring(zitems.size()));
+
+        const std::wstring zout = base + L"\\zip-out";
+        rep.Check(ZipExtractTo(builtinZip, {}, zout, zerr), L"Zip: распаковка встроенным движком", zerr);
+        rep.Check(ReadText(zout + L"\\папка\\zip-1.txt") == "строка для zip", L"Zip: текст совпал");
+        rep.Check(ReadBytes(zout + L"\\zip-2.bin").size() == 5000, L"Zip: бинарник совпал по размеру");
+
+        // Сжатый (deflate) архив: создаём 7-Zip, читаем своим inflate.
+        if (!Find7zPath().empty()) {
+            const std::wstring deflateZip = base + L"\\deflate.zip";
+            std::wstring derr;
+            if (CreateArchive(deflateZip, {zsrc1}, derr)) {
+                const std::wstring single = base + L"\\deflate-one.txt";
+                rep.Check(ZipExtractOne(deflateZip, L"zip-1.txt", single, zerr) &&
+                              ReadText(single) == "строка для zip",
+                          L"Zip: inflate читает архив, сжатый 7-Zip", zerr);
+            }
+        }
+    }
 
     rep.Check(ArchiveDelete(nullptr, zip, {L"влож"}, arErr), L"Архив: каталог удалён", arErr);
     archEntries.clear();
