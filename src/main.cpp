@@ -2987,6 +2987,8 @@ void App::Dispatch(int id) {
         }
         case IDM_VIEW: {
             Entry* e = panel->Cursor();
+            LogDebug(L"view: cursor='" + (e ? e->name : L"<null>") + L"' isDir=" +
+                     std::to_wstring(e && e->isDir ? 1 : 0) + L" path='" + panel->FocusedPath() + L"'");
             if (!e || e->isUp || e->isDir) {
                 MessageBoxW(hwnd_, L"Просмотр доступен только для файлов.", kTitle, MB_ICONINFORMATION);
                 return;

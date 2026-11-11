@@ -788,7 +788,9 @@ void PaintRange(HWND edit, long from, long to, COLORREF color) {
 // Простая раскраска: комментарии, строки, числа и ключевые слова.
 void HighlightSyntax(HWND edit, const std::wstring& text, SyntaxLang lang) {
     if (lang == SyntaxLang::None || text.empty()) return;
-    if (text.size() > 400 * 1024) return;             // очень большие файлы не раскрашиваем
+    // Раскраска — это EM_SETCHARFORMAT на каждый токен: на сотнях килобайт RichEdit\r
+    // перестаёт успевать и окно не появляется. Ограничиваем и размер, и время.\r
+    if (text.size() > 64 * 1024) return;
 
     // Палитра как в Visual Studio: синие ключевые слова, тёмно-красные строки,
     // зелёные комментарии, бирюзовые числа и встроенные функции.
@@ -815,8 +817,10 @@ void HighlightSyntax(HWND edit, const std::wstring& text, SyntaxLang lang) {
     const bool cLike = lang == SyntaxLang::Cpp;
     size_t i = 0;
     int guard = 0;
+    const ULONGLONG started = GetTickCount64();
 
-    while (i < text.size() && guard < 20000) {
+    while (i < text.size() && guard < 2000) {
+        if ((guard & 63) == 0 && GetTickCount64() - started > 150) break;   // не держим окно
         const wchar_t c = text[i];
 
         // комментарии
@@ -1495,6 +1499,8 @@ void ShowLister(HWND owner, const std::wstring& path) {
         richLoaded = true;
     }
 
+    LogDebug(L"lister: '" + path + L"' байт=" + std::to_wstring(raw.size()));
+
     auto* st = new ListerState();
     st->path = path;
     st->raw = std::move(raw);
@@ -1531,9 +1537,11 @@ void ShowLister(HWND owner, const std::wstring& path) {
                                 WS_OVERLAPPEDWINDOW | WS_VISIBLE, frame.left, frame.top,
                                 width, height, nullptr, nullptr, g_inst, st);
     if (!hwnd) {
+        LogDebug(L"lister: окно не создано");
         delete st;
         return;
     }
+    LogDebug(L"lister: окно создано");
 
     // Модальный режим: владелец отключается, поэтому ввод (в том числе ESC/F3/F10)
     // гарантированно попадает в просмотрщик, а не в список файлов.
