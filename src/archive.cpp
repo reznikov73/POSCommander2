@@ -29,26 +29,63 @@ struct ArchiveState {
     std::wstring extractedTo;
 };
 
-// Путь к 7z.exe: обычно Program Files, иначе — из PATH.
-std::wstring Find7z() {
-    static std::wstring cached;
-    if (!cached.empty()) return cached;
+// Путь к 7z.exe. Порядок: рядом с программой (портативный вариант), Program Files,
+// реестр (в т.ч. 32-битный на 64-битной системе), PATH.
+std::wstring g_sevenZipPath;   // кэш поиска; пусто — не найден
+bool g_sevenZipScanned = false;
 
-    const wchar_t* candidates[] = {
-        L"C:\\Program Files\\7-Zip\\7z.exe",
-        L"C:\\Program Files (x86)\\7-Zip\\7z.exe",
-    };
-    for (auto c : candidates) {
-        if (GetFileAttributesW(c) != INVALID_FILE_ATTRIBUTES) {
-            cached = c;
-            return cached;
+std::wstring Find7zPathImpl() {
+    if (g_sevenZipScanned) return g_sevenZipPath;
+    g_sevenZipScanned = true;
+    g_sevenZipPath.clear();
+
+    std::vector<std::wstring> candidates;
+
+    // 1) Рядом с exe: 7z.exe и 7-Zip\7z.exe — так работает переносной комплект.
+    wchar_t module[MAX_PATH]{};
+    if (GetModuleFileNameW(nullptr, module, MAX_PATH)) {
+        std::wstring dir = module;
+        const size_t slash = dir.find_last_of(L'\\');
+        if (slash != std::wstring::npos) {
+            dir.resize(slash);
+            candidates.push_back(dir + L"\\7z.exe");
+            candidates.push_back(dir + L"\\7-Zip\\7z.exe");
         }
     }
 
+    // 2) Стандартные места установки.
+    candidates.push_back(L"C:\\Program Files\\7-Zip\\7z.exe");
+    candidates.push_back(L"C:\\Program Files (x86)\\7-Zip\\7z.exe");
+
+    // 3) Реестр: ключ Path от инсталлятора 7-Zip.
+    for (HKEY root : {HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER}) {
+        for (const wchar_t* key : {L"SOFTWARE\\7-Zip", L"SOFTWARE\\WOW6432Node\\7-Zip"}) {
+            wchar_t buf[MAX_PATH]{};
+            DWORD cb = sizeof(buf);
+            if (RegGetValueW(root, key, L"Path", RRF_RT_REG_SZ, nullptr, buf, &cb) == ERROR_SUCCESS && buf[0]) {
+                std::wstring p = buf;
+                if (p.back() != L'\\') p += L'\\';
+                p += L"7z.exe";
+                candidates.push_back(p);
+            }
+        }
+    }
+
+    for (const auto& c : candidates) {
+        if (GetFileAttributesW(c.c_str()) != INVALID_FILE_ATTRIBUTES) {
+            g_sevenZipPath = c;
+            return g_sevenZipPath;
+        }
+    }
+
+    // 4) PATH.
     wchar_t found[MAX_PATH]{};
-    if (SearchPathW(nullptr, L"7z.exe", nullptr, MAX_PATH, found, nullptr)) cached = found;
-    return cached;
+    if (SearchPathW(nullptr, L"7z.exe", nullptr, MAX_PATH, found, nullptr)) g_sevenZipPath = found;
+    return g_sevenZipPath;
 }
+
+// Внутреннее имя, привычное остальному коду файла.
+std::wstring Find7z() { return Find7zPathImpl(); }
 
 // Запуск консольной команды с захватом вывода (UTF-8).
 bool RunCapture(const std::wstring& commandLine, std::string& output) {
@@ -785,6 +822,14 @@ bool Run7zWrite(HWND owner, const std::wstring& args, const std::wstring& workDi
 }
 
 }  // namespace
+
+std::wstring Find7zPath() { return Find7zPathImpl(); }
+
+// Сброс кэша: нужен, если 7-Zip установили при работающей программе.
+void ResetSevenZipCache() {
+    g_sevenZipScanned = false;
+    g_sevenZipPath.clear();
+}
 
 bool ArchiveCanModify(const std::wstring& archive) {
     static const wchar_t* writable[] = {L".zip", L".7z", L".tar", L".tgz", L".tar.gz", L".tbz2", L".tar.bz2"};

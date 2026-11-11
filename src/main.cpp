@@ -99,6 +99,7 @@ enum : int {
     IDM_DRIVE_LEFT,
     IDM_DRIVE_RIGHT,
     IDM_ABOUT,
+    IDM_SEVENZIP,
 };
 
 const int ID_PANEL_LEFT = 1000;
@@ -899,6 +900,8 @@ void App::BuildMenu() {
     AppendMenuW(menu_, MF_POPUP, (UINT_PTR)startMenu, L"&Запуск");
 
     HMENU help = CreatePopupMenu();
+    AppendMenuW(help, MF_STRING, IDM_SEVENZIP, L"&Проверить 7-Zip…");
+    AppendMenuW(help, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(help, MF_STRING, IDM_ABOUT, L"&О программе");
     AppendMenuW(menu_, MF_POPUP, (UINT_PTR)help, L"&Помощь");
 }
@@ -1103,6 +1106,7 @@ void App::LoadPanels() {
     // Временная диагностика этапа 4 (рамка курсора неактивной панели) — в %TEMP%\posfiles-debug.log.
     wchar_t stamp[32]{};
     swprintf(stamp, 32, L"%hs %hs", __DATE__, __TIME__);
+    LogDebug(L"7z: '" + Find7zPath() + L"'");
     LogDebug(L"старт: сборка " + std::wstring(stamp) + L", активная панель " +
              std::to_wstring(activeSide_) + L", курсоры " + std::to_wstring(left_.CursorIndex()) + L"/" +
              std::to_wstring(right_.CursorIndex()) + L" (" + std::to_wstring((int)left_.Entries().size()) + L"/" +
@@ -3168,6 +3172,25 @@ void App::Dispatch(int id) {
         case IDM_TAB_COPY:
             PostMessageW(hwnd_, WM_APP + 302, (WPARAM)panel->Side(), (LPARAM)panel->ActiveTab());
             break;
+        case IDM_SEVENZIP: {
+            ResetSevenZipCache();          // 7-Zip могли установить только что
+            const std::wstring sevenZip = Find7zPath();
+            if (sevenZip.empty()) {
+                const int answer = MessageBoxW(
+                    hwnd_,
+                    L"7z.exe не найден.\n\n"
+                    L"Архивы (просмотр, упаковка, распаковка, поиск и правка внутри) работают через 7-Zip.\n"
+                    L"Установите 7-Zip или положите 7z.exe рядом с PosFiles.exe.\n\n"
+                    L"Открыть сайт 7-Zip?",
+                    L"7-Zip не найден", MB_ICONWARNING | MB_YESNO);
+                if (answer == IDYES)
+                    ShellExecuteW(hwnd_, L"open", L"https://www.7-zip.org/", nullptr, nullptr, SW_SHOWNORMAL);
+            } else {
+                MessageBoxW(hwnd_, (L"7-Zip найден:\n" + sevenZip).c_str(), L"7-Zip",
+                            MB_ICONINFORMATION | MB_OK);
+            }
+            break;
+        }
         case IDM_ABOUT:
             ShowAbout(hwnd_);
             break;

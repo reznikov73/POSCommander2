@@ -18,6 +18,11 @@ bool IsArchivePath(const std::wstring& path);
 // Полный список содержимого архива (все уровни).
 bool ListArchive(const std::wstring& archive, std::vector<ArchiveEntry>& out);
 
+// Путь к 7z.exe (пусто — 7-Zip не найден): без него архивы недоступны.
+std::wstring Find7zPath();
+// Сброс кэша поиска (после установки 7-Zip при работающей программе).
+void ResetSevenZipCache();
+
 // Распаковка указанных путей (пусто = всё) в каталог target.
 bool ExtractFromArchive(const std::wstring& archive, const std::vector<std::wstring>& innerPaths,
                         const std::wstring& target, std::wstring& error);

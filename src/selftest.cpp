@@ -138,6 +138,7 @@ void CheckArchives(Report& rep, const std::wstring& base) {
     rep.Check(hasRoot && hasInner, L"Архив: обе записи на месте",
               L"записей " + std::to_wstring(archEntries.size()));
 
+    rep.Check(!Find7zPath().empty(), L"7-Zip найден (нужен для архивов)", Find7zPath());
     rep.Check(ArchiveCanModify(zip), L"Архив: zip можно менять");
     rep.Check(!ArchiveCanModify(base + L"\\т.rar"), L"Архив: rar только для чтения");
 

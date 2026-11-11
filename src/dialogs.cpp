@@ -2,6 +2,7 @@
 #include "dialogs.h"
 #include "settings.h"
 #include "version.h"
+#include "archive.h"
 #include <shellapi.h>
 #include "util.h"
 
@@ -1988,7 +1989,9 @@ void ShowAbout(HWND owner) {
         L"Сайт: <a href=\"" POSFILES_SITE_URL L"\">" POSFILES_SITE L"</a>\r\n"
         L"Почта: <a href=\"mailto:" POSFILES_EMAIL L"\">" POSFILES_EMAIL L"</a>";
 
-    const std::wstring build = std::wstring(L"Сборка ") + POSFILES_VERSION_FULL;
+    std::wstring build = std::wstring(L"Сборка ") + POSFILES_VERSION_FULL;
+    build += Find7zPath().empty() ? L"\r\n7-Zip: не найден (архивы недоступны)"
+                                   : (L"\r\n7-Zip: " + Find7zPath());
 
     TASKDIALOGCONFIG cfg{};
     cfg.cbSize = sizeof(cfg);

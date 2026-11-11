@@ -1673,7 +1673,17 @@ bool Panel::LoadArchiveListing(const std::wstring& focus) {
 
     std::vector<ArchiveEntry> all;
     if (!ListArchive(archiveFile_, all)) {
-        lastError_ = L"Не удалось прочитать архив:\n" + archiveFile_;
+        const std::wstring sevenZip = Find7zPath();
+        if (sevenZip.empty()) {
+            lastError_ = L"Для работы с архивами нужен 7-Zip (7z.exe).\n"
+                         L"Установите 7-Zip или положите 7z.exe рядом с PosFiles.exe.\n\n" +
+                         archiveFile_;
+        } else {
+            lastError_ = L"Не удалось прочитать архив:\n" + archiveFile_ +
+                         L"\n\n7-Zip: " + sevenZip +
+                         L"\nВозможные причины: файл повреждён, зашифрован (нужен пароль)\n"
+                         L"или это облачная заглушка и файл ещё не скачан.";
+        }
         return false;
     }
 
