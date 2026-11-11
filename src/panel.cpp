@@ -2217,6 +2217,12 @@ void Panel::ApplyEntries(const std::wstring& focus, int fallbackIndex) {
 }
 
 void Panel::Reload() {
+    // Пока идёт переименование в строке, перечитывать каталог нельзя: автообновление
+    // (наблюдение за каталогом) закрывало правку на первом же набранном символе.
+    if (IsInlineRenaming() && !renameEnding_) {
+        watchPending_ = true;
+        return;
+    }
     if (branch_) {                      // в ветке список собирается заново обходом поддерева
         std::wstring focus;
         Entry* cur = Cursor();
@@ -2663,6 +2669,10 @@ void Panel::CommitInlineRename() {
     if (!Navigate(path_, name)) Reload();
     renameEnding_ = false;
     SetFocus(list_);
+    if (watchPending_) {                // изменения, отложенные на время правки
+        watchPending_ = false;
+        Reload();
+    }
 }
 
 void Panel::CancelInlineRename() {
@@ -2672,6 +2682,10 @@ void Panel::CancelInlineRename() {
     renameIndex_ = -1;
     renameEnding_ = false;
     SetFocus(list_);
+    if (watchPending_) {
+        watchPending_ = false;
+        Reload();
+    }
 }
 
 LRESULT CALLBACK Panel::RenameEditProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
