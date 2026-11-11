@@ -1121,3 +1121,17 @@ Alt+←/→, F9 — код на месте, нужен один ручной п�
   W и Num+ не ломают окно. --selftest: 90 из 90.
 
   Файлы: src/panel.h, src/panel.cpp, src/main.cpp, src/dialogs.cpp, src/dialogs.h.
+==================================================================
+40. ГОРЯЧИЕ КЛАВИШИ КАК В TC, ЭТАП 7: ДОКУМЕНТАЦИЯ (11.11.2026)
+==================================================================
+  - README: раздел «Горячие клавиши» переписан целиком — таблица с новыми клавишами
+    (Ctrl+B, Ctrl+S, Ctrl+L, Ctrl+J, Shift+Del, Shift+F5/F7, Ctrl+F1/F2/F7,
+    Ctrl+↑, Ctrl+E, Alt+F8, Ctrl+Shift+A, Ctrl+F/N), отступления помечены «наше»,
+    отдельная строка про клавиши просмотрщика;
+  - docs/hotkeys.md — сверка с TC 11.x: что совпадает, наши осознанные отступления
+    (F2, Ctrl+Z, Ctrl+H, Ctrl+Shift+C, Ctrl+S) и список того, что ещё не перенято
+    (F1 справка, Ctrl+Num+/−, Alt+Num+/−, Ctrl+Shift+B, Ctrl+Shift+U/W, Shift+Tab,
+    Ctrl+P, Shift+Enter, hex-копия в просмотрщике);
+  - --selftest: 90 из 90.
+
+  Файлы: README.md, docs/hotkeys.md, план.txt.
