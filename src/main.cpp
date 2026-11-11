@@ -843,8 +843,8 @@ void App::BuildMenu() {
     AppendMenuW(menu_, MF_POPUP, (UINT_PTR)nav, L"&Навигация");
 
     HMENU net = CreatePopupMenu();
-    AppendMenuW(net, MF_STRING, IDM_FTP_CONNECT, L"FTP: &подключиться…");
-    AppendMenuW(net, MF_STRING, IDM_FTP_DISCONNECT, L"FTP: о&тключиться");
+    AppendMenuW(net, MF_STRING, IDM_FTP_CONNECT, L"FTP: &подключиться…\tCtrl+F");
+    AppendMenuW(net, MF_STRING, IDM_FTP_DISCONNECT, L"FTP: о&тключиться\tCtrl+Shift+F");
     AppendMenuW(net, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(net, MF_STRING, IDM_NET_BROWSE, L"&Обзор сети…");
     AppendMenuW(net, MF_STRING, IDM_NET_UNC, L"Перейти по &UNC-пути…");
@@ -3537,6 +3537,12 @@ bool App::PreTranslate(const MSG& msg) {
             case 'S':                   // Ctrl+S — быстрый фильтр по подстроке
                 if (shift) panel->ClearQuickFilter();
                 else panel->BeginQuickFilter();
+                return true;
+            case 'F':                   // Ctrl+F — FTP: подключиться, Ctrl+Shift+F — отключиться
+                Dispatch(shift ? IDM_FTP_DISCONNECT : IDM_FTP_CONNECT);
+                return true;
+            case 'N':                   // Ctrl+N — новое FTP-соединение (тот же диалог)
+                Dispatch(IDM_FTP_CONNECT);
                 return true;
             case 'M':
                 Dispatch(IDM_BATCH_RENAME);
